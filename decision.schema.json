@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "hypothesis",
+    "changed_files",
+    "local_checks",
+    "requested_job",
+    "stop_reason"
+  ],
+  "properties": {
+    "hypothesis": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "changed_files": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096
+      }
+    },
+    "local_checks": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "requested_job": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,62}$"
+        }
+      ]
+    },
+    "stop_reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    }
+  }
+}

@@ -1,0 +1,8 @@
+.git
+.codex
+.worktrees
+.env
+.env.*
+**/__pycache__
+**/*.py[cod]
+evidence-local

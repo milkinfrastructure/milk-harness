@@ -1,0 +1,14 @@
+/.codex/
+/.worktrees/
+/node_modules/
+/dist/
+/build/
+/evidence-local/
+.env
+.env.*
+!.env.example
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+/docs/architecture/IMG_4239.png

@@ -1,0 +1,85 @@
+{
+  "schema_version": "dragontales.gpt-oss-teacher-profile.v1",
+  "model": {
+    "repository": "openai/gpt-oss-120b",
+    "revision": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
+    "served_name": "openai/gpt-oss-120b",
+    "mount": "/models/gpt-oss-120b",
+    "mount_required_read_only": true
+  },
+  "contract": {
+    "gateway_binding_required": true,
+    "path": "/v1/chat/completions",
+    "reasoning_effort": "high",
+    "include_reasoning": false,
+    "max_projected_bytes": 4096,
+    "max_input_tokens": 65536,
+    "min_output_tokens": 4096,
+    "max_output_tokens": 4096,
+    "max_request_bytes": 65536,
+    "max_response_bytes": 1048576,
+    "max_model_len": 131072,
+    "minimum_context_margin_tokens": 61440,
+    "system_prompt_sha256": "587e635b193061d235af7c3eaaad7ce9f5021405fd2b382361e1185568314fae",
+    "response_format_sha256": "1365b22f7d6d4b72160d5bc1281515005103617cdf470b6d272e4ba6e5b6f5d3"
+  },
+  "ingress": {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "api_key_environment": "DRAGONTALES_TEACHER_API_KEY",
+    "upstream": "http://127.0.0.1:8001/v1/chat/completions",
+    "retry_count": 0
+  },
+  "core_precondition": {
+    "status": "implemented_verified_offline",
+    "maximum_projected_bytes": 4096,
+    "maximum_provider_request_bytes": 65536,
+    "requirement": "A fully verified source outside this exact provider envelope receives an immutable provider-bound local rejection and advances without a teacher claim or provider call."
+  },
+  "vllm": {
+    "image": "vllm/vllm-openai@sha256:50509e700235cea487715cedeb501d20a1cd15fa6a54ce93688284bd0d96995d",
+    "version": "0.28.0+cu129",
+    "source_revision": "2cf0a6915ce544dc493a0990f2ea38d81601128a",
+    "system_start_date": "2025-08-05",
+    "startup_timeout_seconds": 1200,
+    "argv": [
+      "/usr/local/bin/vllm",
+      "serve",
+      "/models/gpt-oss-120b",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8001",
+      "--served-model-name",
+      "openai/gpt-oss-120b",
+      "--tensor-parallel-size",
+      "1",
+      "--max-num-seqs",
+      "1",
+      "--max-num-batched-tokens",
+      "8192",
+      "--max-model-len",
+      "131072",
+      "--max-cudagraph-capture-size",
+      "2048",
+      "--no-enable-prefix-caching",
+      "--gpu-memory-utilization",
+      "0.95",
+      "--load-format",
+      "safetensors",
+      "--generation-config",
+      "vllm",
+      "--disable-uvicorn-access-log"
+    ]
+  },
+  "live_admission_gate": {
+    "calls": 20,
+    "execution": "sequential",
+    "per_call_deadline_seconds": 180,
+    "per_call_target_seconds": 150,
+    "required_oom_events": 0,
+    "hardware": "one NVIDIA H100 80GB",
+    "runtime_profile": "131072-token max model length with the exact pinned argv",
+    "status": "unqualified_pending_live_gate"
+  }
+}

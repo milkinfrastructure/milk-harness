@@ -1,0 +1,42 @@
+{
+  "schema_version": "dragontales.gpt-oss-teacher-provenance.v1",
+  "model": {
+    "publisher": "OpenAI",
+    "repository": "https://huggingface.co/openai/gpt-oss-120b",
+    "revision": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
+    "revision_url": "https://huggingface.co/openai/gpt-oss-120b/tree/b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
+    "inventory_source_url": "https://huggingface.co/api/models/openai/gpt-oss-120b/revision/b5c939de8f754692c1647ca79fbf85e8c1e70f8a?blobs=true",
+    "inventory_sha256": "ea2e51a45254c0edd93cc42d9242065dd5aa094254525f7e69dedd5b0f7b1b26",
+    "inventory_bytes": 4885
+  },
+  "license": {
+    "spdx": "Apache-2.0",
+    "source_url": "https://huggingface.co/openai/gpt-oss-120b/resolve/b5c939de8f754692c1647ca79fbf85e8c1e70f8a/LICENSE",
+    "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+    "bytes": 11357
+  },
+  "usage_policy": {
+    "source_url": "https://huggingface.co/openai/gpt-oss-120b/resolve/b5c939de8f754692c1647ca79fbf85e8c1e70f8a/USAGE_POLICY",
+    "sha256": "fc48d386a7a7ff8b066f743cfe62df683ab16892450f5bb7357bb4de261cd037",
+    "bytes": 201
+  },
+  "model_card": {
+    "source_url": "https://huggingface.co/openai/gpt-oss-120b/resolve/b5c939de8f754692c1647ca79fbf85e8c1e70f8a/README.md",
+    "sha256": "92b0408cf5dce04e4c5e4e5f2be0361da710d3650baefd7d7519badd1c687919",
+    "bytes": 7111
+  },
+  "runtime": {
+    "project": "https://github.com/vllm-project/vllm",
+    "source_revision": "2cf0a6915ce544dc493a0990f2ea38d81601128a",
+    "source_url": "https://github.com/vllm-project/vllm/tree/2cf0a6915ce544dc493a0990f2ea38d81601128a",
+    "build_url": "https://buildkite.com/vllm/release-v2/builds/5584",
+    "image": "vllm/vllm-openai@sha256:50509e700235cea487715cedeb501d20a1cd15fa6a54ce93688284bd0d96995d",
+    "version": "0.28.0+cu129",
+    "harmony": "provided transitively by the immutable vLLM image and used only on its loopback teacher endpoint"
+  },
+  "evidence": {
+    "small_files": "content bytes fetched from the exact revision and SHA-256 hashed",
+    "lfs_files": "content SHA-256 and byte counts matched both the exact-revision API and exact-revision x-linked-etag/x-linked-size headers",
+    "verified_at_utc": "2026-08-27T20:12:22Z"
+  }
+}

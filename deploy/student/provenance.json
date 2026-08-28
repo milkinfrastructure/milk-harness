@@ -1,0 +1,116 @@
+{
+  "schema_version": "milk.student-image-provenance.v1",
+  "platform": "linux/amd64",
+  "gateway": {
+    "build_argument": "MILK_GATEWAY_IMAGE",
+    "required_reference": "immutable_sha256"
+  },
+  "base_images": {
+    "prime_rl": {
+      "reference": "ghcr.io/primeintellect-ai/prime-rl@sha256:6b8b2cf339de90b67ed25f246ad3dcfd773cb80e629577eb31aeb2a6b81db80e",
+      "config_sha256": "19d9060fdafe4db5e6b3ae49388a1dd7537cea255a323e15a55c5b27e31117f4",
+      "version": "0.9.0",
+      "source_repository": "https://github.com/PrimeIntellect-ai/prime-rl",
+      "source_revision": "ab5de8fff44b2c4a5c85e24b6e6e3f7d57eee7b1",
+      "license": "Apache-2.0",
+      "license_sha256": "f5118b9c9e98b0f4076214ee13f68d5f73c13b077c44544cb9a0c4ed9155065c",
+      "license_bytes": 11695
+    },
+    "vllm": {
+      "reference": "vllm/vllm-openai@sha256:50509e700235cea487715cedeb501d20a1cd15fa6a54ce93688284bd0d96995d",
+      "config_sha256": "249ed60fdd67b96db472e16f945af5aaba565b20159d192ba378035b6d136a1c",
+      "version": "0.28.0+cu129",
+      "source_repository": "https://github.com/vllm-project/vllm",
+      "source_revision": "2cf0a6915ce544dc493a0990f2ea38d81601128a",
+      "patched_metadata_sha256": "bed53f35943472068beef63476639f29cac203ef29b9037ee9d22a4bf3a6cebc"
+    }
+  },
+  "model": {
+    "repository": "Qwen/Qwen3-4B-Instruct-2507",
+    "revision": "cdbee75f17c01a7cc42f958dc650907174af0554",
+    "license": "Apache-2.0",
+    "profile_sha256": "2b64fab2618d2bab20acb0353493623a25d0df6eaf2a11fc73c037f090755757",
+    "inventory_sha256": "910bc2b47b9d0b77208c01a968f824ca3f0f8785f5ddf99dd62c15a320306e8b",
+    "artifact_bytes": 8060917568
+  },
+  "wheels": [
+    {
+      "name": "accelerate",
+      "version": "1.14.0",
+      "artifact": "accelerate-1.14.0-py3-none-any.whl",
+      "sha256": "e94390c2863b873be18f623f9df48a0d8fe5eff13ea7f1a00092b0a7904888c6"
+    },
+    {
+      "name": "peft",
+      "version": "0.20.0",
+      "artifact": "peft-0.20.0-py3-none-any.whl",
+      "sha256": "0fbba16ffebfad3de96e06f2da6860fd860292324b85b6141909fa1e26ea9233"
+    },
+    {
+      "name": "compressed-tensors",
+      "version": "0.18.0",
+      "artifact": "compressed_tensors-0.18.0-py3-none-any.whl",
+      "sha256": "91168237c2d815614c44dfc354c61c613085c811dabbb2ccdb929e9aaa313b8f"
+    },
+    {
+      "name": "llmcompressor",
+      "version": "0.13.0",
+      "artifact": "llmcompressor-0.13.0-py3-none-any.whl",
+      "sha256": "c703127445219309bcc77b8fea8b928e81fa70a8a6be9c98eef23b51165fff0c"
+    },
+    {
+      "name": "auto-round",
+      "version": "0.14.2",
+      "artifact": "auto_round-0.14.2-py3-none-any.whl",
+      "sha256": "4265c11d33a6f688c211bfed87e4698b685473efe1d6faf95d744a3f7c19ca24"
+    },
+    {
+      "name": "datasets",
+      "version": "5.0.1",
+      "artifact": "datasets-5.0.1-py3-none-any.whl",
+      "sha256": "9fbf73688f8c18f7529b4fe592abd04015f81d1e58001e4bac73ffb2b39d7cc4"
+    },
+    {
+      "name": "nvidia-nccl-cu12",
+      "version": "2.29.7",
+      "artifact": "nvidia_nccl_cu12-2.29.7-py3-none-manylinux_2_18_x86_64.whl",
+      "sha256": "ecd0a012051abc20c1aa87328841efa8cade3ced65803046e38c2f03c0891fea"
+    },
+    {
+      "name": "transformers",
+      "version": "5.14.1",
+      "artifact": "transformers-5.14.1-py3-none-any.whl",
+      "sha256": "9db974c4079ede2d1a3ea7ca5a240df33f2cc26fc2b36ba64c5f2a4f43b6e725"
+    },
+    {
+      "name": "fsspec",
+      "version": "2026.6.0",
+      "artifact": "fsspec-2026.6.0-py3-none-any.whl",
+      "sha256": "02e0b71817df9b2169dc30a16832045764def1191b43dcff5bb85bdee212d2a1"
+    },
+    {
+      "name": "multiprocess",
+      "version": "0.70.19",
+      "artifact": "multiprocess-0.70.19-py312-none-any.whl",
+      "sha256": "3a56c0e85dd5025161bac5ce138dcac1e49174c7d8e74596537e729fd5c53c28"
+    },
+    {
+      "name": "pyarrow",
+      "version": "25.0.1",
+      "artifact": "pyarrow-25.0.1-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "sha256": "5389cdf79447ed1515c9e31620e6e1e2302249564d603f2ad727d4f6d313e4c3"
+    },
+    {
+      "name": "pandas",
+      "version": "3.0.5",
+      "artifact": "pandas-3.0.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "d373ce03ffd84010ed9839fa73672a9c8256990532e158440c0085db7d914b34"
+    },
+    {
+      "name": "xxhash",
+      "version": "4.0.1",
+      "artifact": "xxhash-4.0.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "237b8f63a2a0fcfb1ffc06e21dad23add44e6d354b2b014364a1d41e419a4dee"
+    }
+  ]
+}
