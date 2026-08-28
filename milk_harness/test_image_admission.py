@@ -72,7 +72,7 @@ class ImageAdmissionTests(unittest.TestCase):
             )
             store.create(
                 f"{ARTIFACT_PREFIX}/{foreign_sha}.json",
-                release["images"]["student"]["raw"],
+                release["images"]["student-train"]["raw"],
                 "application/json",
             )
             with self.assertRaisesRegex(ValueError, "admission is invalid"):
@@ -84,7 +84,7 @@ class ImageAdmissionTests(unittest.TestCase):
             store = LocalEvidenceStore(Path(root) / "evidence")
             receipt = publish_private_image_release(store, release)
             self.assertEqual(publish_private_image_release(store, release), receipt)
-            admission = release["images"]["student"]
+            admission = release["images"]["student-train"]
             conflicting = LocalEvidenceStore(Path(root) / "conflicting")
             conflicting.create(
                 f"{ARTIFACT_PREFIX}/{admission['admission_sha256']}.json",

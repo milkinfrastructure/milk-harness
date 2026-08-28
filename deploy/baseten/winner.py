@@ -29,9 +29,15 @@ SERVING_AUTOSCALING = {
 MAX_RESPONSE_BYTES = 1024 * 1024
 TRUSS_VERSION = "0.18.25"
 TRUSS_VERSION_OUTPUT = f"truss, version {TRUSS_VERSION}\n".encode()
+DIRECT_IMAGE_RUNTIME_VERIFIED = False
+DIRECT_IMAGE_RUNTIME_BLOCKER = (
+    "Baseten winner is disabled until no-build is provider-enabled and an "
+    "admitted non-root image can start from a pre-materialized winner without "
+    "receiving control-store secrets"
+)
 MATERIALIZATION_SCHEMA = "dragontales.student-winner-materialization-receipt.v1"
 PROBE_SCHEMA = "dragontales.winner-admission-probe.v1"
-RECEIPT_SCHEMA = "dragontales.winner-admission-receipt.v1"
+RECEIPT_SCHEMA = "dragontales.winner-admission-receipt.v2"
 RESULT_SCHEMA = "dragontales.student-winner-deployment-result.v1"
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 MODEL_ID = re.compile(r"[A-Za-z0-9-]{1,128}\Z")
@@ -76,6 +82,13 @@ PROBE_KEYS = {
     "chat_response_sha256",
 }
 API_KEY_KEYS = {"prefix", "name", "type", "model_ids", "team_name", "owner"}
+API_KEY_TYPES = {
+    "PERSONAL",
+    "WORKSPACE_MANAGE_ALL",
+    "WORKSPACE_MANAGE_API_KEYS",
+    "WORKSPACE_EXPORT_METRICS",
+    "WORKSPACE_INVOKE",
+}
 RECEIPT_KEY_ORDER = (
     "schema_version",
     "provider",
@@ -85,7 +98,7 @@ RECEIPT_KEY_ORDER = (
     "model_alias",
     "model_alias_sha256",
     "candidate_api_key_sha256",
-    "runtime_image_reference",
+    "student_branch_runtime_image_reference",
     "admission_program_sha256",
     "execution_id",
     "execution_name",
@@ -161,7 +174,7 @@ def _parse_timestamp(value):
 
 
 def settings(
-    student_image,
+    student_branch_image,
     student_job_id,
     model_alias,
     registry_secret,
@@ -194,7 +207,7 @@ def settings(
     if len(set(names.values())) != len(names):
         raise ValueError("winner secret names must be distinct")
     return {
-        "student_image": shared.immutable_ghcr_image(student_image),
+        "student_branch_image": shared.immutable_ghcr_image(student_branch_image),
         "student_job_id": student_job_id,
         "model_alias": model_alias,
         **names,
@@ -285,7 +298,7 @@ def truss_config(values, run_id):
     return (
         f"model_name: {model_name(run_id)}\n"
         "base_image:\n"
-        f"  image: {values['student_image']}\n"
+        f"  image: {values['student_branch_image']}\n"
         "  docker_auth:\n"
         "    auth_method: REGISTRY_SECRET\n"
         "    registry: ghcr.io\n"
@@ -390,12 +403,7 @@ def validate_invocation_key(value, invocation_key, model_id, team_name):
             not isinstance(item.get("prefix"), str)
             or not item["prefix"]
             or not isinstance(item.get("name"), (str, type(None)))
-            or item.get("type") not in {
-                "PERSONAL",
-                "WORKSPACE_MANAGE_ALL",
-                "WORKSPACE_EXPORT_METRICS",
-                "WORKSPACE_INVOKE",
-            }
+            or item.get("type") not in API_KEY_TYPES
             or not isinstance(item.get("model_ids"), (list, type(None)))
             or item.get("team_name") is not None
             and not isinstance(item["team_name"], str)

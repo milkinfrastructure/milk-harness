@@ -9,7 +9,11 @@ import re
 from urllib.parse import urlsplit
 
 from deploy.baseten import winner as winner_contract
-from deploy.baseten.adapter import immutable_ghcr_image
+from deploy.baseten.adapter import (
+    STUDENT_MODEL_MOUNT,
+    TEACHER_MODEL_MOUNT,
+    immutable_ghcr_image,
+)
 from milk_harness.evidence import HEX64, canonical_json, create_same
 from milk_harness.logs import LogArchive
 from milk_harness.provider_acceptance import (
@@ -53,7 +57,7 @@ WINNER_CLAIM_KEYS = (
     "winner",
     "model_manifest",
     "dev_receipt",
-    "runtime_image_reference",
+    "student_branch_runtime_image_reference",
     "provider_binding_sha256",
     "authority",
     "claimed_at",
@@ -63,7 +67,7 @@ WINNER_AUTHORITY_KEYS = (
     "schema_version",
     "provider_policy",
     "provider_terms_sha256",
-    "runtime_image_reference",
+    "student_branch_runtime_image_reference",
     "admission_program_sha256",
     "authorization_not_after",
     "max_wall_seconds",
@@ -316,11 +320,12 @@ def validate_definition(acceptance, value):
         raise ValueError("Modal execution definition identity is invalid")
     _unit(acceptance, value["ordinal"], value["unit"])
     image = immutable_ghcr_image(value["runtime_image_reference"])
-    image_repository = (
-        "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss@sha256:"
-        if value["unit"]["kind"] == "teacher_run"
-        else "ghcr.io/milkinfrastructure/milk-student@sha256:"
-    )
+    image_repository = {
+        "teacher_run": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss@sha256:",
+        "student_train_merge": "ghcr.io/milkinfrastructure/milk-student-train@sha256:",
+        "student_branch": "ghcr.io/milkinfrastructure/milk-student-branch@sha256:",
+        "student_winner_deployment": "ghcr.io/milkinfrastructure/milk-student-branch@sha256:",
+    }[value["unit"]["kind"]]
     if not image.startswith(image_repository):
         raise ValueError("Modal runtime image repository is invalid")
 
@@ -384,12 +389,17 @@ def validate_definition(acceptance, value):
         key for secret in secrets for key in secret["required_keys"]
     ]
     kind = value["unit"]["kind"]
+    expected_mount = {
+        "teacher_run": TEACHER_MODEL_MOUNT,
+        "student_train_merge": STUDENT_MODEL_MOUNT,
+    }.get(kind)
     if (
         len({item["name"] for item in named}) != len(named)
         or len({item["object_id"] for item in named}) != len(named)
         or len(secret_keys) != len(set(secret_keys))
         or len({item["mount_path"] for item in volumes}) != len(volumes)
-        or (kind == "teacher_run") != (len(volumes) == 1)
+        or [item["mount_path"] for item in volumes]
+        != ([] if expected_mount is None else [expected_mount])
     ):
         raise ValueError("Modal named resource identities are invalid")
     canonical_json(value)
@@ -422,7 +432,7 @@ def _winner_claim(raw, acceptance, definition):
     unit = definition["unit"]
     if (
         claim.get("schema_version")
-        != "dragontales.student-winner-deployment-claim.v1"
+        != "dragontales.student-winner-deployment-claim.v2"
         or not isinstance(scope, dict)
         or tuple(scope) != SCOPE_KEYS
         or any(not isinstance(scope[key], str) or not scope[key] for key in scope)
@@ -445,7 +455,7 @@ def _winner_claim(raw, acceptance, definition):
         or claim.get("student_result_sha256")
         != unit["student_result_sha256"]
         or claim.get("winner") != unit["winner"]
-        or claim.get("runtime_image_reference")
+        or claim.get("student_branch_runtime_image_reference")
         != definition["runtime_image_reference"]
         or claim.get("provider_binding_sha256")
         != acceptance["provider_binding_sha256"]
@@ -461,11 +471,11 @@ def _winner_claim(raw, acceptance, definition):
     ).hexdigest()
     if (
         authority.get("schema_version")
-        != "dragontales.winner-deployment-authority.v1"
+        != "dragontales.winner-deployment-authority.v2"
         or authority.get("provider_policy")
         != {"primary": "baseten", "fallback": "modal"}
         or tuple(authority["provider_policy"]) != ("primary", "fallback")
-        or authority.get("runtime_image_reference")
+        or authority.get("student_branch_runtime_image_reference")
         != definition["runtime_image_reference"]
         or authority.get("admission_program_sha256")
         != admission_program_sha256
@@ -482,7 +492,7 @@ def _winner_claim(raw, acceptance, definition):
         or authority.get("max_input_utf8_bytes") != 2_048
         or authority.get("max_input_messages") != 16
         or authority.get("max_input_request_bytes") != 16_384
-        or authority.get("route_schema_version") != "dragontales.route.v3"
+        or authority.get("route_schema_version") != "dragontales.route.v4"
         or authority.get("winner_admission_schema_version")
         != winner_contract.RECEIPT_SCHEMA
         or hashlib.sha256(
@@ -653,7 +663,7 @@ def _validate_admission(
                 "chat_response_sha256",
             )
         )
-        or admission.get("runtime_image_reference")
+        or admission.get("student_branch_runtime_image_reference")
         != definition["runtime_image_reference"]
         or admission.get("admission_program_sha256")
         != claim["authority"]["admission_program_sha256"]
@@ -1875,7 +1885,9 @@ class ModalJobs:
             "model_alias": context["alias"],
             "model_alias_sha256": probe["model_alias_sha256"],
             "candidate_api_key_sha256": probe["candidate_api_key_sha256"],
-            "runtime_image_reference": definition["runtime_image_reference"],
+            "student_branch_runtime_image_reference": definition[
+                "runtime_image_reference"
+            ],
             "admission_program_sha256": context["claim"]["authority"][
                 "admission_program_sha256"
             ],

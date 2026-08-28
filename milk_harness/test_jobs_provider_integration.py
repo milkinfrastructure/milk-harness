@@ -59,7 +59,8 @@ from milk_harness.test_modal_jobs import winner_acceptance
 
 UTC = dt.timezone.utc
 TEAM = "milk"
-STUDENT_IMAGE = TEST_IMAGE_ADMISSIONS["student"]["image_reference"]
+STUDENT_TRAIN_IMAGE = TEST_IMAGE_ADMISSIONS["student-train"]["image_reference"]
+STUDENT_BRANCH_IMAGE = TEST_IMAGE_ADMISSIONS["student-branch"]["image_reference"]
 
 
 class RecordingStore:
@@ -215,7 +216,14 @@ def resources():
                 "required_keys": ["DRAGONTALES_CONFIG_JSON"],
             }
         ],
-        "volumes": [],
+        "volumes": [
+            {
+                "name": "milk-student-model",
+                "object_id": "vo-student-model",
+                "mount_path": "/model",
+                "read_only": True,
+            }
+        ],
     }
 
 
@@ -257,7 +265,9 @@ class ModalLifecycle:
             "model_alias": "milk-student",
             "model_alias_sha256": "5" * 64,
             "candidate_api_key_sha256": "6" * 64,
-            "runtime_image_reference": definition["runtime_image_reference"],
+            "student_branch_runtime_image_reference": definition[
+                "runtime_image_reference"
+            ],
             "admission_program_sha256": claim["authority"][
                 "admission_program_sha256"
             ],
@@ -379,7 +389,7 @@ class BasetenWinnerLifecycle:
             "model_alias": "milk-student",
             "model_alias_sha256": "5" * 64,
             "candidate_api_key_sha256": "6" * 64,
-            "runtime_image_reference": self.launch[
+            "student_branch_runtime_image_reference": self.launch[
                 "runtime_image_reference"
             ],
             "admission_program_sha256": "7" * 64,
@@ -593,7 +603,9 @@ class JobsProviderIntegrationTest(unittest.TestCase):
             "dispatch_id": claim_sha256,
             "claim_object_key": claim_key,
             "claim_sha256": claim_sha256,
-            "runtime_image_reference": claim["runtime_image_reference"],
+            "runtime_image_reference": claim[
+                "student_branch_runtime_image_reference"
+            ],
             "created_at": claim["claimed_at"],
             "expires_at": claim["expires_at"],
             "operation": operation,
@@ -706,7 +718,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 store=store,
                 campaign_id=CAMPAIGN,
                 workload=source,
-                runtime_image_reference=STUDENT_IMAGE,
+                runtime_image_reference=STUDENT_TRAIN_IMAGE,
                 selection_record=selection,
                 execution_plan=plan,
                 provider_pass_claim_raw=provider_pass_raw,
@@ -719,7 +731,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 store=store,
                 campaign_id=CAMPAIGN,
                 workload=source,
-                runtime_image_reference=STUDENT_IMAGE,
+                runtime_image_reference=STUDENT_TRAIN_IMAGE,
                 selection_record=replayed_selection,
                 execution_plan=plan,
                 provider_pass_claim_raw=provider_pass_raw,
@@ -809,7 +821,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 CAMPAIGN,
                 launch,
                 TEST_IMAGE_RELEASE_SHA256,
-                TEST_IMAGE_ADMISSIONS["student"]["sha256"],
+                TEST_IMAGE_ADMISSIONS["student-branch"]["sha256"],
             )
             ready = baseten_winner.baseten_preflight_receipt(
                 TEAM,
@@ -845,7 +857,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 launch=launch,
                 selection_record=selection,
                 image_release_sha256=TEST_IMAGE_RELEASE_SHA256,
-                image_admission_sha256=TEST_IMAGE_ADMISSIONS["student"][
+                image_admission_sha256=TEST_IMAGE_ADMISSIONS["student-branch"][
                     "sha256"
                 ],
                 provider_pass_claim_raw=provider_pass_raw,
@@ -864,7 +876,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                     campaign_id=CAMPAIGN,
                     scope_prefix=SCOPE_PREFIX,
                     image_release_sha256=TEST_IMAGE_RELEASE_SHA256,
-                    image_admission_sha256=TEST_IMAGE_ADMISSIONS["student"][
+                    image_admission_sha256=TEST_IMAGE_ADMISSIONS["student-branch"][
                         "sha256"
                     ],
                     current=NOW,
@@ -963,7 +975,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 CAMPAIGN,
                 launch,
                 TEST_IMAGE_RELEASE_SHA256,
-                TEST_IMAGE_ADMISSIONS["student"]["sha256"],
+                TEST_IMAGE_ADMISSIONS["student-branch"]["sha256"],
             )
             unavailable = baseten_winner.baseten_unavailable_preflight_receipt(
                 TEAM,
@@ -1035,7 +1047,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 selection_record=selection,
                 execution_plan=plan,
                 image_release_sha256=TEST_IMAGE_RELEASE_SHA256,
-                image_admission_sha256=TEST_IMAGE_ADMISSIONS["student"][
+                image_admission_sha256=TEST_IMAGE_ADMISSIONS["student-branch"][
                     "sha256"
                 ],
                 provider_pass_claim_raw=provider_pass_raw,
@@ -1053,7 +1065,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 selection_record=selection,
                 execution_plan=plan,
                 image_release_sha256=TEST_IMAGE_RELEASE_SHA256,
-                image_admission_sha256=TEST_IMAGE_ADMISSIONS["student"][
+                image_admission_sha256=TEST_IMAGE_ADMISSIONS["student-branch"][
                     "sha256"
                 ],
                 provider_pass_claim_raw=provider_pass_raw,
@@ -1183,7 +1195,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 "model_alias": "milk-student",
                 "model_alias_sha256": "5" * 64,
                 "candidate_api_key_sha256": "6" * 64,
-                "runtime_image_reference": STUDENT_IMAGE,
+                "student_branch_runtime_image_reference": STUDENT_BRANCH_IMAGE,
                 "admission_program_sha256": "7" * 64,
                 "execution_id": "sb-winner",
                 "execution_name": "milk-winner",
@@ -1357,7 +1369,10 @@ class JobsProviderIntegrationTest(unittest.TestCase):
             control_launch(control, "student_train_merge", 80)
             control_launch(control, "student_winner_deployment", 81)
             settings = {
-                "student_image": TEST_IMAGE_ADMISSIONS["student"][
+                "student_train_image": TEST_IMAGE_ADMISSIONS["student-train"][
+                    "image_reference"
+                ],
+                "student_branch_image": TEST_IMAGE_ADMISSIONS["student-branch"][
                     "image_reference"
                 ],
                 "teacher_image": TEST_IMAGE_ADMISSIONS["teacher-gpt-oss"][
@@ -1368,8 +1383,11 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                     + "4" * 64
                 ),
                 "image_release_sha256": TEST_IMAGE_RELEASE_SHA256,
-                "student_image_admission_sha256": TEST_IMAGE_ADMISSIONS[
-                    "student"
+                "student_train_image_admission_sha256": TEST_IMAGE_ADMISSIONS[
+                    "student-train"
+                ]["sha256"],
+                "student_branch_image_admission_sha256": TEST_IMAGE_ADMISSIONS[
+                    "student-branch"
                 ]["sha256"],
                 "teacher_image_admission_sha256": TEST_IMAGE_ADMISSIONS[
                     "teacher-gpt-oss"
@@ -1417,7 +1435,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                         CAMPAIGN,
                         launch,
                         TEST_IMAGE_RELEASE_SHA256,
-                        TEST_IMAGE_ADMISSIONS["student"]["sha256"],
+                        TEST_IMAGE_ADMISSIONS["student-branch"]["sha256"],
                     )
                     student_job_id = launch["operation"]["student_job_id"]
                     command = [
@@ -1581,7 +1599,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 "model_alias": "milk-student",
                 "model_alias_sha256": "5" * 64,
                 "candidate_api_key_sha256": "6" * 64,
-                "runtime_image_reference": STUDENT_IMAGE,
+                "student_branch_runtime_image_reference": STUDENT_BRANCH_IMAGE,
                 "admission_program_sha256": "7" * 64,
                 "execution_id": "sb-winner",
                 "execution_name": "milk-winner",

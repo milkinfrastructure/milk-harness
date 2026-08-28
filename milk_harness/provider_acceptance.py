@@ -426,7 +426,7 @@ def _gpu_operation(value):
                 or tuple(branch)
                 != ("schema_version", "branch_id", "variant", "max_gpu_seconds")
                 or branch.get("schema_version")
-                != "dragontales.student-branch-claim.v1"
+                != "dragontales.student-branch-claim.v2"
                 or not _match(HEX64, branch.get("branch_id"))
                 or branch.get("variant") != variant
                 or branch.get("max_gpu_seconds") != 1_800

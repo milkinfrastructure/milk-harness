@@ -1,0 +1,44 @@
+{
+  "schema_version": "milk.student-train-image-provenance.v1",
+  "artifact_role": "student-train",
+  "platform": "linux/amd64",
+  "gateway": {
+    "build_argument": "MILK_GATEWAY_IMAGE",
+    "required_reference": "immutable_sha256"
+  },
+  "base_image": {
+    "reference": "ghcr.io/primeintellect-ai/prime-rl@sha256:6b8b2cf339de90b67ed25f246ad3dcfd773cb80e629577eb31aeb2a6b81db80e",
+    "config_sha256": "19d9060fdafe4db5e6b3ae49388a1dd7537cea255a323e15a55c5b27e31117f4",
+    "version": "0.9.0",
+    "source_repository": "https://github.com/PrimeIntellect-ai/prime-rl",
+    "source_revision": "ab5de8fff44b2c4a5c85e24b6e6e3f7d57eee7b1",
+    "license": "Apache-2.0",
+    "license_sha256": "f5118b9c9e98b0f4076214ee13f68d5f73c13b077c44544cb9a0c4ed9155065c",
+    "license_bytes": 11695
+  },
+  "model": {
+    "repository": "Qwen/Qwen3-4B-Instruct-2507",
+    "revision": "cdbee75f17c01a7cc42f958dc650907174af0554",
+    "license": "Apache-2.0",
+    "distribution": "external_read_only_mount",
+    "mount_path": "/model",
+    "verified_before_training": true,
+    "profile_sha256": "2b64fab2618d2bab20acb0353493623a25d0df6eaf2a11fc73c037f090755757",
+    "inventory_sha256": "910bc2b47b9d0b77208c01a968f824ca3f0f8785f5ddf99dd62c15a320306e8b",
+    "artifact_bytes": 8060917568
+  },
+  "wheels": [
+    {
+      "name": "accelerate",
+      "version": "1.14.0",
+      "artifact": "accelerate-1.14.0-py3-none-any.whl",
+      "sha256": "e94390c2863b873be18f623f9df48a0d8fe5eff13ea7f1a00092b0a7904888c6"
+    },
+    {
+      "name": "peft",
+      "version": "0.20.0",
+      "artifact": "peft-0.20.0-py3-none-any.whl",
+      "sha256": "0fbba16ffebfad3de96e06f2da6860fd860292324b85b6141909fa1e26ea9233"
+    }
+  ]
+}

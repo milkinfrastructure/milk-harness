@@ -80,7 +80,8 @@ case "$evidence_dir/" in
 esac
 
 for release_input in \
-  deploy/student/Dockerfile \
+  deploy/student-train/Dockerfile \
+  deploy/student-branch/Dockerfile \
   deploy/teacher/gpt-oss-120b/Dockerfile \
   Dockerfile.planner \
   Dockerfile.jobs; do
@@ -227,7 +228,13 @@ packages=$scratch/packages.tsv
 import sys
 from pathlib import Path
 
-targets = {"milk-student", "milk-teacher-gpt-oss", "milk-planner", "milk-jobs"}
+targets = {
+    "milk-student-train",
+    "milk-student-branch",
+    "milk-teacher-gpt-oss",
+    "milk-planner",
+    "milk-jobs",
+}
 seen = {}
 for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
     fields = line.split("\t")
@@ -375,8 +382,10 @@ PY
   printf '%s\n' "$immutable"
 }
 
-build_one student deploy/student/Dockerfile \
-  ghcr.io/milkinfrastructure/milk-student yes
+build_one student-train deploy/student-train/Dockerfile \
+  ghcr.io/milkinfrastructure/milk-student-train yes
+build_one student-branch deploy/student-branch/Dockerfile \
+  ghcr.io/milkinfrastructure/milk-student-branch yes
 build_one teacher-gpt-oss deploy/teacher/gpt-oss-120b/Dockerfile \
   ghcr.io/milkinfrastructure/milk-teacher-gpt-oss yes
 build_one planner Dockerfile.planner \
@@ -395,7 +404,8 @@ from pathlib import Path
 
 references_path, receipt_path, commit, source_epoch, gateway, buildkit, frontend, started_at, completed_at = sys.argv[1:]
 expected = {
-    "student": "ghcr.io/milkinfrastructure/milk-student",
+    "student-train": "ghcr.io/milkinfrastructure/milk-student-train",
+    "student-branch": "ghcr.io/milkinfrastructure/milk-student-branch",
     "teacher-gpt-oss": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss",
     "planner": "ghcr.io/milkinfrastructure/milk-planner",
     "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
@@ -420,7 +430,7 @@ for line in Path(references_path).read_text(encoding="utf-8").splitlines():
 if [item["artifact"] for item in images] != list(expected):
     raise SystemExit(1)
 Path(receipt_path).write_text(json.dumps({
-    "schema_version": "milk.private-harness-release.v1",
+    "schema_version": "milk.private-harness-release.v2",
     "source_commit": commit,
     "source_date_epoch": int(source_epoch),
     "source_repository": "https://github.com/milkinfrastructure/milk-harness",

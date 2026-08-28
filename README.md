@@ -21,7 +21,7 @@ Standalone Baseten winner and Modal mutation entrypoints are disabled. Their exp
 Private image policy:
 
 - all final images are built locally for `linux/amd64` from clean Milk checkouts;
-- canonical references are the private digest-addressed `milk-student`, `milk-teacher-gpt-oss`, `milk-planner`, and `milk-jobs` packages under `ghcr.io/milkinfrastructure`;
+- canonical references are the private digest-addressed `milk-student-train`, `milk-student-branch`, `milk-teacher-gpt-oss`, `milk-planner`, and `milk-jobs` packages under `ghcr.io/milkinfrastructure`;
 - provider copies must resolve to the admitted digest and may not be rebuilt by Modal, Baseten, or Cloudflare;
 - the jobs executor exact-matches the image in every gateway launch receipt before provider creation.
 
@@ -29,9 +29,9 @@ Every image release must emit a `milk.private-image-admission.v1` receipt bindin
 
 Paid work uses one campaign authority bound to the exact Baseten project and Modal workspace, environment, and app. Both providers share a $1,000 absolute ceiling, an $850 new-launch cutoff, and a protected $150 running-work/teardown reserve. Provider creates require pessimistic reservations bound to that provider's identity and immutable price receipt. Terminal usage is recorded as conservative `accounted` cost and `committed_microusd`, not provider-invoice or observed-billing truth; ambiguity retains the reservation. Expired provider pricing blocks only new reservations for that provider without blocking reconciliation or teardown.
 
-Qualification status on 2026-08-27: the private GitHub repository is empty and the local checkout has no initial commit. The outbox consumer, cross-provider jobs paths, scheduler, and gateway result handoff pass offline tests, but no final private Milk image, deployment, paid end-to-end run, canary, rollback, or zero-GPU proof has occurred. Docker and its local BuildKit are currently responsive; a clean qualification build has not run. This repository is not production-qualified.
+Qualification status on 2026-08-28: the private repository is published and Actions remain disabled. The split train/branch runtime, outbox consumer, provider jobs paths, scheduler, and gateway result handoff pass offline tests, but the five-image release for this source revision has not been built or admitted. No paid end-to-end run, canary, rollback, or zero-GPU proof has occurred. This repository is not production-qualified.
 
-After committing a clean harness checkout, build all four private harness images from a credential-clean local Docker context:
+After committing a clean harness checkout, build all five private harness images from a credential-clean local Docker context:
 
 ```sh
 deploy/build-images.sh \
@@ -39,15 +39,15 @@ deploy/build-images.sh \
   /absolute/path/to/new-build-evidence
 ```
 
-The script derives the source revision and reproducible build epoch from the commit, creates a fresh local `docker-container` builder from a pinned BuildKit digest, pins the Dockerfile frontend by digest, and rejects remote Docker contexts and ambient provider, registry, model, store, OpenAI, or Codex credentials. It pushes only the four hardcoded private Milk packages.
+The script derives the source revision and reproducible build epoch from the commit, creates a fresh local `docker-container` builder from a pinned BuildKit digest, pins the Dockerfile frontend by digest, and rejects remote Docker contexts and ambient provider, registry, model, store, OpenAI, or Codex credentials. It pushes only the five hardcoded private Milk packages.
 
 The evidence directory retains BuildKit metadata, verified OCI indexes and manifests, immutable references, and SHA-256/byte-count observations of build output. Raw build output is deleted. A separate restricted operational-log archive is still a release gate; see [`docs/reference/README.md`](docs/reference/README.md).
 
-In a separate shell containing only `MILK_EVIDENCE_R2_*` create/get authority, publish the exact release and four admission receipts once:
+In a separate shell containing only `MILK_EVIDENCE_R2_*` create/get authority, publish the exact release and five admission receipts once:
 
 ```sh
 python3 -m milk_harness.publish_image_admission \
   --release-dir /absolute/path/to/new-build-evidence
 ```
 
-The publisher rejects builder, registry, provider, and other store credentials. Scheduled jobs receive only the printed release SHA-256 plus the exact student, teacher, and jobs image digest references; they load and verify the immutable receipts from evidence R2 before any provider call.
+The publisher rejects builder, registry, provider, and other store credentials. Scheduled jobs receive only the printed release SHA-256 plus the exact student-train, student-branch, teacher, and jobs image digest references; they load and verify the immutable receipts from evidence R2 before any provider call.

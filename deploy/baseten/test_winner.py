@@ -12,7 +12,7 @@ from milk_harness import provider_acceptance
 RUN = "1" * 64
 CLAIM = "2" * 64
 STUDENT = "3" * 64
-IMAGE = "ghcr.io/milkinfrastructure/milk-student@sha256:" + "4" * 64
+IMAGE = "ghcr.io/milkinfrastructure/milk-student-branch@sha256:" + "4" * 64
 MODEL = "model123"
 DEPLOYMENT = "deployment_123"
 ALIAS = "milk-winner"
@@ -146,6 +146,8 @@ class WinnerPureContractTest(unittest.TestCase):
         )
 
     def test_config_is_one_private_no_build_h100_with_zero_floor(self):
+        self.assertFalse(winner.DIRECT_IMAGE_RUNTIME_VERIFIED)
+        self.assertIn("non-root", winner.DIRECT_IMAGE_RUNTIME_BLOCKER)
         raw = winner.truss_config(values(), RUN)
         self.assertIn(f"model_name: {winner.model_name(RUN)}\n", raw)
         self.assertIn(f"  image: {IMAGE}\n", raw)
@@ -215,20 +217,28 @@ class WinnerPureContractTest(unittest.TestCase):
         metadata = {
             "keys": [
                 {
+                    "prefix": "manager",
+                    "name": "key-manager",
+                    "type": "WORKSPACE_MANAGE_API_KEYS",
+                    "model_ids": None,
+                    "team_name": None,
+                    "owner": None,
+                },
+                {
                     "prefix": "candidate",
                     "name": "winner",
                     "type": "WORKSPACE_INVOKE",
                     "model_ids": [MODEL],
                     "team_name": "milk",
                     "owner": None,
-                }
+                },
             ]
         }
         self.assertEqual(
             winner.validate_invocation_key(metadata, KEY, MODEL, "milk")["model_ids"],
             [MODEL],
         )
-        metadata["keys"][0]["model_ids"] = ["other"]
+        metadata["keys"][1]["model_ids"] = ["other"]
         with self.assertRaisesRegex(ValueError, "exact Baseten model"):
             winner.validate_invocation_key(metadata, KEY, MODEL, "milk")
 
@@ -268,7 +278,7 @@ class WinnerPureContractTest(unittest.TestCase):
             "model_alias": ALIAS,
             "model_alias_sha256": probe["model_alias_sha256"],
             "candidate_api_key_sha256": probe["candidate_api_key_sha256"],
-            "runtime_image_reference": IMAGE,
+            "student_branch_runtime_image_reference": IMAGE,
             "admission_program_sha256": "9" * 64,
             "execution_id": DEPLOYMENT,
             "execution_name": winner.execution_name(RUN),

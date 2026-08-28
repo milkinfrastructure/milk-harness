@@ -31,7 +31,8 @@ MAX_STREAM_BYTES = 1024 * 1024
 IMAGE_REPOSITORIES = {
     "gateway": "ghcr.io/milkinfrastructure/milk-gateway",
     "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
-    "student": "ghcr.io/milkinfrastructure/milk-student",
+    "student_train": "ghcr.io/milkinfrastructure/milk-student-train",
+    "student_branch": "ghcr.io/milkinfrastructure/milk-student-branch",
     "teacher": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss",
 }
 SAFE_RESULT = re.compile(r"[a-z][a-z0-9_.-]{0,127}\Z")
@@ -39,9 +40,9 @@ GATEWAY_RESULT_SCHEMAS = frozenset(
     {
         "dragontales.expiry-receipt.v1",
         "dragontales.snapshot-analysis-local-rejection-receipt.v1",
-        "dragontales.student-fanout-launch.v2",
-        "dragontales.student-job-claim-receipt.v2",
-        "dragontales.student-winner-deployment-launch.v1",
+        "dragontales.student-fanout-launch.v3",
+        "dragontales.student-job-claim-receipt.v3",
+        "dragontales.student-winner-deployment-launch.v2",
         "dragontales.teacher-gpu-run-launch.v1",
     }
 )
@@ -92,6 +93,8 @@ PROVIDER_RUNTIME_FIELDS = (
     "modal_candidate_secret_id",
     "modal_teacher_volume_name",
     "modal_teacher_volume_id",
+    "modal_student_train_volume_name",
+    "modal_student_train_volume_id",
 )
 RUN_ARTIFACTS = (
     "prompts/iterate.txt",
@@ -99,8 +102,11 @@ RUN_ARTIFACTS = (
     "contracts/snapshot-analyzer.json",
     "deploy/teacher/gpt-oss-120b/profile.json",
     "deploy/teacher/gpt-oss-120b/model.manifest.json",
-    "deploy/student/provenance.json",
+    "deploy/student-train/provenance.json",
+    "deploy/student-branch/provenance.json",
     "deploy/student/qwen3-chat-template.jinja",
+    "deploy/models/qwen3-4b-instruct-2507/profile.json",
+    "deploy/models/qwen3-4b-instruct-2507/model.manifest.sha256",
 )
 RUN_LIMITS = {
     "absolute_ceiling_microusd": ABSOLUTE_CEILING_MICROUSD,
@@ -456,6 +462,14 @@ def immutable_image(name, value):
     if not value.startswith(prefix) or HEX64.fullmatch(digest) is None:
         raise ValueError(f"{name} image must be an immutable private Milk reference")
     return value
+
+
+def _require_distinct_student_image_digests(images):
+    if (
+        images["student_train"].rpartition("@sha256:")[2]
+        == images["student_branch"].rpartition("@sha256:")[2]
+    ):
+        raise ValueError("student train and branch images must have distinct digests")
 
 
 def _scope(prefix):
@@ -999,6 +1013,7 @@ def _provider_runtime(values):
             "modal_capture_secret_name",
             "modal_candidate_secret_name",
             "modal_teacher_volume_name",
+            "modal_student_train_volume_name",
         )
     ]
     resource_ids = [
@@ -1010,6 +1025,7 @@ def _provider_runtime(values):
             "modal_capture_secret_id",
             "modal_candidate_secret_id",
             "modal_teacher_volume_id",
+            "modal_student_train_volume_id",
         )
     ]
     if len(resource_names) != len(set(resource_names)) or len(resource_ids) != len(
@@ -1083,7 +1099,12 @@ def _gateway_job_contract(config):
         "teacher_max_gpu_seconds": execution["max_gpu_seconds"],
         "teacher_max_calls": execution["max_calls"],
         "teacher_max_parallel_runs": execution["max_parallel_runs"],
-        "student_runtime_image_reference": teacher.get("student_runtime_image_reference"),
+        "student_train_runtime_image_reference": teacher.get(
+            "student_train_runtime_image_reference"
+        ),
+        "student_branch_runtime_image_reference": teacher.get(
+            "student_branch_runtime_image_reference"
+        ),
         "student_recipe_sha256": teacher["student_recipe_sha256"],
         "teacher_deployment_sha256": teacher.get("deployment_sha256"),
         "teacher_terms_sha256": teacher.get("terms_sha256"),
@@ -1148,6 +1169,7 @@ def _validated_run_manifest(raw, confirmed_sha256, harness_source_commit, root):
         raise ValueError("confirmed run config images are invalid")
     for name, value in images.items():
         immutable_image(name, value)
+    _require_distinct_student_image_digests(images)
     contract = manifest.get("gateway_job_contract")
     if (
         not isinstance(contract, dict)
@@ -1157,13 +1179,17 @@ def _validated_run_manifest(raw, confirmed_sha256, harness_source_commit, root):
             "teacher_max_gpu_seconds",
             "teacher_max_calls",
             "teacher_max_parallel_runs",
-            "student_runtime_image_reference",
+            "student_train_runtime_image_reference",
+            "student_branch_runtime_image_reference",
             "student_recipe_sha256",
             "teacher_deployment_sha256",
             "teacher_terms_sha256",
         }
         or contract.get("teacher_runtime_image_reference") != images["teacher"]
-        or contract.get("student_runtime_image_reference") != images["student"]
+        or contract.get("student_train_runtime_image_reference")
+        != images["student_train"]
+        or contract.get("student_branch_runtime_image_reference")
+        != images["student_branch"]
         or any(
             type(contract.get(name)) is not int or contract[name] <= 0
             for name in (
@@ -1915,7 +1941,8 @@ def archive_scheduler_pass(
     provider_summary,
     gateway_image,
     jobs_image,
-    student_image,
+    student_train_image,
+    student_branch_image,
     teacher_image,
     image_release_sha256,
     campaign_id,
@@ -1936,9 +1963,11 @@ def archive_scheduler_pass(
     images = {
         "gateway": immutable_image("gateway", gateway_image),
         "jobs": immutable_image("jobs", jobs_image),
-        "student": immutable_image("student", student_image),
+        "student_train": immutable_image("student_train", student_train_image),
+        "student_branch": immutable_image("student_branch", student_branch_image),
         "teacher": immutable_image("teacher", teacher_image),
     }
+    _require_distinct_student_image_digests(images)
     if not isinstance(image_release_sha256, str) or HEX64.fullmatch(image_release_sha256) is None:
         raise ValueError("private image release SHA-256 is invalid")
     create_authority = _create_authority(
@@ -2051,7 +2080,7 @@ def main(argv=None):
 
     validate = commands.add_parser("validate-images")
     for name in IMAGE_REPOSITORIES:
-        validate.add_argument(f"--{name}-image", required=True)
+        validate.add_argument(f"--{name.replace('_', '-')}-image", required=True)
     validate.add_argument("--image-release-sha256", required=True)
 
     validate_one = commands.add_parser("validate-image")
@@ -2085,7 +2114,7 @@ def main(argv=None):
     run_config.add_argument("--provider-project-id")
     run_config.add_argument("--scope-prefix")
     for name in IMAGE_REPOSITORIES:
-        run_config.add_argument(f"--{name}-image")
+        run_config.add_argument(f"--{name.replace('_', '-')}-image")
     run_config.add_argument("--image-release-sha256")
     for name in PROVIDER_RUNTIME_FIELDS:
         run_config.add_argument(f"--{name.replace('_', '-')}")
@@ -2128,7 +2157,7 @@ def main(argv=None):
     archive.add_argument("--gateway-summary-b64", default="")
     archive.add_argument("--provider-summary", required=True)
     for name in IMAGE_REPOSITORIES:
-        archive.add_argument(f"--{name}-image", required=True)
+        archive.add_argument(f"--{name.replace('_', '-')}-image", required=True)
     archive.add_argument("--image-release-sha256", required=True)
     archive.add_argument("--campaign-id", required=True)
     archive.add_argument("--lease-token", required=True)
@@ -2398,7 +2427,8 @@ def main(argv=None):
         provider_summary=provider,
         gateway_image=arguments.gateway_image,
         jobs_image=arguments.jobs_image,
-        student_image=arguments.student_image,
+        student_train_image=arguments.student_train_image,
+        student_branch_image=arguments.student_branch_image,
         teacher_image=arguments.teacher_image,
         image_release_sha256=arguments.image_release_sha256,
         campaign_id=arguments.campaign_id,

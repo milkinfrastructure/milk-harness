@@ -31,6 +31,7 @@ MODEL_ALIAS = "dragontales-qwen3-4b"
 REASONING_PARSER = "qwen3"
 CHAT_TEMPLATE = Path(__file__).resolve().with_name("qwen3-chat-template.jinja")
 CHAT_TEMPLATE_SHA256 = "071ab92ad2e5b0f8091800ecb4a80c05f98f069669e3dff0389012547414e85b"
+ARTIFACT_ROLE_PATH = Path("/usr/share/milk/student-artifact-role")
 LOOPBACK_PROXY = "http://127.0.0.1:9"
 LLM_COMPRESSOR_VERSION = "0.13.0"
 COMPRESSED_TENSORS_VERSION = "0.18.0"
@@ -72,10 +73,12 @@ EVALUATORS = {
 AUTHORITY_FILES = (
     "student-job.sh",
     "student-run.sh",
-    "student/Dockerfile",
     "student/runtime.py",
     "student/qwen3-chat-template.jinja",
-    "student/provenance.json",
+    "student-train/Dockerfile",
+    "student-train/provenance.json",
+    "student-branch/Dockerfile",
+    "student-branch/provenance.json",
     "adapter_train/__init__.py",
     "adapter_train/contract.py",
     "adapter_train/sft_entrypoint.py",
@@ -96,13 +99,13 @@ DEFINITION_KEYS = (
     "dev_set_sha256",
     "counts",
     "recipe_sha256",
-    "runtime_image_reference",
+    "student_train_runtime_image_reference",
+    "student_branch_runtime_image_reference",
     "max_train_gpu_seconds",
     "max_branch_gpu_seconds",
     "max_total_gpu_seconds",
     "quality",
     "expires_at",
-    "initial_stage",
 )
 TEACHER_REF_KEYS = ("teacher_job_id", "object_sha256", "bytes")
 COUNT_KEYS = ("train", "dev", "calibration")
@@ -145,7 +148,7 @@ FANOUT_KEYS = (
     "student_job_id",
     "train_result_sha256",
     "recipe_sha256",
-    "runtime_image_reference",
+    "student_branch_runtime_image_reference",
     "max_total_gpu_seconds",
     "created_at",
     "expires_at",
@@ -389,6 +392,27 @@ def _chat_template() -> str:
     return raw.decode("utf-8")
 
 
+def _artifact_role() -> str:
+    before = ARTIFACT_ROLE_PATH.lstat()
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid != IMAGE_OWNER_UID
+        or before.st_nlink != 1
+        or before.st_mode & 0o022
+    ):
+        raise ValueError("student artifact role authority is unsafe")
+    raw = _read(ARTIFACT_ROLE_PATH, 64)
+    role = raw.removesuffix(b"\n")
+    if raw != role + b"\n" or role not in {b"student-train", b"student-branch"}:
+        raise ValueError("student artifact role authority is invalid")
+    return role.decode()
+
+
+def _require_role(expected: str) -> None:
+    if _artifact_role() != expected:
+        raise ValueError(f"{expected} operation is forbidden in this artifact")
+
+
 def recipe_sha256(mode: str) -> str:
     if mode not in RECIPE_DOMAINS:
         raise ValueError("student recipe mode is invalid")
@@ -409,12 +433,12 @@ def recipe_sha256(mode: str) -> str:
 
 def _validate_claim(raw: bytes, check_clock: bool, mode: str):
     claim = _keys(_canonical(raw, "student claim", False), CLAIM_KEYS, "student claim")
-    if claim["schema_version"] != "dragontales.student-job-claim.v3":
+    if claim["schema_version"] != "dragontales.student-job-claim.v4":
         raise ValueError("student claim has an unsupported schema")
     _scope(claim["scope"])
     job_id = _digest(claim["student_job_id"], "student job")
     definition = _keys(claim["definition"], DEFINITION_KEYS, "student definition")
-    if definition["schema_version"] != "dragontales.student-job-definition.v3":
+    if definition["schema_version"] != "dragontales.student-job-definition.v4":
         raise ValueError("student definition has an unsupported schema")
     if _sha256(_compact(definition)) != job_id:
         raise ValueError("student job ID differs from its canonical definition")
@@ -424,7 +448,14 @@ def _validate_claim(raw: bytes, check_clock: bool, mode: str):
     expected_recipe = recipe_sha256(mode)
     if _digest(definition["recipe_sha256"], "student recipe") != expected_recipe:
         raise ValueError("student claim does not bind this exact runner recipe")
-    _runtime_image_reference(definition["runtime_image_reference"])
+    train_image = _runtime_image_reference(
+        definition["student_train_runtime_image_reference"]
+    )
+    branch_image = _runtime_image_reference(
+        definition["student_branch_runtime_image_reference"]
+    )
+    if train_image.rpartition("@sha256:")[2] == branch_image.rpartition("@sha256:")[2]:
+        raise ValueError("student train and branch images must have distinct digests")
     budgets = (
         _integer(definition["max_train_gpu_seconds"], "student train GPU seconds"),
         _integer(definition["max_branch_gpu_seconds"], "student branch GPU seconds"),
@@ -461,8 +492,6 @@ def _validate_claim(raw: bytes, check_clock: bool, mode: str):
         "max_p95_latency_ms": 30_000,
     }:
         raise ValueError("student quality gates differ from the fixed vertical")
-    if definition["initial_stage"] != "train_merge":
-        raise ValueError("student claim does not begin at the train-merge stage")
     started = _time(claim["started_at"], "student claim start")
     expires = _time(definition["expires_at"], "student claim expiry")
     if started >= expires:
@@ -605,13 +634,13 @@ def _branch_inputs(
     )
     now = dt.datetime.now(dt.timezone.utc)
     if (
-        fanout["schema_version"] != "dragontales.student-fanout-claim.v3"
+        fanout["schema_version"] != "dragontales.student-fanout-claim.v4"
         or fanout["scope"] != claim["scope"]
         or fanout["student_job_id"] != claim["student_job_id"]
         or fanout["train_result_sha256"] != _sha256(train_raw)
         or fanout["recipe_sha256"] != claim["definition"]["recipe_sha256"]
-        or _runtime_image_reference(fanout["runtime_image_reference"])
-        != claim["definition"]["runtime_image_reference"]
+        or _runtime_image_reference(fanout["student_branch_runtime_image_reference"])
+        != claim["definition"]["student_branch_runtime_image_reference"]
         or fanout_total != claim["definition"]["max_total_gpu_seconds"]
         or fanout_total != MAX_TOTAL_GPU_SECONDS
         or fanout_expires != expires
@@ -633,16 +662,19 @@ def _branch_inputs(
         _keys(item, BRANCH_CLAIM_KEYS, "student branch claim")
         _integer(item["max_gpu_seconds"], "student branch GPU seconds")
         definition = {
-            "schema_version": "dragontales.student-branch-definition.v1",
+            "schema_version": "dragontales.student-branch-definition.v2",
             "student_job_id": claim["student_job_id"],
             "variant": expected_variant,
             "train_result_sha256": fanout["train_result_sha256"],
             "recipe_sha256": fanout["recipe_sha256"],
+            "student_branch_runtime_image_reference": fanout[
+                "student_branch_runtime_image_reference"
+            ],
             "max_gpu_seconds": MAX_BRANCH_GPU_SECONDS,
             "expires_at": fanout["expires_at"],
         }
         if item != {
-            "schema_version": "dragontales.student-branch-claim.v1",
+            "schema_version": "dragontales.student-branch-claim.v2",
             "branch_id": _sha256(_compact(definition)),
             "variant": expected_variant,
             "max_gpu_seconds": MAX_BRANCH_GPU_SECONDS,
@@ -854,6 +886,31 @@ def _deploy() -> Path:
 
 def _h100():
     return _load_module("dragontales_h100_runtime", _deploy() / "h100-fp8-runtime/runtime.py")
+
+
+def _train_image_probe():
+    import torch
+
+    probe = {
+        "stage": "train",
+        "schema_version": "dragontales.student-train-image-probe.v1",
+        "platform": "linux/amd64",
+        "prime_rl_version": importlib.metadata.version("prime-rl"),
+        "accelerate_version": importlib.metadata.version("accelerate"),
+        "peft_version": importlib.metadata.version("peft"),
+        "torch_cuda_version": torch.version.cuda,
+    }
+    if probe != {
+        "stage": "train",
+        "schema_version": "dragontales.student-train-image-probe.v1",
+        "platform": "linux/amd64",
+        "prime_rl_version": "0.9.0",
+        "accelerate_version": "1.14.0",
+        "peft_version": "0.20.0",
+        "torch_cuda_version": "12.8",
+    }:
+        raise ValueError("student train image differs from its fixed runtime")
+    return probe
 
 
 def _model_environment(overrides=None):
@@ -1087,6 +1144,7 @@ def serve(
     api_key_file: Path | None,
     trusted_ingress_auth: bool = False,
 ):
+    _require_role("student-branch")
     if not isinstance(alias, str) or LOGICAL_MODEL_ALIAS.fullmatch(alias) is None:
         raise ValueError("logical model alias is invalid or oversized")
     if type(trusted_ingress_auth) is not bool or (api_key_file is None) == (
@@ -1546,17 +1604,23 @@ def _clear_partial(output):
         (output / name).unlink(missing_ok=True)
 
 
-def _gpu_record(claim, probe, kernels, mode="h100"):
+def _gpu_record(claim, probe, kernels, stage, mode="h100"):
+    if stage not in {"train", "branch"}:
+        raise ValueError("student GPU evidence stage is invalid")
     if mode == "fixture":
-        probe = {
-            "device": {
-                "uuid": None,
-                "cuda": "fixture",
-                "name": "deterministic-one-h100-fixture",
-                "compute_capability": [9, 0],
-                "total_memory_bytes": 80 * 1024**3,
-            },
-            "runtime": {
+        runtime = (
+            {
+                "stage": "train",
+                "schema_version": "dragontales.student-train-image-probe.v1",
+                "platform": "fixture",
+                "prime_rl_version": "fixture",
+                "accelerate_version": "fixture",
+                "peft_version": "fixture",
+                "torch_cuda_version": "fixture",
+            }
+            if stage == "train"
+            else {
+                "stage": "branch",
                 "schema_version": "dragontales.h100-fp8-image-probe.v2",
                 "platform": "fixture",
                 "vllm_version": "fixture",
@@ -1565,10 +1629,24 @@ def _gpu_record(claim, probe, kernels, mode="h100"):
                 "compressed_tensors_wheel_sha256": _sha256(b"fixture-compressed-tensors"),
                 "fp8_dynamic_supported": True,
                 "fp8_static_supported": True,
+            }
+        )
+        probe = {
+            "device": {
+                "uuid": None,
+                "cuda": "fixture",
+                "name": "deterministic-one-h100-fixture",
+                "compute_capability": [9, 0],
+                "total_memory_bytes": 80 * 1024**3,
             },
+            "runtime": runtime,
         }
+    elif not isinstance(probe, dict) or probe.get("runtime", {}).get("stage") != stage:
+        raise ValueError("student GPU probe differs from its stage")
+    if stage == "train" and kernels:
+        raise ValueError("student train GPU evidence cannot contain branch kernels")
     return {
-        "schema_version": "dragontales.student-gpu-evidence.v1",
+        "schema_version": "dragontales.student-gpu-evidence.v2",
         "student_job_id": claim["student_job_id"],
         "mode": mode,
         "recipe_sha256": claim["definition"]["recipe_sha256"],
@@ -1611,6 +1689,7 @@ def _train_terminal(claim_raw, claim, started, finished, gpu_seconds, gpu, outco
 
 
 def train_stage(claim_path, input_path, output, mode="production"):
+    _require_role("student-train")
     claim_raw, input_raw, claim, inputs, claim_started, expires = load_inputs(
         claim_path, input_path, mode == "production", mode
     )
@@ -1642,11 +1721,27 @@ def train_stage(claim_path, input_path, output, mode="production"):
             model.mkdir(mode=0o700)
             _write_new(model / "config.json", _line({"fixture": True, "variant": "bf16"}))
             _write_new(model / "model.safetensors", b"fixture-model-bf16\n")
-            gpu = _gpu_record(claim, None, [], "fixture")
+            gpu = _gpu_record(claim, None, [], "train", "fixture")
             finished = started
         else:
-            gpu = _gpu_record(claim, _gpu_probe(working), [])
-            _prepare_training(input_raw, inputs, working, _verify_base_model())
+            model_manifest_sha256 = _verify_base_model()
+            _run_checked(
+                [
+                    PRIME_PYTHON,
+                    "-m",
+                    "adapter_train.sft_entrypoint",
+                    "parity",
+                    "--model",
+                    MODEL,
+                    "--template",
+                    CHAT_TEMPLATE,
+                ],
+                working / "chat-template-parity.log",
+                300,
+                {"PYTHONPATH": str(_deploy()), "PYTHONDONTWRITEBYTECODE": "1"},
+            )
+            gpu = _gpu_record(claim, _gpu_probe(working), [], "train")
+            _prepare_training(input_raw, inputs, working, model_manifest_sha256)
             adapter = RUN / "adapter"
             model = working / "bf16"
             _subprocess_stage(
@@ -1755,6 +1850,7 @@ def branch_stage(
     output,
     mode="production",
 ):
+    _require_role("student-branch")
     (
         _claim_raw,
         _input_raw,
@@ -1824,13 +1920,15 @@ def branch_stage(
                     for row in inputs["dev"]
                 ],
             )
-            gpu = _gpu_record(claim, None, [_fixture_kernel(variant)], "fixture")
+            gpu = _gpu_record(
+                claim, None, [_fixture_kernel(variant)], "branch", "fixture"
+            )
             finished = started
         else:
             runtime = _h100()
             _verify_retained_model(merged_model, merged_model_manifest, runtime)
             probe = _gpu_probe(working)
-            gpu = _gpu_record(claim, probe, [])
+            gpu = _gpu_record(claim, probe, [], "branch")
             model = merged_model
             if variant != "bf16":
                 model = working / variant
@@ -1944,10 +2042,22 @@ def _internal_parser(command: str, arguments):
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "_gpu_probe":
-        runtime = _h100()
-        image_probe = runtime.image_probe()
-        runtime.verify_hardware()
+        role = _artifact_role()
         import torch
+
+        if role == "student-train":
+            image_probe = _train_image_probe()
+            if (
+                not torch.cuda.is_available()
+                or torch.cuda.device_count() != 1
+                or torch.cuda.get_device_capability(0) < (9, 0)
+                or torch.cuda.get_device_properties(0).total_memory < 78 * 1024**3
+            ):
+                raise ValueError("student train runtime requires exactly one H100")
+        else:
+            runtime = _h100()
+            image_probe = {"stage": "branch", **runtime.image_probe()}
+            runtime.verify_hardware()
 
         properties = torch.cuda.get_device_properties(0)
         observed = subprocess.run(
@@ -1983,8 +2093,10 @@ def main():
         command = sys.argv[1]
         arguments = _internal_parser(command, sys.argv[2:])
         if command == "_merge":
+            _require_role("student-train")
             _merge(arguments.model, arguments.adapter, arguments.output)
         else:
+            _require_role("student-branch")
             _quantize(arguments.variant, arguments.model, arguments.input, arguments.output)
         return
     parser = argparse.ArgumentParser(prog="student-run")

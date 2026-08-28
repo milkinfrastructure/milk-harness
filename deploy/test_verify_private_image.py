@@ -28,7 +28,7 @@ def _digest(raw):
 
 
 class VerifierFixture:
-    def __init__(self, root, artifact="student"):
+    def __init__(self, root, artifact="student-train"):
         self.root = Path(root)
         self.evidence = self.root / "evidence"
         self.docker_config = self.root / "docker-config"
@@ -574,12 +574,13 @@ class PrivateHarnessVerifierTests(unittest.TestCase):
 
         with mock.patch.object(VERIFY, "_open_bytes", side_effect=open_bytes):
             self.assertEqual(
-                VERIFY._registry_bearer("github-secret", "milk-student"),
+                VERIFY._registry_bearer("github-secret", "milk-student-train"),
                 "registry-bearer",
             )
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(seen["url"]).query)
         self.assertEqual(
-            query["scope"], ["repository:milkinfrastructure/milk-student:pull"]
+            query["scope"],
+            ["repository:milkinfrastructure/milk-student-train:pull"],
         )
         decoded = base64.b64decode(
             seen["authorization"].removeprefix("Basic ")
@@ -603,12 +604,12 @@ class PrivateHarnessVerifierTests(unittest.TestCase):
         self.assertIsNotNone(redirected)
         self.assertIsNone(redirected.get_header("Authorization"))
 
-    def test_gateway_binding_is_required_only_for_student_and_teacher(self):
+    def test_gateway_binding_is_required_only_for_gpu_images(self):
         with tempfile.TemporaryDirectory() as directory:
-            student = VerifierFixture(directory, "student")
-            student.args.gateway_image_reference = None
+            student_train = VerifierFixture(directory, "student-train")
+            student_train.args.gateway_image_reference = None
             with self.assertRaisesRegex(ValueError, "gateway image"):
-                VERIFY._validate_release_arguments(student.args)
+                VERIFY._validate_release_arguments(student_train.args)
         with tempfile.TemporaryDirectory() as directory:
             jobs = VerifierFixture(directory, "jobs")
             jobs.args.gateway_image_reference = (
@@ -619,7 +620,8 @@ class PrivateHarnessVerifierTests(unittest.TestCase):
 
     def test_artifact_base_dependency_contract_matches_every_pinned_from(self):
         dockerfiles = {
-            "student": "deploy/student/Dockerfile",
+            "student-train": "deploy/student-train/Dockerfile",
+            "student-branch": "deploy/student-branch/Dockerfile",
             "teacher-gpt-oss": "deploy/teacher/gpt-oss-120b/Dockerfile",
             "planner": "Dockerfile.planner",
             "jobs": "Dockerfile.jobs",

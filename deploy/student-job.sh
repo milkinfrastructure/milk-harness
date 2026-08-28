@@ -40,6 +40,17 @@ read_one_line() {
 }
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+role_path=/usr/share/milk/student-artifact-role
+[ -f "$role_path" ] && [ ! -L "$role_path" ] ||
+  fail 'student artifact role authority is unavailable'
+read_one_line "$role_path" || fail 'student artifact role authority is invalid'
+artifact_role=$line
+case "$artifact_role:${1:-}" in
+  student-train:train|student-train:fixture-train) ;;
+  student-branch:branch|student-branch:fixture-branch|student-branch:serve) ;;
+  student-train:*|student-branch:*) fail 'operation is forbidden in this student artifact' 64 ;;
+  *) fail 'student artifact role authority is invalid' ;;
+esac
 worker_uid=65532
 worker_gid=65532
 privilege=$(resolve_executable /usr/bin/setpriv) ||

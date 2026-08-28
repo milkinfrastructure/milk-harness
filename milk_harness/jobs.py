@@ -35,7 +35,8 @@ from milk_harness.evidence import (
 from milk_harness.image_admission import (
     JOBS_IMAGE_REPOSITORY,
     PRIVATE_IMAGE_REPOSITORIES,
-    STUDENT_IMAGE_REPOSITORY,
+    STUDENT_BRANCH_IMAGE_REPOSITORY,
+    STUDENT_TRAIN_IMAGE_REPOSITORY,
     TEACHER_IMAGE_REPOSITORY,
     load_published_private_image_release,
 )
@@ -400,7 +401,7 @@ def _valid_branches(value):
             or tuple(branch)
             != ("schema_version", "branch_id", "variant", "max_gpu_seconds")
             or branch.get("schema_version")
-            != "dragontales.student-branch-claim.v1"
+            != "dragontales.student-branch-claim.v2"
             or not _is_hex64(branch.get("branch_id"))
             or branch.get("variant") != variant
             or branch.get("max_gpu_seconds") != 1_800
@@ -602,7 +603,7 @@ def _verify_student_claim(claim, operation, outbox, scope):
     if (
         tuple(claim)
         != ("schema_version", "scope", "student_job_id", "definition", "started_at")
-        or claim.get("schema_version") != "dragontales.student-job-claim.v3"
+        or claim.get("schema_version") != "dragontales.student-job-claim.v4"
         or not isinstance(claim.get("scope"), dict)
         or tuple(claim["scope"]) != SCOPE_FIELDS
         or claim.get("scope") != scope
@@ -617,16 +618,16 @@ def _verify_student_claim(claim, operation, outbox, scope):
             "dev_set_sha256",
             "counts",
             "recipe_sha256",
-            "runtime_image_reference",
+            "student_train_runtime_image_reference",
+            "student_branch_runtime_image_reference",
             "max_train_gpu_seconds",
             "max_branch_gpu_seconds",
             "max_total_gpu_seconds",
             "quality",
             "expires_at",
-            "initial_stage",
         )
         or definition.get("schema_version")
-        != "dragontales.student-job-definition.v3"
+        != "dragontales.student-job-definition.v4"
         or not _is_hex64(definition.get("teacher_provider_binding_sha256"))
         or not isinstance(references, list)
         or not references
@@ -635,8 +636,12 @@ def _verify_student_claim(claim, operation, outbox, scope):
         or not _is_hex64(definition.get("dev_set_sha256"))
         or definition.get("counts") != operation["counts"]
         or not _is_hex64(definition.get("recipe_sha256"))
-        or definition.get("runtime_image_reference")
+        or definition.get("student_train_runtime_image_reference")
         != outbox["runtime_image_reference"]
+        or adapter.immutable_image(
+            definition.get("student_branch_runtime_image_reference")
+        )
+        != definition["student_branch_runtime_image_reference"]
         or definition.get("max_train_gpu_seconds") != 1_800
         or definition.get("max_branch_gpu_seconds") != 1_800
         or definition.get("max_total_gpu_seconds") != 7_200
@@ -653,7 +658,6 @@ def _verify_student_claim(claim, operation, outbox, scope):
             "max_p95_latency_ms",
         )
         or definition.get("expires_at") != outbox["expires_at"]
-        or definition.get("initial_stage") != "train_merge"
         or claim.get("started_at") != outbox["created_at"]
         or hashlib.sha256(_gateway_bytes(definition)).hexdigest()
         != operation["student_job_id"]
@@ -684,21 +688,21 @@ def _verify_fanout_claim(claim, operation, outbox, scope):
             "student_job_id",
             "train_result_sha256",
             "recipe_sha256",
-            "runtime_image_reference",
+            "student_branch_runtime_image_reference",
             "max_total_gpu_seconds",
             "created_at",
             "expires_at",
             "branches",
         )
         or claim.get("schema_version")
-        != "dragontales.student-fanout-claim.v3"
+        != "dragontales.student-fanout-claim.v4"
         or not isinstance(claim.get("scope"), dict)
         or tuple(claim["scope"]) != SCOPE_FIELDS
         or claim.get("scope") != scope
         or claim.get("student_job_id") != operation["student_job_id"]
         or not _is_hex64(claim.get("train_result_sha256"))
         or not _is_hex64(claim.get("recipe_sha256"))
-        or claim.get("runtime_image_reference")
+        or claim.get("student_branch_runtime_image_reference")
         != outbox["runtime_image_reference"]
         or claim.get("max_total_gpu_seconds")
         != operation["max_total_gpu_seconds"]
@@ -734,7 +738,7 @@ def _verify_winner_authority(authority, operation, outbox):
             "schema_version",
             "provider_policy",
             "provider_terms_sha256",
-            "runtime_image_reference",
+            "student_branch_runtime_image_reference",
             "admission_program_sha256",
             "authorization_not_after",
             "max_wall_seconds",
@@ -752,12 +756,12 @@ def _verify_winner_authority(authority, operation, outbox):
             "winner_admission_schema_version",
         )
         or authority.get("schema_version")
-        != "dragontales.winner-deployment-authority.v1"
+        != "dragontales.winner-deployment-authority.v2"
         or authority.get("provider_policy") != operation["provider_policy"]
         or tuple(authority.get("provider_policy", ()))
         != ("primary", "fallback")
         or not _is_hex64(authority.get("provider_terms_sha256"))
-        or authority.get("runtime_image_reference")
+        or authority.get("student_branch_runtime_image_reference")
         != outbox["runtime_image_reference"]
         or not _is_hex64(authority.get("admission_program_sha256"))
         or authority.get("authorization_not_after") != outbox["expires_at"]
@@ -774,9 +778,9 @@ def _verify_winner_authority(authority, operation, outbox):
         or authority.get("max_input_utf8_bytes") != 2_048
         or authority.get("max_input_messages") != 16
         or authority.get("max_input_request_bytes") != 16_384
-        or authority.get("route_schema_version") != "dragontales.route.v3"
+        or authority.get("route_schema_version") != "dragontales.route.v4"
         or authority.get("winner_admission_schema_version")
-        != "dragontales.winner-admission-receipt.v1"
+        != "dragontales.winner-admission-receipt.v2"
     ):
         raise ValueError("student winner deployment authority is invalid")
     unused_authorized, authorized_nanos = _gateway_time(
@@ -807,14 +811,14 @@ def _verify_winner_claim(claim, operation, outbox, scope, scope_prefix):
             "winner",
             "model_manifest",
             "dev_receipt",
-            "runtime_image_reference",
+            "student_branch_runtime_image_reference",
             "provider_binding_sha256",
             "authority",
             "claimed_at",
             "expires_at",
         )
         or claim.get("schema_version")
-        != "dragontales.student-winner-deployment-claim.v1"
+        != "dragontales.student-winner-deployment-claim.v2"
         or not isinstance(claim.get("scope"), dict)
         or tuple(claim["scope"]) != SCOPE_FIELDS
         or claim.get("scope") != scope
@@ -823,7 +827,7 @@ def _verify_winner_claim(claim, operation, outbox, scope, scope_prefix):
         or claim.get("student_result_sha256")
         != operation["student_result_sha256"]
         or claim.get("winner") != operation["winner"]
-        or claim.get("runtime_image_reference")
+        or claim.get("student_branch_runtime_image_reference")
         != outbox["runtime_image_reference"]
         or claim.get("provider_binding_sha256")
         != operation["provider_binding_sha256"]
@@ -843,7 +847,7 @@ def _verify_winner_claim(claim, operation, outbox, scope, scope_prefix):
 def _winner_launch_bytes(claim, operation, claim_key, claim_sha256):
     return _gateway_bytes(
         {
-            "schema_version": "dragontales.student-winner-deployment-launch.v1",
+            "schema_version": "dragontales.student-winner-deployment-launch.v2",
             "student_job_id": operation["student_job_id"],
             "student_result_sha256": operation["student_result_sha256"],
             "winner": operation["winner"],
@@ -851,7 +855,9 @@ def _winner_launch_bytes(claim, operation, claim_key, claim_sha256):
             "deployment_claim_sha256": claim_sha256,
             "provider_binding_sha256": operation["provider_binding_sha256"],
             "provider_policy": operation["provider_policy"],
-            "runtime_image_reference": claim["runtime_image_reference"],
+            "student_branch_runtime_image_reference": claim[
+                "student_branch_runtime_image_reference"
+            ],
             "max_wall_seconds": operation["max_wall_seconds"],
             "max_cost_microusd": operation["max_cost_microusd"],
             "expires_at": claim["expires_at"],
@@ -1251,20 +1257,20 @@ def discover_provider_teardown_authorizations(
                     "winner",
                     "model_manifest",
                     "dev_receipt",
-                    "runtime_image_reference",
+                    "student_branch_runtime_image_reference",
                     "provider_binding_sha256",
                     "authority",
                     "claimed_at",
                     "expires_at",
                 )
                 or gateway_claim.get("schema_version")
-                != "dragontales.student-winner-deployment-claim.v1"
+                != "dragontales.student-winner-deployment-claim.v2"
                 or gateway_claim.get("scope") != scope
                 or gateway_claim.get("student_job_id") != student_job_id
                 or gateway_claim.get("provider_binding_sha256")
                 != winner_result.get("provider_binding_sha256")
-                or gateway_claim.get("runtime_image_reference")
-                != admission.get("runtime_image_reference")
+                or gateway_claim.get("student_branch_runtime_image_reference")
+                != admission.get("student_branch_runtime_image_reference")
                 or not isinstance(authority, dict)
                 or authority.get("max_wall_seconds")
                 != acceptance.get("max_wall_seconds")
@@ -3055,7 +3061,7 @@ def recover_pending_baseten_winner_admissions(
             campaign_id,
             launch,
             settings["image_release_sha256"],
-            settings["student_image_admission_sha256"],
+            settings["student_branch_image_admission_sha256"],
         )
         values = winner_contract.settings(
             launch["runtime_image_reference"],
@@ -4852,7 +4858,7 @@ def dispatch_provider_teardowns(
         if not isinstance(values, dict):
             raise ValueError("Baseten teardown winner values are invalid")
         expected_values = winner_contract.settings(
-            values.get("student_image"),
+            values.get("student_branch_image"),
             values.get("student_job_id"),
             values.get("model_alias"),
             values.get("registry_secret"),
@@ -6637,7 +6643,11 @@ class BasetenJobs:
             raise ValueError("launch-group definition is invalid")
         _validate_workload(workload)
         workload_type = workload.get("type")
-        artifact = "teacher-gpt-oss" if workload_type == "teacher_run" else "student"
+        artifact = {
+            "teacher_run": "teacher-gpt-oss",
+            "student_train_merge": "student-train",
+            "student_fanout": "student-branch",
+        }[workload_type]
         release_raw = self.store.get(
             f"image-admissions/v1/releases/{workload['image_release_sha256']}.json"
         )
@@ -6657,7 +6667,7 @@ class BasetenJobs:
             or admission.get("repository") != PRIVATE_IMAGE_REPOSITORIES[artifact]
             or admission.get("image_reference", "").rpartition("@sha256:")[0]
             != PRIVATE_IMAGE_REPOSITORIES[artifact]
-            or release.get("schema_version") != "milk.private-harness-release.v1"
+            or release.get("schema_version") != "milk.private-harness-release.v2"
             or not isinstance(release.get("images"), list)
             or not any(
                 item
@@ -8324,10 +8334,10 @@ def _workload_and_entries(launch, settings):
                 }
             ],
         )
-    if launch["runtime_image_reference"] != settings["student_image"]:
-        raise ValueError("student launch runtime image differs from configured image")
     student_job_id = operation["student_job_id"]
     if operation["kind"] == "student_train_merge":
+        if launch["runtime_image_reference"] != settings["student_train_image"]:
+            raise ValueError("student train launch image differs from configured image")
         name, payload = adapter._request_body(settings, student_job_id)
         return (
             {
@@ -8337,7 +8347,7 @@ def _workload_and_entries(launch, settings):
                 "max_gpu_seconds": operation["max_gpu_seconds"],
                 "launch_source": launch_source,
                 "image_admission_sha256": settings[
-                    "student_image_admission_sha256"
+                    "student_train_image_admission_sha256"
                 ],
                 "image_release_sha256": settings["image_release_sha256"],
             },
@@ -8349,6 +8359,8 @@ def _workload_and_entries(launch, settings):
                 }
             ],
         )
+    if launch["runtime_image_reference"] != settings["student_branch_image"]:
+        raise ValueError("student branch launch image differs from configured image")
     entries = []
     for branch in operation["branches"]:
         name, payload = adapter._request_body(
@@ -8372,7 +8384,7 @@ def _workload_and_entries(launch, settings):
             "branches": operation["branches"],
             "launch_source": launch_source,
             "image_admission_sha256": settings[
-                "student_image_admission_sha256"
+                "student_branch_image_admission_sha256"
             ],
             "image_release_sha256": settings["image_release_sha256"],
         },
@@ -8385,7 +8397,7 @@ def _winner_values(launch, values):
     if not isinstance(values, dict):
         raise ValueError("Baseten winner values are invalid")
     expected = winner_contract.settings(
-        values.get("student_image"),
+        values.get("student_branch_image"),
         values.get("student_job_id"),
         values.get("model_alias"),
         values.get("registry_secret"),
@@ -8396,7 +8408,7 @@ def _winner_values(launch, values):
     )
     if (
         values != expected
-        or values["student_image"] != launch["runtime_image_reference"]
+        or values["student_branch_image"] != launch["runtime_image_reference"]
         or values["student_job_id"] != operation["student_job_id"]
     ):
         raise ValueError("Baseten winner values differ from the gateway launch")
@@ -8475,7 +8487,9 @@ def dispatch_cross_provider_outboxes(
     run_ids = []
     for launch in launches:
         if launch["operation"]["kind"] == "student_winner_deployment":
-            if launch["runtime_image_reference"] != settings.get("student_image"):
+            if launch["runtime_image_reference"] != settings.get(
+                "student_branch_image"
+            ):
                 raise ValueError(
                     "winner launch runtime image differs from configured image"
                 )
@@ -8483,7 +8497,7 @@ def dispatch_cross_provider_outboxes(
                 campaign_id,
                 launch,
                 settings.get("image_release_sha256"),
-                settings.get("student_image_admission_sha256"),
+                settings.get("student_branch_image_admission_sha256"),
             )
             winner_ids.append(run_id)
             staged.append(
@@ -8619,7 +8633,7 @@ def dispatch_cross_provider_outboxes(
                 selection_record=item["selection"],
                 image_release_sha256=settings["image_release_sha256"],
                 image_admission_sha256=settings[
-                    "student_image_admission_sha256"
+                    "student_branch_image_admission_sha256"
                 ],
                 provider_pass_claim_raw=provider_pass_claim_raw,
                 create_authorization_raw=create_authorization_raw,
@@ -8636,7 +8650,7 @@ def dispatch_cross_provider_outboxes(
                 execution_plan=modal_plans_by_run_id[run_id],
                 image_release_sha256=settings["image_release_sha256"],
                 image_admission_sha256=settings[
-                    "student_image_admission_sha256"
+                    "student_branch_image_admission_sha256"
                 ],
                 provider_pass_claim_raw=provider_pass_claim_raw,
                 create_authorization_raw=create_authorization_raw,
@@ -8761,11 +8775,17 @@ def _modal_resources_from_arguments(arguments, settings):
             "mount_path": adapter.TEACHER_MODEL_MOUNT,
             "read_only": True,
         },
+        "student_train_volume": {
+            "name": arguments.modal_student_train_volume_name,
+            "object_id": arguments.modal_student_train_volume_id,
+            "mount_path": adapter.STUDENT_MODEL_MOUNT,
+            "read_only": True,
+        },
     }
     named = [
         resources[key]
         for key in ("registry", "config", "control", "capture", "candidate")
-    ] + [resources["teacher_volume"]]
+    ] + [resources["teacher_volume"], resources["student_train_volume"]]
     if (
         any(
             not isinstance(item.get("name"), str)
@@ -8787,6 +8807,8 @@ def _modal_plan_resources(resources, kind):
     if kind == "teacher_run":
         secrets.append(resources["capture"])
         volumes.append(resources["teacher_volume"])
+    elif kind == "student_train_merge":
+        volumes.append(resources["student_train_volume"])
     elif kind == "student_winner_deployment":
         secrets.append(resources["candidate"])
     return {
@@ -8893,7 +8915,7 @@ def deterministic_cross_provider_inputs(
                 campaign_id,
                 launch,
                 settings["image_release_sha256"],
-                settings["student_image_admission_sha256"],
+                settings["student_branch_image_admission_sha256"],
             )
             command, environment = _modal_winner_command(
                 operation["student_job_id"],
@@ -9105,18 +9127,30 @@ def _require_separate_create_authority_store(evidence_store, authority_store):
 
 def _image_settings_from_arguments(arguments, evidence_store):
     required = (
-        "student_image",
+        "student_train_image",
+        "student_branch_image",
         "teacher_image",
         "jobs_image",
         "image_release_sha256",
     )
     if any(getattr(arguments, name) is None for name in required):
         raise ValueError("private image release settings are required")
-    student_image = adapter.immutable_ghcr_image(arguments.student_image)
+    student_train_image = adapter.immutable_ghcr_image(arguments.student_train_image)
+    student_branch_image = adapter.immutable_ghcr_image(arguments.student_branch_image)
     teacher_image = adapter.immutable_ghcr_image(arguments.teacher_image)
     jobs_image = adapter.immutable_ghcr_image(arguments.jobs_image)
-    if student_image.rpartition("@sha256:")[0] != STUDENT_IMAGE_REPOSITORY:
-        raise ValueError("student image must use the private Milk repository")
+    if (
+        student_train_image.rpartition("@sha256:")[0]
+        != STUDENT_TRAIN_IMAGE_REPOSITORY
+        or student_branch_image.rpartition("@sha256:")[0]
+        != STUDENT_BRANCH_IMAGE_REPOSITORY
+    ):
+        raise ValueError("student image must use a private Milk repository")
+    if (
+        student_train_image.rpartition("@sha256:")[2]
+        == student_branch_image.rpartition("@sha256:")[2]
+    ):
+        raise ValueError("student train and branch images must have distinct digests")
     if teacher_image.rpartition("@sha256:")[0] != TEACHER_IMAGE_REPOSITORY:
         raise ValueError("teacher image must use the private Milk repository")
     if jobs_image.rpartition("@sha256:")[0] != JOBS_IMAGE_REPOSITORY:
@@ -9126,18 +9160,23 @@ def _image_settings_from_arguments(arguments, evidence_store):
         arguments.image_release_sha256,
     )
     for artifact, image in (
-        ("student", student_image),
+        ("student-train", student_train_image),
+        ("student-branch", student_branch_image),
         ("teacher-gpt-oss", teacher_image),
         ("jobs", jobs_image),
     ):
         if release["images"][artifact]["image_reference"] != image:
             raise ValueError(f"{artifact} image differs from its private build admission")
     return {
-        "student_image": student_image,
+        "student_train_image": student_train_image,
+        "student_branch_image": student_branch_image,
         "teacher_image": teacher_image,
         "jobs_image": jobs_image,
         "image_release_sha256": release["release_sha256"],
-        "student_image_admission_sha256": release["images"]["student"][
+        "student_train_image_admission_sha256": release["images"]["student-train"][
+            "admission_sha256"
+        ],
+        "student_branch_image_admission_sha256": release["images"]["student-branch"][
             "admission_sha256"
         ],
         "teacher_image_admission_sha256": release["images"]["teacher-gpt-oss"][
@@ -9232,7 +9271,7 @@ def _baseten_teardown_values(records, settings):
         admission = result["admission"]
         run_id = authorization["run_id"]
         values[run_id] = winner_contract.settings(
-            admission["runtime_image_reference"],
+            admission["student_branch_runtime_image_reference"],
             authorization["student_job_id"],
             admission["model_alias"],
             "DOCKER_REGISTRY_ghcr.io",
@@ -9254,7 +9293,8 @@ def main(argv=None):
     parser.add_argument("--candidate-key-socket", required=True)
     parser.add_argument("--scope-prefix", required=True)
     parser.add_argument("--lease-token", required=True)
-    parser.add_argument("--student-image")
+    parser.add_argument("--student-train-image")
+    parser.add_argument("--student-branch-image")
     parser.add_argument("--teacher-image")
     parser.add_argument("--jobs-image")
     parser.add_argument("--registry-secret")
@@ -9286,6 +9326,8 @@ def main(argv=None):
         "modal-candidate-secret-id",
         "modal-teacher-volume-name",
         "modal-teacher-volume-id",
+        "modal-student-train-volume-name",
+        "modal-student-train-volume-id",
     ):
         parser.add_argument(f"--{name}")
     parser.add_argument("--request-timeout-seconds", type=int, default=30)
@@ -9370,7 +9412,7 @@ def main(argv=None):
                 scope_prefix=arguments.scope_prefix,
                 image_release_sha256=settings["image_release_sha256"],
                 image_admission_sha256=settings[
-                    "student_image_admission_sha256"
+                    "student_branch_image_admission_sha256"
                 ],
                 current=dt.datetime.now(dt.timezone.utc).replace(
                     microsecond=0

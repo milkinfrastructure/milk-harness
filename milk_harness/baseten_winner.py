@@ -22,7 +22,7 @@ from deploy.modal import admit as admission_probe
 from milk_harness.budget import H100_RESERVATION_RATE_MICROUSD_PER_MINUTE
 from milk_harness.evidence import HEX64, canonical_json, create_same
 from milk_harness.image_admission import (
-    STUDENT_IMAGE_REPOSITORY,
+    STUDENT_BRANCH_IMAGE_REPOSITORY,
     load_published_private_image_release,
 )
 from milk_harness.logs import LogArchive
@@ -149,13 +149,7 @@ def _api_key_metadata(value):
                 for character in item["prefix"]
             )
             or not isinstance(item.get("name"), (str, type(None)))
-            or item.get("type")
-            not in {
-                "PERSONAL",
-                "WORKSPACE_MANAGE_ALL",
-                "WORKSPACE_EXPORT_METRICS",
-                "WORKSPACE_INVOKE",
-            }
+            or item.get("type") not in contract.API_KEY_TYPES
             or not isinstance(item.get("model_ids"), (list, type(None)))
             or item.get("team_name") is not None
             and not isinstance(item["team_name"], str)
@@ -328,7 +322,7 @@ def _validate_authority(authority, claim):
         "schema_version",
         "provider_policy",
         "provider_terms_sha256",
-        "runtime_image_reference",
+        "student_branch_runtime_image_reference",
         "admission_program_sha256",
         "authorization_not_after",
         "max_wall_seconds",
@@ -348,7 +342,7 @@ def _validate_authority(authority, claim):
         raise ValueError("winner deployment authority fields are invalid")
     if (
         authority.get("schema_version")
-        != "dragontales.winner-deployment-authority.v1"
+        != "dragontales.winner-deployment-authority.v2"
         or authority.get("provider_policy")
         != {"primary": "baseten", "fallback": "modal"}
         or any(
@@ -359,8 +353,8 @@ def _validate_authority(authority, claim):
                 "signing_public_key_hex",
             )
         )
-        or authority.get("runtime_image_reference")
-        != claim["runtime_image_reference"]
+        or authority.get("student_branch_runtime_image_reference")
+        != claim["student_branch_runtime_image_reference"]
         or authority.get("admission_program_sha256")
         != hashlib.sha256(contract.ADMISSION_PATH.read_bytes()).hexdigest()
         or authority.get("authorization_not_after") != claim["expires_at"]
@@ -378,7 +372,7 @@ def _validate_authority(authority, claim):
         or authority.get("max_input_utf8_bytes") != 2048
         or authority.get("max_input_messages") != 16
         or authority.get("max_input_request_bytes") != 16384
-        or authority.get("route_schema_version") != "dragontales.route.v3"
+        or authority.get("route_schema_version") != "dragontales.route.v4"
         or authority.get("winner_admission_schema_version")
         != contract.RECEIPT_SCHEMA
     ):
@@ -397,7 +391,7 @@ def _validate_gateway(launch_raw, claim_raw):
         "deployment_claim_sha256",
         "provider_binding_sha256",
         "provider_policy",
-        "runtime_image_reference",
+        "student_branch_runtime_image_reference",
         "max_wall_seconds",
         "max_cost_microusd",
         "expires_at",
@@ -410,7 +404,7 @@ def _validate_gateway(launch_raw, claim_raw):
         "winner",
         "model_manifest",
         "dev_receipt",
-        "runtime_image_reference",
+        "student_branch_runtime_image_reference",
         "provider_binding_sha256",
         "authority",
         "claimed_at",
@@ -424,9 +418,9 @@ def _validate_gateway(launch_raw, claim_raw):
     claim_sha256 = hashlib.sha256(claim_raw).hexdigest()
     if (
         launch.get("schema_version")
-        != "dragontales.student-winner-deployment-launch.v1"
+        != "dragontales.student-winner-deployment-launch.v2"
         or claim.get("schema_version")
-        != "dragontales.student-winner-deployment-claim.v1"
+        != "dragontales.student-winner-deployment-claim.v2"
         or launch.get("deployment_claim_sha256") != claim_sha256
         or launch.get("student_job_id") != claim.get("student_job_id")
         or launch.get("student_result_sha256")
@@ -436,8 +430,8 @@ def _validate_gateway(launch_raw, claim_raw):
         != claim.get("provider_binding_sha256")
         or launch.get("provider_policy")
         != claim["authority"]["provider_policy"]
-        or launch.get("runtime_image_reference")
-        != claim.get("runtime_image_reference")
+        or launch.get("student_branch_runtime_image_reference")
+        != claim.get("student_branch_runtime_image_reference")
         or launch.get("max_wall_seconds")
         != claim["authority"]["max_wall_seconds"]
         or launch.get("max_cost_microusd")
@@ -458,9 +452,11 @@ def _validate_gateway(launch_raw, claim_raw):
     expires_at = _gateway_time(claim["expires_at"], "winner expires_at")
     if claimed_at >= expires_at:
         raise ValueError("winner gateway authority interval is invalid")
-    image = contract.shared.immutable_ghcr_image(claim["runtime_image_reference"])
-    if image.rpartition("@sha256:")[0] != STUDENT_IMAGE_REPOSITORY:
-        raise ValueError("winner runtime is not the private student image")
+    image = contract.shared.immutable_ghcr_image(
+        claim["student_branch_runtime_image_reference"]
+    )
+    if image.rpartition("@sha256:")[0] != STUDENT_BRANCH_IMAGE_REPOSITORY:
+        raise ValueError("winner runtime is not the private student branch image")
     return launch, claim
 
 
@@ -888,7 +884,9 @@ def _execution_definition(campaign_id, team_name, launch, claim, acceptance, val
             "student_result_sha256": launch["student_result_sha256"],
             "winner": launch["winner"],
             "model_manifest_sha256": claim["model_manifest"]["sha256"],
-            "runtime_image_reference": launch["runtime_image_reference"],
+            "student_branch_runtime_image_reference": launch[
+                "student_branch_runtime_image_reference"
+            ],
             "model_alias": values["model_alias"],
             "model_name": contract.model_name(run_id),
             "execution_name": contract.execution_name(run_id),
@@ -1220,6 +1218,8 @@ class BasetenWinnerRuntime:
 
     def _preflight(self, team_name, observed_at):
         self._team(team_name)
+        if not contract.DIRECT_IMAGE_RUNTIME_VERIFIED:
+            raise RuntimeError(contract.DIRECT_IMAGE_RUNTIME_BLOCKER)
         teams_raw = self._request("GET", "/teams", query={"name": team_name})
         teams = _provider_object(teams_raw, "Baseten teams").get("teams")
         if not isinstance(teams, list):
@@ -1349,6 +1349,8 @@ class BasetenWinnerRuntime:
 
     def _push_truss(self, team_name, truss, argv):
         self._team(team_name)
+        if not contract.DIRECT_IMAGE_RUNTIME_VERIFIED:
+            raise RuntimeError(contract.DIRECT_IMAGE_RUNTIME_BLOCKER)
         if (
             not isinstance(truss, str)
             or not 1 <= len(truss.encode()) <= 64 * 1024
@@ -1452,8 +1454,10 @@ class BasetenWinnerRuntime:
         self._model_by_id(model_id)
         return self._request("GET", "/api_keys")
 
-    def _create_model_scoped_key(self, team_name, model_id, name):
+    def _create_model_scoped_key(self, team_name, team_id, model_id, name):
         self._team(team_name)
+        if not _matches(TEAM_ID, team_id):
+            raise ValueError("Baseten team ID is invalid")
         self._model_by_id(model_id)
         if (
             not isinstance(name, str)
@@ -1463,7 +1467,7 @@ class BasetenWinnerRuntime:
             raise ValueError("Baseten candidate-key name is invalid")
         raw = self._request(
             "POST",
-            "/api_keys",
+            f"/teams/{urllib.parse.quote(team_id, safe='')}/api_keys",
             body={
                 "name": name,
                 "type": "WORKSPACE_INVOKE",
@@ -1707,7 +1711,7 @@ class BasetenWinnerLifecycle:
             create_authorization_raw=create_authorization_raw,
         )
         expected_values = contract.settings(
-            values.get("student_image"),
+            values.get("student_branch_image"),
             values.get("student_job_id"),
             values.get("model_alias"),
             values.get("registry_secret"),
@@ -1722,12 +1726,13 @@ class BasetenWinnerLifecycle:
             self.store,
             acceptance["image_release_sha256"],
         )
-        student = release["images"]["student"]
+        student = release["images"]["student-branch"]
         if (
             student["admission_sha256"]
             != acceptance["image_admission_sha256"]
-            or student["image_reference"] != values["student_image"]
-            or values["student_image"] != claim["runtime_image_reference"]
+            or student["image_reference"] != values["student_branch_image"]
+            or values["student_branch_image"]
+            != claim["student_branch_runtime_image_reference"]
             or values["student_job_id"] != claim["student_job_id"]
         ):
             raise ValueError("winner private student image admission differs")
@@ -1796,7 +1801,7 @@ class BasetenWinnerLifecycle:
         ):
             raise ValueError("stored winner authority differs from this Baseten lifecycle")
         expected_values = contract.settings(
-            values.get("student_image"),
+            values.get("student_branch_image"),
             values.get("student_job_id"),
             values.get("model_alias"),
             values.get("registry_secret"),
@@ -2622,6 +2627,7 @@ class BasetenWinnerLifecycle:
             try:
                 candidate_key = create_model_scoped_key(
                     self.team_name,
+                    context["preflight"]["team_id"],
                     identity["model_id"],
                     key_name,
                 )
@@ -3903,7 +3909,9 @@ class BasetenWinnerLifecycle:
             "model_alias": values["model_alias"],
             "model_alias_sha256": probe["model_alias_sha256"],
             "candidate_api_key_sha256": probe["candidate_api_key_sha256"],
-            "runtime_image_reference": values["student_image"],
+            "student_branch_runtime_image_reference": values[
+                "student_branch_image"
+            ],
             "admission_program_sha256": context["claim"]["authority"][
                 "admission_program_sha256"
             ],
@@ -4006,7 +4014,8 @@ class BasetenWinnerLifecycle:
             or admission.get("model_manifest_sha256")
             != context["definition"]["model_manifest_sha256"]
             or admission.get("model_alias") != values["model_alias"]
-            or admission.get("runtime_image_reference") != values["student_image"]
+            or admission.get("student_branch_runtime_image_reference")
+            != values["student_branch_image"]
             or admission.get("admission_program_sha256")
             != context["claim"]["authority"]["admission_program_sha256"]
             or admission.get("service_not_after")

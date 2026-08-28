@@ -95,7 +95,7 @@ def gpu_operation(kind):
             "max_total_gpu_seconds": 7_200,
             "branches": [
                 {
-                    "schema_version": "dragontales.student-branch-claim.v1",
+                    "schema_version": "dragontales.student-branch-claim.v2",
                     "branch_id": character * 64,
                     "variant": variant,
                     "max_gpu_seconds": 1_800,
@@ -188,6 +188,7 @@ def definition(value, ordinal=0):
     else:
         unit = copy.deepcopy(operation)
     is_teacher = unit["kind"] == "teacher_run"
+    is_student_train = unit["kind"] == "student_train_merge"
     return {
         "schema_version": "milk.modal-execution-definition.v1",
         "campaign_id": value["campaign_id"],
@@ -198,7 +199,9 @@ def definition(value, ordinal=0):
         "runtime_image_reference": (
             "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss@sha256:"
             if is_teacher
-            else "ghcr.io/milkinfrastructure/milk-student@sha256:"
+            else "ghcr.io/milkinfrastructure/milk-student-train@sha256:"
+            if is_student_train
+            else "ghcr.io/milkinfrastructure/milk-student-branch@sha256:"
         )
         + "4" * 64,
         "sandbox": {
@@ -228,6 +231,15 @@ def definition(value, ordinal=0):
                     }
                 ]
                 if is_teacher
+                else [
+                    {
+                        "name": "milk-student-model",
+                        "object_id": "vo-student-model",
+                        "mount_path": "/model",
+                        "read_only": True,
+                    }
+                ]
+                if is_student_train
                 else []
             ),
         },
@@ -247,10 +259,12 @@ def winner_fixture():
         )
     )
     authority = {
-        "schema_version": "dragontales.winner-deployment-authority.v1",
+        "schema_version": "dragontales.winner-deployment-authority.v2",
         "provider_policy": {"primary": "baseten", "fallback": "modal"},
         "provider_terms_sha256": "1" * 64,
-        "runtime_image_reference": execution["runtime_image_reference"],
+        "student_branch_runtime_image_reference": execution[
+            "runtime_image_reference"
+        ],
         "admission_program_sha256": hashlib.sha256(
             modal_jobs.winner_contract.ADMISSION_PATH.read_bytes()
         ).hexdigest(),
@@ -266,9 +280,9 @@ def winner_fixture():
         "max_input_utf8_bytes": 2_048,
         "max_input_messages": 16,
         "max_input_request_bytes": 16_384,
-        "route_schema_version": "dragontales.route.v3",
+        "route_schema_version": "dragontales.route.v4",
         "winner_admission_schema_version": (
-            "dragontales.winner-admission-receipt.v1"
+            "dragontales.winner-admission-receipt.v2"
         ),
     }
     binding = hashlib.sha256(
@@ -276,7 +290,7 @@ def winner_fixture():
         + json.dumps(authority, separators=(",", ":")).encode()
     ).hexdigest()
     claim = {
-        "schema_version": "dragontales.student-winner-deployment-claim.v1",
+        "schema_version": "dragontales.student-winner-deployment-claim.v2",
         "scope": {
             "tenant_id": "11111111-1111-4111-8111-111111111111",
             "project_id": "22222222-2222-4222-8222-222222222222",
@@ -297,7 +311,9 @@ def winner_fixture():
             "sha256": "d" * 64,
             "bytes": 1,
         },
-        "runtime_image_reference": execution["runtime_image_reference"],
+        "student_branch_runtime_image_reference": execution[
+            "runtime_image_reference"
+        ],
         "provider_binding_sha256": binding,
         "authority": authority,
         "claimed_at": "2026-08-27T19:55:00Z",
@@ -1091,6 +1107,25 @@ class ModalJobsTests(unittest.TestCase):
             create = next(call for call in modal.calls if call[0] == "create")
             self.assertEqual(set(create[2]["volumes"]), {"/models/gpt-oss-120b"})
 
+    def test_exact_existing_student_model_is_mounted_read_only_for_training(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, execution, unused_store, modal, unused_guards, jobs = self.setup(root)
+            jobs.launch(value, execution, COMMAND, ENVIRONMENT)
+            self.assertIn(
+                (
+                    "volume",
+                    "milk-student-model",
+                    {"create_if_missing": False, "environment_name": "main"},
+                ),
+                modal.calls,
+            )
+            self.assertIn(
+                ("mount_options", {"read_only": True}),
+                modal.calls,
+            )
+            create = next(call for call in modal.calls if call[0] == "create")
+            self.assertEqual(set(create[2]["volumes"]), {"/model"})
+
     def test_bounds_action_authority_and_inputs_fail_closed(self):
         invalid = acceptance()
         invalid["create_authorization_sha256"] = None
@@ -1105,6 +1140,10 @@ class ModalJobsTests(unittest.TestCase):
         execution["resources"]["secrets"].append(
             named_secret("duplicate-key", "st-duplicate", ["MILK_CONFIG_JSON"])
         )
+        with self.assertRaisesRegex(ValueError, "resource identities"):
+            validate_definition(value, execution)
+        execution = definition(value)
+        execution["resources"]["volumes"][0]["mount_path"] = "/wrong-model"
         with self.assertRaisesRegex(ValueError, "resource identities"):
             validate_definition(value, execution)
         with tempfile.TemporaryDirectory() as root:

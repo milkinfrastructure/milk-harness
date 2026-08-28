@@ -16,12 +16,14 @@ from milk_harness.evidence import (
 
 
 PRIVATE_IMAGE_REPOSITORIES = {
-    "student": "ghcr.io/milkinfrastructure/milk-student",
+    "student-train": "ghcr.io/milkinfrastructure/milk-student-train",
+    "student-branch": "ghcr.io/milkinfrastructure/milk-student-branch",
     "teacher-gpt-oss": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss",
     "planner": "ghcr.io/milkinfrastructure/milk-planner",
     "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
 }
-STUDENT_IMAGE_REPOSITORY = PRIVATE_IMAGE_REPOSITORIES["student"]
+STUDENT_TRAIN_IMAGE_REPOSITORY = PRIVATE_IMAGE_REPOSITORIES["student-train"]
+STUDENT_BRANCH_IMAGE_REPOSITORY = PRIVATE_IMAGE_REPOSITORIES["student-branch"]
 TEACHER_IMAGE_REPOSITORY = PRIVATE_IMAGE_REPOSITORIES["teacher-gpt-oss"]
 JOBS_IMAGE_REPOSITORY = PRIVATE_IMAGE_REPOSITORIES["jobs"]
 RELEASE_PREFIX = "image-admissions/v1/releases"
@@ -94,7 +96,7 @@ def _validate_release(release_raw, read_admission, expected_release_sha256=None)
             "started_at",
             "completed_at",
         }
-        or release.get("schema_version") != "milk.private-harness-release.v1"
+        or release.get("schema_version") != "milk.private-harness-release.v2"
         or re.fullmatch(r"[0-9a-f]{40}", release.get("source_commit", "")) is None
         or type(release.get("source_date_epoch")) is not int
         or release["source_date_epoch"] <= 0

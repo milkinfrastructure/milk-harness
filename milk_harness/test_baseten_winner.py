@@ -24,7 +24,7 @@ STUDENT_RESULT = "d" * 64
 CLAIM_BINDING = "e" * 64
 IMAGE_RELEASE = "f" * 64
 IMAGE_ADMISSION = "1" * 64
-IMAGE = "ghcr.io/milkinfrastructure/milk-student@sha256:" + "2" * 64
+IMAGE = "ghcr.io/milkinfrastructure/milk-student-branch@sha256:" + "2" * 64
 MODEL_MANIFEST = "3" * 64
 DEV_RECEIPT = "4" * 64
 MODEL_ID = "model123"
@@ -54,10 +54,10 @@ def gateway_line(value, *, newline=False):
 
 def gateway_claim():
     authority = {
-        "schema_version": "dragontales.winner-deployment-authority.v1",
+        "schema_version": "dragontales.winner-deployment-authority.v2",
         "provider_policy": {"primary": "baseten", "fallback": "modal"},
         "provider_terms_sha256": "5" * 64,
-        "runtime_image_reference": IMAGE,
+        "student_branch_runtime_image_reference": IMAGE,
         "admission_program_sha256": hashlib.sha256(
             contract.ADMISSION_PATH.read_bytes()
         ).hexdigest(),
@@ -73,11 +73,11 @@ def gateway_claim():
         "max_input_utf8_bytes": 2048,
         "max_input_messages": 16,
         "max_input_request_bytes": 16384,
-        "route_schema_version": "dragontales.route.v3",
+        "route_schema_version": "dragontales.route.v4",
         "winner_admission_schema_version": contract.RECEIPT_SCHEMA,
     }
     claim = {
-        "schema_version": "dragontales.student-winner-deployment-claim.v1",
+        "schema_version": "dragontales.student-winner-deployment-claim.v2",
         "scope": SCOPE,
         "student_job_id": STUDENT,
         "student_claim_sha256": "7" * 64,
@@ -93,7 +93,7 @@ def gateway_claim():
             "sha256": DEV_RECEIPT,
             "bytes": 64,
         },
-        "runtime_image_reference": IMAGE,
+        "student_branch_runtime_image_reference": IMAGE,
         "provider_binding_sha256": CLAIM_BINDING,
         "authority": authority,
         "claimed_at": utc(CLAIMED),
@@ -101,7 +101,7 @@ def gateway_claim():
     }
     claim_raw = gateway_line(claim)
     launch = {
-        "schema_version": "dragontales.student-winner-deployment-launch.v1",
+        "schema_version": "dragontales.student-winner-deployment-launch.v2",
         "student_job_id": STUDENT,
         "student_result_sha256": STUDENT_RESULT,
         "winner": "static_fp8",
@@ -112,7 +112,7 @@ def gateway_claim():
         "deployment_claim_sha256": hashlib.sha256(claim_raw).hexdigest(),
         "provider_binding_sha256": CLAIM_BINDING,
         "provider_policy": {"primary": "baseten", "fallback": "modal"},
-        "runtime_image_reference": IMAGE,
+        "student_branch_runtime_image_reference": IMAGE,
         "max_wall_seconds": 1800,
         "max_cost_microusd": 10_000_000,
         "expires_at": utc(CLAIM_EXPIRES),
@@ -362,8 +362,9 @@ class FakeBaseten:
         self.called("key_metadata")
         return {"keys": list(self.candidate_keys.values())}
 
-    def create_key(self, team_name, model_id, name):
+    def create_key(self, team_name, team_id, model_id, name):
         self.called("create_key")
+        self.case.assertEqual(team_id, "team_1")
         self.key_creates += 1
         self.key_create_names.append(name)
         attempt = int(name[-2:])
@@ -598,7 +599,7 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
         )
         self.release = {
             "images": {
-                "student": {
+                "student-branch": {
                     "admission_sha256": IMAGE_ADMISSION,
                     "image_reference": IMAGE,
                 }
@@ -692,7 +693,7 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
         self.assertEqual(hashlib.sha256(raw).hexdigest(), acceptance_sha256(self.acceptance))
         self.assertEqual(
             hashlib.sha256(raw).hexdigest(),
-            "f1dac7a2b135926f11ecf3fd826bf094c772d92edee1b1ad3fdd6026d083a946",
+            "965170f72a6e6cc6a40c2b1b46ab1639034b798adf032df07730897d44a98918",
         )
         self.assertEqual(
             self.acceptance["provider_pass_claim_sha256"],
@@ -749,7 +750,8 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
             now=self.clock,
         )
 
-        preflight = lifecycle.preflight()
+        with mock.patch.object(contract, "DIRECT_IMAGE_RUNTIME_VERIFIED", True):
+            preflight = lifecycle.preflight()
 
         self.assertEqual(preflight["team_id"], "team_1")
         self.assertEqual(preflight["team_name"], TEAM)
@@ -802,7 +804,12 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
                     now=self.clock,
                 )
 
-                result = lifecycle.preflight()
+                with mock.patch.object(
+                    contract,
+                    "DIRECT_IMAGE_RUNTIME_VERIFIED",
+                    True,
+                ):
+                    result = lifecycle.preflight()
 
                 self.assertEqual(
                     tuple(result),
@@ -834,8 +841,31 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
             ),
             now=self.clock,
         )
-        with self.assertRaisesRegex(RuntimeError, "hard non-200"):
+        with mock.patch.object(contract, "DIRECT_IMAGE_RUNTIME_VERIFIED", True):
+            with self.assertRaisesRegex(RuntimeError, "hard non-200"):
+                lifecycle.preflight()
+
+    def test_preflight_fails_before_provider_calls_while_direct_image_is_unsafe(self):
+        opener = RuntimeOpener([])
+        guards = []
+        lifecycle = baseten_winner.BasetenWinnerLifecycle(
+            store=self.store,
+            campaign_id=CAMPAIGN,
+            team_name=TEAM,
+            request_guard=lambda: guards.append(True),
+            runtime=baseten_winner.BasetenWinnerRuntime(
+                api_key="manageprefix-secret",
+                team_name=TEAM,
+                opener=opener,
+            ),
+            now=self.clock,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "no-build is provider-enabled"):
             lifecycle.preflight()
+
+        self.assertEqual(guards, [True])
+        self.assertEqual(opener.requests, [])
 
     def test_concrete_runtime_uses_only_pinned_truss_and_exact_team(self):
         output = json.dumps(
@@ -881,11 +911,26 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
             TEAM,
         )
 
-        self.assertEqual(runtime._push_truss(TEAM, truss, argv), output)
+        with mock.patch.object(contract, "DIRECT_IMAGE_RUNTIME_VERIFIED", True):
+            self.assertEqual(runtime._push_truss(TEAM, truss, argv), output)
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[1][1]["timeout"], 600)
         self.assertNotIn("shell", calls[1][1])
         self.assertFalse(Path(f"/tmp/milk-winner/{self.run_id}").exists())
+
+    def test_concrete_runtime_never_runs_truss_while_direct_image_is_unsafe(self):
+        calls = []
+        runtime = baseten_winner.BasetenWinnerRuntime(
+            api_key="manageprefix-secret",
+            team_name=TEAM,
+            opener=RuntimeOpener([]),
+            runner=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "no-build is provider-enabled"):
+            runtime._push_truss(TEAM, "invalid", [])
+
+        self.assertEqual(calls, [])
 
     def test_concrete_runtime_creates_and_revokes_only_the_exact_model_key(self):
         model = {
@@ -912,12 +957,15 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
         )
         name = baseten_winner._candidate_key_name(self.run_id, 0)
 
-        key = runtime._create_model_scoped_key(TEAM, MODEL_ID, name)
+        key = runtime._create_model_scoped_key(TEAM, "team_1", MODEL_ID, name)
         runtime._delete_api_key(TEAM, "candidate00")
 
         self.assertEqual(key, "candidate00-secret")
         self.assertEqual(opener.requests[1][0], "POST")
-        self.assertEqual(opener.requests[1][1], baseten_winner.API_ROOT + "/api_keys")
+        self.assertEqual(
+            opener.requests[1][1],
+            baseten_winner.API_ROOT + "/teams/team_1/api_keys",
+        )
         self.assertEqual(opener.requests[1][3], "Api-Key manageprefix-secret")
         self.assertEqual(
             json.loads(opener.requests[1][4]),
@@ -929,6 +977,24 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
         )
         self.assertEqual(opener.requests[2][0], "DELETE")
         self.assertTrue(opener.requests[2][1].endswith("/api_keys/candidate00"))
+
+    def test_key_metadata_accepts_provider_key_management_category(self):
+        keys = baseten_winner._api_key_metadata(
+            {
+                "keys": [
+                    {
+                        "prefix": "manager",
+                        "name": "key-manager",
+                        "type": "WORKSPACE_MANAGE_API_KEYS",
+                        "model_ids": None,
+                        "team_name": None,
+                        "owner": None,
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(keys[0]["type"], "WORKSPACE_MANAGE_API_KEYS")
 
     def test_concrete_lookup_reproves_model_team_and_exact_deployment(self):
         model = {
@@ -1021,8 +1087,8 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
     def test_prepare_rejects_nonmatching_private_student_image(self):
         provider = FakeBaseten(self, self.store, self.run_id, self.clock)
         lifecycle = self.lifecycle(provider)
-        self.release["images"]["student"]["image_reference"] = (
-            "ghcr.io/milkinfrastructure/milk-student@sha256:" + "0" * 64
+        self.release["images"]["student-branch"]["image_reference"] = (
+            "ghcr.io/milkinfrastructure/milk-student-branch@sha256:" + "0" * 64
         )
         with self.assertRaisesRegex(ValueError, "private student image"):
             self.prepare(lifecycle)

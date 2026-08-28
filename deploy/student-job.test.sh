@@ -11,6 +11,7 @@ fake_runner=$test_root/runner
 fake_privilege=$test_root/setpriv
 log=$test_root/calls
 config=$test_root/config.json
+role_file=$test_root/student-artifact-role
 worker_uid=$(id -u)
 worker_gid=$(id -g)
 
@@ -31,7 +32,7 @@ cleanup() {
     cleanup_work "$test_root/$name"
   done
   rm -f -- "$fake_gateway" "$fake_runner" "$fake_privilege" "$log" "$config" \
-    "$test_root/serve-key" "$test_root/serve/model-manifest.json" \
+    "$role_file" "$test_root/serve-key" "$test_root/serve/model-manifest.json" \
     "$image_root/student-job.sh" "$image_root/student-run.sh"
   rmdir -- "$test_root/serve/model" "$test_root/serve" "$image_root" "$test_root" 2>/dev/null || :
 }
@@ -40,6 +41,7 @@ trap cleanup EXIT HUP INT TERM
 mkdir "$image_root"
 : >"$config"
 chmod 0400 "$config"
+printf '%s\n' student-train >"$role_file"
 
 cat >"$fake_gateway" <<'EOF'
 #!/bin/sh
@@ -170,6 +172,7 @@ exec "$@"
 EOF
 
 sed -e "s|/usr/bin/setpriv|$fake_privilege|" \
+  -e "s|role_path=/usr/share/milk/student-artifact-role|role_path=$role_file|" \
   -e "s/^worker_uid=65532$/worker_uid=$worker_uid/" \
   -e "s/^worker_gid=65532$/worker_gid=$worker_gid/" \
   "$source_wrapper" >"$wrapper"
@@ -256,11 +259,19 @@ set -e
 
 branch_work=$test_root/branch
 : >"$log"
+set +e
+run_branch "$job_id" success dynamic_fp8 "$branch_work" >/dev/null 2>&1
+status=$?
+set -e
+[ "$status" -eq 64 ] && [ ! -s "$log" ] && [ ! -e "$branch_work" ]
+printf '%s\n' student-branch >"$role_file"
 receipt=$(run_branch "$job_id" success dynamic_fp8 "$branch_work")
 [ "$receipt" = '{"status":"ready"}' ]
 assert_calls "gateway|--config|$config|materialize-student-branch|--student-job-id|$job_id|--variant|dynamic_fp8|--stage-dir|$branch_work/input
 runner|fixture-branch|--claim|$branch_work/input/claim.json|--input|$branch_work/input/input.json|--train-result|$branch_work/input/train-result.json|--fanout-claim|$branch_work/input/fanout-claim.json|--merged-model|$branch_work/input/merged-model/model|--merged-model-manifest|$branch_work/input/merged-model/model-manifest.json|--variant|dynamic_fp8|--output|$branch_work/worker/output
 gateway|--config|$config|ingest-student-branch-execution|--result|$branch_work/worker/output/result.json|--upload|$branch_work/worker/output/upload.json|--artifact-dir|$branch_work/worker/output/artifact"
+
+printf '%s\n' student-train >"$role_file"
 
 failed_work=$test_root/failed-result
 : >"$log"
@@ -314,6 +325,7 @@ serve_key=$test_root/serve-key
 mkdir -p "$serve_model"
 : >"$serve_manifest"
 : >"$serve_key"
+printf '%s\n' student-branch >"$role_file"
 for auth in key trusted; do
   : >"$log"
   if [ "$auth" = key ]; then

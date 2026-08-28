@@ -37,11 +37,18 @@ CONFIG_MEDIA_TYPES = {
     "application/vnd.docker.container.image.v1+json",
 }
 ARTIFACTS = {
-    "student": {
-        "repository": "ghcr.io/milkinfrastructure/milk-student",
-        "dockerfile": "deploy/student/Dockerfile",
+    "student-train": {
+        "repository": "ghcr.io/milkinfrastructure/milk-student-train",
+        "dockerfile": "deploy/student-train/Dockerfile",
         "base_sha256": {
             "6b8b2cf339de90b67ed25f246ad3dcfd773cb80e629577eb31aeb2a6b81db80e",
+        },
+        "gateway": True,
+    },
+    "student-branch": {
+        "repository": "ghcr.io/milkinfrastructure/milk-student-branch",
+        "dockerfile": "deploy/student-branch/Dockerfile",
+        "base_sha256": {
             "50509e700235cea487715cedeb501d20a1cd15fa6a54ce93688284bd0d96995d",
         },
         "gateway": True,

@@ -77,7 +77,8 @@ SCOPE = {
 SCOPE_PREFIX = "dt/v2/" + "/".join(SCOPE.values())
 TEST_IMAGE_ADMISSIONS = {}
 for _artifact, _repository, _digit in (
-    ("student", "ghcr.io/milkinfrastructure/milk-student", "1"),
+    ("student-train", "ghcr.io/milkinfrastructure/milk-student-train", "1"),
+    ("student-branch", "ghcr.io/milkinfrastructure/milk-student-branch", "f"),
     (
         "teacher-gpt-oss",
         "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss",
@@ -99,14 +100,14 @@ for _artifact, _repository, _digit in (
     }
 TEST_IMAGE_RELEASE_RAW = canonical_json(
     {
-        "schema_version": "milk.private-harness-release.v1",
+        "schema_version": "milk.private-harness-release.v2",
         "images": [
             {
                 "admission_sha256": TEST_IMAGE_ADMISSIONS[artifact]["sha256"],
                 "artifact": artifact,
                 "image_reference": TEST_IMAGE_ADMISSIONS[artifact]["image_reference"],
             }
-            for artifact in ("student", "teacher-gpt-oss")
+            for artifact in ("student-train", "student-branch", "teacher-gpt-oss")
         ],
     }
 )
@@ -331,7 +332,11 @@ def retained_time(value):
 
 
 def workload(character, kind="teacher_run"):
-    artifact = "teacher-gpt-oss" if kind == "teacher_run" else "student"
+    artifact = {
+        "teacher_run": "teacher-gpt-oss",
+        "student_train_merge": "student-train",
+        "student_fanout": "student-branch",
+    }[kind]
     identity = character * 64
     expires = NOW + dt.timedelta(days=7)
     expires_at = expires.isoformat(
@@ -365,7 +370,7 @@ def workload(character, kind="teacher_run"):
             "max_total_gpu_seconds": 7_200,
             "branches": [
                 {
-                    "schema_version": "dragontales.student-branch-claim.v1",
+                    "schema_version": "dragontales.student-branch-claim.v2",
                     "branch_id": digit * 64,
                     "variant": variant,
                     "max_gpu_seconds": 1_800,
@@ -492,7 +497,7 @@ def control_launch(
     elif kind == "student_train_merge":
         counts = {"train": 50, "dev": 73, "calibration": 128}
         definition = {
-            "schema_version": "dragontales.student-job-definition.v3",
+            "schema_version": "dragontales.student-job-definition.v4",
             "teacher_provider_binding_sha256": hashlib.sha256(
                 f"student-provider-{nonce}".encode()
             ).hexdigest(),
@@ -517,7 +522,12 @@ def control_launch(
             "recipe_sha256": hashlib.sha256(
                 f"student-recipe-{nonce}".encode()
             ).hexdigest(),
-            "runtime_image_reference": TEST_IMAGE_ADMISSIONS["student"][
+            "student_train_runtime_image_reference": TEST_IMAGE_ADMISSIONS[
+                "student-train"
+            ]["image_reference"],
+            "student_branch_runtime_image_reference": TEST_IMAGE_ADMISSIONS[
+                "student-branch"
+            ][
                 "image_reference"
             ],
             "max_train_gpu_seconds": 1_800,
@@ -529,11 +539,10 @@ def control_launch(
                 "max_p95_latency_ms": 30_000,
             },
             "expires_at": expires_at,
-            "initial_stage": "train_merge",
         }
         identity = hashlib.sha256(gateway_json(definition)).hexdigest()
         claim = {
-            "schema_version": "dragontales.student-job-claim.v3",
+            "schema_version": "dragontales.student-job-claim.v4",
             "scope": scope,
             "student_job_id": identity,
             "definition": definition,
@@ -550,7 +559,7 @@ def control_launch(
         identity = hashlib.sha256(f"fanout-student-{nonce}".encode()).hexdigest()
         branches = [
             {
-                "schema_version": "dragontales.student-branch-claim.v1",
+                "schema_version": "dragontales.student-branch-claim.v2",
                 "branch_id": hashlib.sha256(
                     f"fanout-{variant}-{nonce}".encode()
                 ).hexdigest(),
@@ -560,7 +569,7 @@ def control_launch(
             for variant in ("bf16", "dynamic_fp8", "static_fp8")
         ]
         claim = {
-            "schema_version": "dragontales.student-fanout-claim.v3",
+            "schema_version": "dragontales.student-fanout-claim.v4",
             "scope": scope,
             "student_job_id": identity,
             "train_result_sha256": hashlib.sha256(
@@ -569,7 +578,9 @@ def control_launch(
             "recipe_sha256": hashlib.sha256(
                 f"fanout-recipe-{nonce}".encode()
             ).hexdigest(),
-            "runtime_image_reference": TEST_IMAGE_ADMISSIONS["student"][
+            "student_branch_runtime_image_reference": TEST_IMAGE_ADMISSIONS[
+                "student-branch"
+            ][
                 "image_reference"
             ],
             "max_total_gpu_seconds": 7_200,
@@ -587,12 +598,14 @@ def control_launch(
     elif kind == "student_winner_deployment":
         identity = hashlib.sha256(f"winner-student-{nonce}".encode()).hexdigest()
         authority = {
-            "schema_version": "dragontales.winner-deployment-authority.v1",
+            "schema_version": "dragontales.winner-deployment-authority.v2",
             "provider_policy": {"primary": "baseten", "fallback": "modal"},
             "provider_terms_sha256": hashlib.sha256(
                 f"winner-terms-{nonce}".encode()
             ).hexdigest(),
-            "runtime_image_reference": TEST_IMAGE_ADMISSIONS["student"][
+            "student_branch_runtime_image_reference": TEST_IMAGE_ADMISSIONS[
+                "student-branch"
+            ][
                 "image_reference"
             ],
             "admission_program_sha256": hashlib.sha256(
@@ -612,9 +625,9 @@ def control_launch(
             "max_input_utf8_bytes": 2_048,
             "max_input_messages": 16,
             "max_input_request_bytes": 16_384,
-            "route_schema_version": "dragontales.route.v3",
+            "route_schema_version": "dragontales.route.v4",
             "winner_admission_schema_version": (
-                "dragontales.winner-admission-receipt.v1"
+                "dragontales.winner-admission-receipt.v2"
             ),
         }
         provider_binding = hashlib.sha256(
@@ -633,7 +646,7 @@ def control_launch(
                 "bytes": 1,
             }
         claim = {
-            "schema_version": "dragontales.student-winner-deployment-claim.v1",
+            "schema_version": "dragontales.student-winner-deployment-claim.v2",
             "scope": scope,
             "student_job_id": identity,
             "student_claim_sha256": hashlib.sha256(
@@ -643,7 +656,9 @@ def control_launch(
             "winner": "static_fp8",
             "model_manifest": artifacts["model_manifest"],
             "dev_receipt": artifacts["dev_receipt"],
-            "runtime_image_reference": authority["runtime_image_reference"],
+            "student_branch_runtime_image_reference": authority[
+                "student_branch_runtime_image_reference"
+            ],
             "provider_binding_sha256": provider_binding,
             "authority": authority,
             "claimed_at": created_at,
@@ -670,8 +685,10 @@ def control_launch(
     outbox_key = parent + "/launch-outbox.json"
     runtime_image = (
         claim["definition"]["runtime_image_reference"]
-        if kind in {"teacher_run", "student_train_merge"}
-        else claim["runtime_image_reference"]
+        if kind == "teacher_run"
+        else claim["definition"]["student_train_runtime_image_reference"]
+        if kind == "student_train_merge"
+        else claim["student_branch_runtime_image_reference"]
     )
     outbox = {
         "schema_version": "dragontales.gpu-launch-outbox.v1",
@@ -718,13 +735,15 @@ def control_launch(
 def private_image_release(root):
     root = Path(root)
     repositories = {
-        "student": "ghcr.io/milkinfrastructure/milk-student",
+        "student-train": "ghcr.io/milkinfrastructure/milk-student-train",
+        "student-branch": "ghcr.io/milkinfrastructure/milk-student-branch",
         "teacher-gpt-oss": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss",
         "planner": "ghcr.io/milkinfrastructure/milk-planner",
         "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
     }
     digests = {
-        "student": "1" * 64,
+        "student-train": "1" * 64,
+        "student-branch": "f" * 64,
         "teacher-gpt-oss": "2" * 64,
         "planner": "3" * 64,
         "jobs": "4" * 64,
@@ -790,7 +809,7 @@ def private_image_release(root):
     (root / "release.json").write_bytes(
         canonical_json(
             {
-                "schema_version": "milk.private-harness-release.v1",
+                "schema_version": "milk.private-harness-release.v2",
                 "source_commit": "8" * 40,
                 "source_date_epoch": 1_777_777_777,
                 "source_repository": "https://github.com/milkinfrastructure/milk-harness",
@@ -816,8 +835,11 @@ def publish_release(store, release_dir):
 
 def provider_arguments(release_sha256):
     return types.SimpleNamespace(
-        student_image=(
-            "ghcr.io/milkinfrastructure/milk-student@sha256:" + "1" * 64
+        student_train_image=(
+            "ghcr.io/milkinfrastructure/milk-student-train@sha256:" + "1" * 64
+        ),
+        student_branch_image=(
+            "ghcr.io/milkinfrastructure/milk-student-branch@sha256:" + "f" * 64
         ),
         teacher_image=(
             "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss@sha256:"
@@ -839,6 +861,53 @@ def provider_arguments(release_sha256):
 
 
 class BasetenJobsTests(unittest.TestCase):
+    def test_modal_model_volumes_are_distinct_and_used_only_when_needed(self):
+        arguments = types.SimpleNamespace(
+            modal_registry_secret_name="registry",
+            modal_registry_secret_id="st-registry",
+            modal_config_secret_name="config",
+            modal_config_secret_id="st-config",
+            modal_control_secret_name="control",
+            modal_control_secret_id="st-control",
+            modal_capture_secret_name="capture",
+            modal_capture_secret_id="st-capture",
+            modal_candidate_secret_name="candidate",
+            modal_candidate_secret_id="st-candidate",
+            modal_teacher_volume_name="teacher-model",
+            modal_teacher_volume_id="vo-teacher",
+            modal_student_train_volume_name="student-model",
+            modal_student_train_volume_id="vo-student",
+        )
+        settings = {
+            "control_store_session_token_secret": None,
+            "capture_store_session_token_secret": None,
+        }
+        resources = jobs_module._modal_resources_from_arguments(arguments, settings)
+        self.assertEqual(
+            resources["student_train_volume"],
+            {
+                "name": "student-model",
+                "object_id": "vo-student",
+                "mount_path": adapter.STUDENT_MODEL_MOUNT,
+                "read_only": True,
+            },
+        )
+        self.assertEqual(
+            jobs_module._modal_plan_resources(
+                resources, "student_train_merge"
+            )["volumes"],
+            [resources["student_train_volume"]],
+        )
+        self.assertEqual(
+            jobs_module._modal_plan_resources(resources, "student_branch")[
+                "volumes"
+            ],
+            [],
+        )
+        arguments.modal_student_train_volume_id = arguments.modal_teacher_volume_id
+        with self.assertRaisesRegex(ValueError, "pairwise distinct"):
+            jobs_module._modal_resources_from_arguments(arguments, settings)
+
     def test_paid_modal_winner_fallback_is_disabled_before_preflight(self):
         parameter = inspect.signature(
             jobs_module.dispatch_cross_provider_outboxes
@@ -1087,8 +1156,10 @@ class BasetenJobsTests(unittest.TestCase):
                 SCOPE_PREFIX,
                 "--lease-token",
                 str(token_path),
-                "--student-image",
-                "ghcr.io/milkinfrastructure/milk-student@sha256:" + "1" * 64,
+                "--student-train-image",
+                "ghcr.io/milkinfrastructure/milk-student-train@sha256:" + "1" * 64,
+                "--student-branch-image",
+                "ghcr.io/milkinfrastructure/milk-student-branch@sha256:" + "f" * 64,
                 "--teacher-image",
                 "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss@sha256:" + "2" * 64,
                 "--jobs-image",
@@ -1495,13 +1566,17 @@ class BasetenJobsTests(unittest.TestCase):
             release = publish_release(store, Path(root) / "release")
             arguments = provider_arguments(release["release_sha256"])
             self.assertEqual(
-                settings_from_arguments(arguments, store)["student_image"],
-                arguments.student_image,
+                settings_from_arguments(arguments, store)["student_branch_image"],
+                arguments.student_branch_image,
             )
             for field, image in (
                 (
-                    "student_image",
-                    "ghcr.io/another-org/milk-student@sha256:" + "1" * 64,
+                    "student_train_image",
+                    "ghcr.io/another-org/milk-student-train@sha256:" + "1" * 64,
+                ),
+                (
+                    "student_branch_image",
+                    "ghcr.io/another-org/milk-student-branch@sha256:" + "f" * 64,
                 ),
                 (
                     "teacher_image",
@@ -1520,8 +1595,8 @@ class BasetenJobsTests(unittest.TestCase):
                 settings_from_arguments(rejected, store)
             for field, image in (
                 (
-                    "student_image",
-                    "ghcr.io/milkinfrastructure/milk-student@sha256:" + "f" * 64,
+                    "student_train_image",
+                    "ghcr.io/milkinfrastructure/milk-student-train@sha256:" + "0" * 64,
                 ),
                 (
                     "jobs_image",
@@ -1532,6 +1607,12 @@ class BasetenJobsTests(unittest.TestCase):
                 setattr(mismatched, field, image)
                 with self.assertRaisesRegex(ValueError, "private build admission"):
                     settings_from_arguments(mismatched, store)
+            same_digest = provider_arguments(release["release_sha256"])
+            same_digest.student_train_image = (
+                "ghcr.io/milkinfrastructure/milk-student-train@sha256:" + "f" * 64
+            )
+            with self.assertRaisesRegex(ValueError, "distinct digests"):
+                settings_from_arguments(same_digest, store)
 
     def test_private_image_release_publish_replays_and_loads_without_local_files(self):
         with tempfile.TemporaryDirectory() as root:

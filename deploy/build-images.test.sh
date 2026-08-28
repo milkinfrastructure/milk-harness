@@ -236,7 +236,8 @@ import subprocess
 import sys
 
 repositories = {
-    "student": "ghcr.io/milkinfrastructure/milk-student",
+    "student-train": "ghcr.io/milkinfrastructure/milk-student-train",
+    "student-branch": "ghcr.io/milkinfrastructure/milk-student-branch",
     "teacher-gpt-oss": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss",
     "planner": "ghcr.io/milkinfrastructure/milk-planner",
     "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
@@ -398,7 +399,7 @@ case "$*" in
   'auth token --hostname github.com') printf '%s\n' 'ephemeral-test-password' ;;
   *'/orgs/milkinfrastructure/packages?package_type=container&per_page=100'*)
     printf 'milk-gateway\tprivate\n'
-    [ "${TEST_PUBLIC_PACKAGE:-0}" -eq 0 ] || printf 'milk-student\tpublic\n'
+    [ "${TEST_PUBLIC_PACKAGE:-0}" -eq 0 ] || printf 'milk-student-train\tpublic\n'
     ;;
   *'/orgs/milkinfrastructure/packages/container/'*) printf '%s\n' 'private' ;;
   *) exit 91 ;;
@@ -502,7 +503,7 @@ run_builder "$gateway" "$output" >"$test_root/stdout"
 [ -s "$output/builder.json" ]
 [ -s "$output/release.json" ]
 [ ! -e "$output/failure.json" ]
-for artifact in student teacher-gpt-oss planner jobs; do
+for artifact in student-train student-branch teacher-gpt-oss planner jobs; do
   [ -s "$output/$artifact/metadata.json" ]
   [ -s "$output/$artifact/index.json" ]
   [ -s "$output/$artifact/amd64-manifest.json" ]
@@ -517,21 +518,22 @@ done
 [ -z "$(find "$output" -type f -name '*.log' -print)" ]
 ! grep -R -Fq 'ephemeral-test-password' "$output" "$test_root/commands.log"
 
-[ "$(grep -c '^docker|.*buildx|build|' "$test_root/commands.log")" -eq 4 ]
-[ "$(grep -c '^docker|.*buildx|imagetools|inspect|--raw|' "$test_root/commands.log")" -eq 12 ]
-[ "$(grep -c '^verifier|' "$test_root/commands.log")" -eq 4 ]
-[ "$(grep -c '^gh|auth|token|--hostname|github.com$' "$test_root/commands.log")" -eq 5 ]
-[ "$(grep -o -- '--platform|linux/amd64' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
-[ "$(grep -o -- '--provenance=mode=max,version=v1' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
-[ "$(grep -o -- '--sbom=true' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
-[ "$(grep -o -- '--build-arg|BUILDKIT_SYNTAX=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
-[ "$(grep -o -- "--build-arg|MILK_SOURCE_CONTEXT_SHA256=$source_context_digest" "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
-[ "$(grep -o -- '--build-arg|SOURCE_DATE_EPOCH=1700000000' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
-[ "$(grep -o -- "--build-arg|MILK_GATEWAY_IMAGE=$gateway" "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 2 ]
+[ "$(grep -c '^docker|.*buildx|build|' "$test_root/commands.log")" -eq 5 ]
+[ "$(grep -c '^docker|.*buildx|imagetools|inspect|--raw|' "$test_root/commands.log")" -eq 15 ]
+[ "$(grep -c '^verifier|' "$test_root/commands.log")" -eq 5 ]
+[ "$(grep -c '^gh|auth|token|--hostname|github.com$' "$test_root/commands.log")" -eq 6 ]
+[ "$(grep -o -- '--platform|linux/amd64' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 5 ]
+[ "$(grep -o -- '--provenance=mode=max,version=v1' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 5 ]
+[ "$(grep -o -- '--sbom=true' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 5 ]
+[ "$(grep -o -- '--build-arg|BUILDKIT_SYNTAX=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 5 ]
+[ "$(grep -o -- "--build-arg|MILK_SOURCE_CONTEXT_SHA256=$source_context_digest" "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 5 ]
+[ "$(grep -o -- '--build-arg|SOURCE_DATE_EPOCH=1700000000' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 5 ]
+[ "$(grep -o -- "--build-arg|MILK_GATEWAY_IMAGE=$gateway" "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 3 ]
 grep -Fq -- "--driver-opt|image=moby/buildkit@sha256:ddd1ca44b21eda906e81ab14a3d467fa6c39cd73b9a39df1196210edcb8db59e" "$test_root/commands.log"
 grep -Fq -- '--driver|docker-container' "$test_root/commands.log"
 grep -Fq -- '--push' "$test_root/commands.log"
-grep -Fq -- "--tag|ghcr.io/milkinfrastructure/milk-student:source-$revision" "$test_root/commands.log"
+grep -Fq -- "--tag|ghcr.io/milkinfrastructure/milk-student-train:source-$revision" "$test_root/commands.log"
+grep -Fq -- "--tag|ghcr.io/milkinfrastructure/milk-student-branch:source-$revision" "$test_root/commands.log"
 grep -Fq -- "--tag|ghcr.io/milkinfrastructure/milk-teacher-gpt-oss:source-$revision" "$test_root/commands.log"
 grep -Fq -- "--tag|ghcr.io/milkinfrastructure/milk-planner:source-$revision" "$test_root/commands.log"
 grep -Fq -- "--tag|ghcr.io/milkinfrastructure/milk-jobs:source-$revision" "$test_root/commands.log"
@@ -549,11 +551,13 @@ assert release["source_commit"] == revision
 assert release["gateway_image_reference"] == gateway
 assert release["build_authority"] == "local-socket"
 assert release["platform"] == "linux/amd64"
+assert release["schema_version"] == "milk.private-harness-release.v2"
 assert [item["artifact"] for item in release["images"]] == [
-    "student", "teacher-gpt-oss", "planner", "jobs",
+    "student-train", "student-branch", "teacher-gpt-oss", "planner", "jobs",
 ]
 expected_repositories = {
-    "student": "ghcr.io/milkinfrastructure/milk-student",
+    "student-train": "ghcr.io/milkinfrastructure/milk-student-train",
+    "student-branch": "ghcr.io/milkinfrastructure/milk-student-branch",
     "teacher-gpt-oss": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss",
     "planner": "ghcr.io/milkinfrastructure/milk-planner",
     "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
@@ -583,7 +587,7 @@ input_receipt = json.loads(root.joinpath("input.json").read_bytes())
 assert input_receipt["source_context_method"] == "git-archive-tar-v1"
 assert input_receipt["source_context_sha256"] == context_sha256
 release_by_artifact = {item["artifact"]: item for item in release["images"]}
-for artifact in ("student", "teacher-gpt-oss", "planner", "jobs"):
+for artifact in ("student-train", "student-branch", "teacher-gpt-oss", "planner", "jobs"):
     receipt = json.loads(root.joinpath(artifact, "receipt.json").read_bytes())
     assert receipt["source_commit"] == revision
     assert receipt["visibility"] == "private"
@@ -642,7 +646,7 @@ PY
 
 repeat=$test_root/evidence-repeat
 run_builder "$gateway" "$repeat" >/dev/null
-for artifact in student teacher-gpt-oss planner jobs; do
+for artifact in student-train student-branch teacher-gpt-oss planner jobs; do
   cmp "$output/$artifact/admission.json" "$repeat/$artifact/admission.json"
 done
 
@@ -714,7 +718,7 @@ status=$?
 set -e
 [ "$status" -eq 70 ]
 [ -s "$test_root/build-failure/failure.json" ]
-[ -s "$test_root/build-failure/student/build-log.json" ]
+[ -s "$test_root/build-failure/student-train/build-log.json" ]
 [ -z "$(find "$test_root/build-failure" -type f -name '*.log' -print)" ]
 ! grep -R -Fq 'raw failing build output must not persist' "$test_root/build-failure"
 python3 - "$test_root/build-failure" <<'PY'
@@ -724,8 +728,8 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 failure = json.loads(root.joinpath("failure.json").read_bytes())
-observation = json.loads(root.joinpath("student", "build-log.json").read_bytes())
-assert failure["stage"] == "build-student"
+observation = json.loads(root.joinpath("student-train", "build-log.json").read_bytes())
+assert failure["stage"] == "build-student-train"
 assert observation["exit_code"] == 55
 assert observation["content_retained"] is False
 assert observation["bytes"] > 0
@@ -747,19 +751,25 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 failure = json.loads(root.joinpath("failure.json").read_bytes())
-assert failure["stage"] == "verify-student"
+assert failure["stage"] == "verify-student-train"
 PY
 ! grep -R -Fq 'ephemeral-test-password' \
   "$test_root/verify-failure" "$test_root/commands.log"
 
 for dockerfile in \
-  "$root/deploy/student/Dockerfile" \
+  "$root/deploy/student-train/Dockerfile" \
+  "$root/deploy/student-branch/Dockerfile" \
   "$root/deploy/teacher/gpt-oss-120b/Dockerfile" \
   "$root/Dockerfile.planner" \
   "$root/Dockerfile.jobs"; do
   grep -Fxq '# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e' \
     "$dockerfile"
 done
+teacher_dockerfile=$root/deploy/teacher/gpt-oss-120b/Dockerfile
+! grep -Eq '^(ADD|RUN)[[:space:]]' "$teacher_dockerfile"
+[ "$(grep -c '^COPY .*--link' "$teacher_dockerfile")" -eq \
+  "$(grep -c '^COPY ' "$teacher_dockerfile")" ]
+grep -Fq -- '--sbom=true' "$builder"
 grep -Fxq 'USER 65532:65532' "$root/Dockerfile.planner"
 grep -Fxq 'USER 65532:65532' "$root/Dockerfile.jobs"
 grep -Fq 'import modal, truss' "$root/Dockerfile.jobs"

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import inspect
 import importlib.util
 import json
 import os
+import re
 import shutil
-import stat
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,14 +16,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RUNNER = ROOT / "deploy/student-run.sh"
 RUNTIME_PATH = Path(__file__).resolve().with_name("runtime.py")
 SPEC = importlib.util.spec_from_file_location("student_runtime", RUNTIME_PATH)
 runtime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runtime)
-PRODUCTION_RECIPE_SHA256 = "4b885bd86d91c8ef1303652bc2bc0fb14ebc3b80c5eeb850f8709746caa1e7eb"
-FIXTURE_RECIPE_SHA256 = "cac916e7b430fb318685c8fe4435db6415181d770857881cf933ceada7ac1770"
-FIXTURE_IMAGE = "fixture/dragontales-student@sha256:" + "1" * 64
+PRODUCTION_RECIPE_SHA256 = "6e12cf38219b44fc03e06f8f62f605441d96c019ab3bf059eeba6536e129b1ba"
+FIXTURE_RECIPE_SHA256 = "a4669cd38ac96daeef41c9e091afa239f8a0feeaee6ca2319151cd656d50c40e"
+FIXTURE_TRAIN_IMAGE = "fixture/dragontales-student-train@sha256:" + "1" * 64
+FIXTURE_BRANCH_IMAGE = "fixture/dragontales-student-branch@sha256:" + "2" * 64
 
 
 def compact(value):
@@ -85,7 +85,7 @@ def fixture_files(root):
     }
     input_raw = line(inputs)
     definition = {
-        "schema_version": "dragontales.student-job-definition.v3",
+        "schema_version": "dragontales.student-job-definition.v4",
         "teacher_provider_binding_sha256": "2" * 64,
         "teacher_results": [
             {"teacher_job_id": "3" * 64, "object_sha256": "4" * 64, "bytes": 1}
@@ -94,7 +94,8 @@ def fixture_files(root):
         "dev_set_sha256": digest(runtime.DEV_SET_DOMAIN + compact(inputs["dev"])),
         "counts": {"train": 50, "dev": 73, "calibration": 128},
         "recipe_sha256": runtime.recipe_sha256("fixture"),
-        "runtime_image_reference": FIXTURE_IMAGE,
+        "student_train_runtime_image_reference": FIXTURE_TRAIN_IMAGE,
+        "student_branch_runtime_image_reference": FIXTURE_BRANCH_IMAGE,
         "max_train_gpu_seconds": runtime.MAX_TRAIN_GPU_SECONDS,
         "max_branch_gpu_seconds": runtime.MAX_BRANCH_GPU_SECONDS,
         "max_total_gpu_seconds": runtime.MAX_TOTAL_GPU_SECONDS,
@@ -104,10 +105,9 @@ def fixture_files(root):
             "max_p95_latency_ms": 30_000,
         },
         "expires_at": "2099-01-02T00:00:00Z",
-        "initial_stage": "train_merge",
     }
     claim = {
-        "schema_version": "dragontales.student-job-claim.v3",
+        "schema_version": "dragontales.student-job-claim.v4",
         "scope": scope,
         "student_job_id": digest(compact(definition)),
         "definition": definition,
@@ -166,29 +166,34 @@ def fixture_fanout(root, claim, train_output):
     branches = []
     for variant in runtime.VARIANTS:
         definition = {
-            "schema_version": "dragontales.student-branch-definition.v1",
+            "schema_version": "dragontales.student-branch-definition.v2",
             "student_job_id": claim["student_job_id"],
             "variant": variant,
             "train_result_sha256": digest(train_raw),
             "recipe_sha256": claim["definition"]["recipe_sha256"],
+            "student_branch_runtime_image_reference": claim["definition"][
+                "student_branch_runtime_image_reference"
+            ],
             "max_gpu_seconds": runtime.MAX_BRANCH_GPU_SECONDS,
             "expires_at": claim["definition"]["expires_at"],
         }
         branches.append(
             {
-                "schema_version": "dragontales.student-branch-claim.v1",
+                "schema_version": "dragontales.student-branch-claim.v2",
                 "branch_id": digest(compact(definition)),
                 "variant": variant,
                 "max_gpu_seconds": runtime.MAX_BRANCH_GPU_SECONDS,
             }
         )
     fanout = {
-        "schema_version": "dragontales.student-fanout-claim.v3",
+        "schema_version": "dragontales.student-fanout-claim.v4",
         "scope": claim["scope"],
         "student_job_id": claim["student_job_id"],
         "train_result_sha256": digest(train_raw),
         "recipe_sha256": claim["definition"]["recipe_sha256"],
-        "runtime_image_reference": claim["definition"]["runtime_image_reference"],
+        "student_branch_runtime_image_reference": claim["definition"][
+            "student_branch_runtime_image_reference"
+        ],
         "max_total_gpu_seconds": runtime.MAX_TOTAL_GPU_SECONDS,
         "created_at": train["finished_at"],
         "expires_at": claim["definition"]["expires_at"],
@@ -219,7 +224,7 @@ def fixture_fanout(root, claim, train_output):
 
 
 class StudentRuntimeTest(unittest.TestCase):
-    def test_v3_image_and_budget_wire_is_exact(self):
+    def test_v4_split_images_and_budget_wire_are_exact(self):
         self.assertEqual(
             (
                 runtime.MAX_TRAIN_GPU_SECONDS,
@@ -260,19 +265,65 @@ class StudentRuntimeTest(unittest.TestCase):
                 runtime._validate_claim(compact(untyped), False, "fixture")
 
             mutable = json.loads(claim_path.read_bytes())
-            mutable["definition"]["runtime_image_reference"] = (
-                "fixture/dragontales-student:latest"
+            mutable["definition"]["student_train_runtime_image_reference"] = (
+                "fixture/dragontales-student-train:latest"
             )
             mutable["student_job_id"] = digest(compact(mutable["definition"]))
             with self.assertRaisesRegex(ValueError, "immutable"):
                 runtime._validate_claim(compact(mutable), False, "fixture")
 
+            same_digest = json.loads(claim_path.read_bytes())
+            same_digest["definition"]["student_branch_runtime_image_reference"] = (
+                "fixture/dragontales-student-branch@sha256:" + "1" * 64
+            )
+            same_digest["student_job_id"] = digest(compact(same_digest["definition"]))
+            with self.assertRaisesRegex(ValueError, "distinct digests"):
+                runtime._validate_claim(compact(same_digest), False, "fixture")
+
             reordered = json.loads(claim_path.read_bytes())
-            image = reordered["definition"].pop("runtime_image_reference")
-            reordered["definition"]["runtime_image_reference"] = image
+            image = reordered["definition"].pop("student_train_runtime_image_reference")
+            reordered["definition"]["student_train_runtime_image_reference"] = image
             reordered["student_job_id"] = digest(compact(reordered["definition"]))
             with self.assertRaisesRegex(ValueError, "wrong typed fields"):
                 runtime._validate_claim(compact(reordered), False, "fixture")
+
+    def test_artifact_roles_are_exact_and_operations_are_separated(self):
+        with tempfile.TemporaryDirectory(prefix="dragontales-student-role-") as temporary:
+            role = Path(temporary) / "role"
+            role.write_text("student-train\n")
+            role.chmod(0o444)
+            with mock.patch.object(runtime, "ARTIFACT_ROLE_PATH", role), mock.patch.object(
+                runtime, "IMAGE_OWNER_UID", os.geteuid()
+            ):
+                self.assertEqual(runtime._artifact_role(), "student-train")
+                role.chmod(0o644)
+                role.write_text("student-branch\n")
+                role.chmod(0o444)
+                self.assertEqual(runtime._artifact_role(), "student-branch")
+
+        missing = Path("/not-read-after-role-rejection")
+        with mock.patch.object(
+            runtime, "_artifact_role", return_value="student-branch"
+        ), self.assertRaisesRegex(ValueError, "student-train operation is forbidden"):
+            runtime.train_stage(missing, missing, missing, "fixture")
+        with mock.patch.object(
+            runtime, "_artifact_role", return_value="student-train"
+        ), self.assertRaisesRegex(ValueError, "student-branch operation is forbidden"):
+            runtime.branch_stage(
+                missing,
+                missing,
+                missing,
+                missing,
+                missing,
+                missing,
+                "bf16",
+                missing,
+                "fixture",
+            )
+        with mock.patch.object(
+            runtime, "_artifact_role", return_value="student-train"
+        ), self.assertRaisesRegex(ValueError, "student-branch operation is forbidden"):
+            runtime.serve(missing, missing, "logical-model", missing)
 
     def test_compute_alarm_reserves_terminalization_grace(self):
         now = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
@@ -330,7 +381,11 @@ class StudentRuntimeTest(unittest.TestCase):
                 runtime.signal,
                 "alarm",
                 side_effect=lambda seconds: events.append(("alarm", seconds)),
-            ), mock.patch.object(runtime, "_write_terminal", side_effect=terminal):
+            ), mock.patch.object(
+                runtime, "_write_terminal", side_effect=terminal
+            ), mock.patch.object(
+                runtime, "_artifact_role", return_value="student-train"
+            ):
                 runtime.train_stage(
                     claim_path, input_path, train_output, mode="fixture"
                 )
@@ -345,7 +400,11 @@ class StudentRuntimeTest(unittest.TestCase):
                 runtime.signal,
                 "alarm",
                 side_effect=lambda seconds: events.append(("alarm", seconds)),
-            ), mock.patch.object(runtime, "_write_terminal", side_effect=terminal):
+            ), mock.patch.object(
+                runtime, "_write_terminal", side_effect=terminal
+            ), mock.patch.object(
+                runtime, "_artifact_role", return_value="student-branch"
+            ):
                 runtime.branch_stage(
                     claim_path,
                     input_path,
@@ -587,137 +646,190 @@ class StudentRuntimeTest(unittest.TestCase):
         self.assertEqual(command[command.index("--host") + 1], "127.0.0.1")
 
     def test_image_entrypoint_and_recipe_identities_are_exact(self):
-        dockerfile = (ROOT / "deploy/student/Dockerfile").read_text()
-        provenance_raw = (ROOT / "deploy/student/provenance.json").read_bytes()
-        provenance = json.loads(provenance_raw)
+        train_dockerfile = (ROOT / "deploy/student-train/Dockerfile").read_text()
+        branch_dockerfile = (ROOT / "deploy/student-branch/Dockerfile").read_text()
+        train_provenance_raw = (
+            ROOT / "deploy/student-train/provenance.json"
+        ).read_bytes()
+        branch_provenance_raw = (
+            ROOT / "deploy/student-branch/provenance.json"
+        ).read_bytes()
+        train_provenance = json.loads(train_provenance_raw)
+        branch_provenance = json.loads(branch_provenance_raw)
         prime_license = (ROOT / "deploy/licenses/prime-rl-v0.9.0.LICENSE").read_bytes()
         verifier = runtime._load_module(
             "dragontales_test_qwen_image_release",
             ROOT / "deploy/models/qwen3-4b-instruct-2507/verify.py",
         )
-        source = (
-            "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507/resolve/"
-            + verifier.EXPECTED_PROFILE["model_revision"]
+        self.assertFalse((ROOT / "deploy/student/Dockerfile").exists())
+        self.assertFalse((ROOT / "deploy/student/provenance.json").exists())
+
+        authority_files = {
+            "student-job.sh",
+            "student-run.sh",
+            "student/runtime.py",
+            "student/qwen3-chat-template.jinja",
+            "student-train/Dockerfile",
+            "student-train/provenance.json",
+            "student-branch/Dockerfile",
+            "student-branch/provenance.json",
+            "adapter_train/__init__.py",
+            "adapter_train/contract.py",
+            "adapter_train/sft_entrypoint.py",
+            "h100-fp8-runtime/runtime.py",
+            "licenses/prime-rl-v0.9.0.LICENSE",
+            "models/qwen3-4b-instruct-2507/profile.json",
+            "models/qwen3-4b-instruct-2507/model.manifest.sha256",
+            "models/qwen3-4b-instruct-2507/verify.py",
+        }
+        self.assertEqual(set(runtime.AUTHORITY_FILES), authority_files)
+        expected_authority = {f"deploy/{path}" for path in authority_files}
+        for dockerfile, role in (
+            (train_dockerfile, "student-train"),
+            (branch_dockerfile, "student-branch"),
+        ):
+            sources = set(re.findall(r"deploy/[A-Za-z0-9_./-]+", dockerfile))
+            self.assertEqual(sources, expected_authority)
+            self.assertIn(
+                "ARG MILK_GATEWAY_IMAGE\nFROM ${MILK_GATEWAY_IMAGE} AS gateway",
+                dockerfile,
+            )
+            self.assertIn(
+                "COPY --from=gateway --chmod=0555 /usr/local/bin/dragontales-gateway "
+                "/usr/local/bin/dragontales-gateway",
+                dockerfile,
+            )
+            self.assertIn('test "${#gateway_digest}" -eq 64', dockerfile)
+            self.assertIn('case "$gateway_digest" in *[!0-9a-f]*) exit 1', dockerfile)
+            self.assertIn(f"printf '%s\\n' {role} > /usr/share/milk/student-artifact-role", dockerfile)
+            self.assertIn('ENTRYPOINT ["/opt/dragontales/deploy/student-job.sh"]', dockerfile)
+            self.assertIn("RUN test -x /usr/bin/setpriv", dockerfile)
+            self.assertIn("USER 0:0", dockerfile)
+            self.assertIn("FROM scratch AS wheels", dockerfile)
+            expected_runtime_wheel_copies = 1 if role == "student-branch" else 0
+            self.assertEqual(
+                dockerfile.count("COPY --from=wheels"),
+                expected_runtime_wheel_copies,
+            )
+            self.assertNotIn("FROM rust:", dockerfile)
+            self.assertNotIn("cargo build", dockerfile)
+            self.assertNotIn("COPY crates/", dockerfile)
+            self.assertNotIn("test_runtime.py", dockerfile)
+            self.assertNotIn("deploy/student/Dockerfile", dockerfile)
+            self.assertNotIn("huggingface.co/Qwen", dockerfile)
+            self.assertNotIn("model.safetensors", dockerfile)
+
+        self.assertIn("ghcr.io/primeintellect-ai/prime-rl@sha256:", train_dockerfile)
+        self.assertNotIn("vllm/vllm-openai@sha256:", train_dockerfile)
+        self.assertIn('assert version("prime-rl") == "0.9.0"', train_dockerfile)
+        self.assertIn('assert torch.version.cuda == "12.8"', train_dockerfile)
+        self.assertNotIn("llmcompressor", train_dockerfile)
+        self.assertNotIn("compressed_tensors", train_dockerfile)
+
+        self.assertIn("vllm/vllm-openai@sha256:", branch_dockerfile)
+        self.assertNotIn("ghcr.io/primeintellect-ai/prime-rl@sha256:", branch_dockerfile)
+        self.assertIn('assert version("vllm") == "0.28.0+cu129"', branch_dockerfile)
+        self.assertIn('assert torch.version.cuda == "12.9"', branch_dockerfile)
+        self.assertIsNone(
+            re.search(r"(?<![A-Za-z0-9_.-])/model(?:/|\s|$)", branch_dockerfile)
         )
+        self.assertIn("llmcompressor-0.13.0", branch_dockerfile)
+        self.assertIn("compressed_tensors-0.18.0", branch_dockerfile)
         self.assertIn(
-            "ARG MILK_GATEWAY_IMAGE\nFROM ${MILK_GATEWAY_IMAGE} AS gateway",
-            dockerfile,
+            "/opt/compressed_tensors-0.18.0-py3-none-any.whl",
+            branch_dockerfile,
         )
-        self.assertIn(
-            "COPY --from=gateway --chmod=0555 /usr/local/bin/dragontales-gateway "
-            "/usr/local/bin/dragontales-gateway",
-            dockerfile,
-        )
-        self.assertNotIn("FROM rust:", dockerfile)
-        self.assertNotIn("cargo build", dockerfile)
-        self.assertNotIn("COPY crates/", dockerfile)
-        self.assertIn('test "${#gateway_digest}" -eq 64', dockerfile)
-        self.assertIn('case "$gateway_digest" in *[!0-9a-f]*) exit 1', dockerfile)
-        self.assertIn("COPY deploy/student-job.sh ./student-job.sh", dockerfile)
-        self.assertIn("COPY deploy/student-run.sh ./student-run.sh", dockerfile)
-        self.assertIn(
-            "COPY deploy/student/Dockerfile deploy/student/runtime.py "
-            "deploy/student/qwen3-chat-template.jinja ./student/",
-            dockerfile,
-        )
-        self.assertIn(
-            "COPY deploy/adapter_train/__init__.py deploy/adapter_train/contract.py \\\n"
-            "     deploy/adapter_train/sft_entrypoint.py ./adapter_train/",
-            dockerfile,
-        )
-        self.assertNotIn("test_runtime.py", dockerfile)
-        self.assertNotIn("adapter_merge", dockerfile)
-        self.assertNotIn("quantization/runtime_contract.py", dockerfile)
         self.assertEqual(runtime.LLM_COMPRESSOR_VERSION, "0.13.0")
         self.assertEqual(runtime.COMPRESSED_TENSORS_VERSION, "0.18.0")
-        self.assertIn("llmcompressor-0.13.0", dockerfile)
-        self.assertIn("compressed_tensors-0.18.0", dockerfile)
-        wheels = (
-            ("auto_round-0.14.2-py3-none-any.whl", "4265c11d33a6f688c211bfed87e4698b685473efe1d6faf95d744a3f7c19ca24"),
-            ("datasets-5.0.1-py3-none-any.whl", "9fbf73688f8c18f7529b4fe592abd04015f81d1e58001e4bac73ffb2b39d7cc4"),
-            ("nvidia_nccl_cu12-2.29.7-py3-none-manylinux_2_18_x86_64.whl", "ecd0a012051abc20c1aa87328841efa8cade3ced65803046e38c2f03c0891fea"),
-            ("transformers-5.14.1-py3-none-any.whl", "9db974c4079ede2d1a3ea7ca5a240df33f2cc26fc2b36ba64c5f2a4f43b6e725"),
-            ("fsspec-2026.6.0-py3-none-any.whl", "02e0b71817df9b2169dc30a16832045764def1191b43dcff5bb85bdee212d2a1"),
-            ("multiprocess-0.70.19-py312-none-any.whl", "3a56c0e85dd5025161bac5ce138dcac1e49174c7d8e74596537e729fd5c53c28"),
-            ("pyarrow-25.0.1-cp312-cp312-manylinux_2_28_x86_64.whl", "5389cdf79447ed1515c9e31620e6e1e2302249564d603f2ad727d4f6d313e4c3"),
-            ("pandas-3.0.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", "d373ce03ffd84010ed9839fa73672a9c8256990532e158440c0085db7d914b34"),
-            ("xxhash-4.0.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", "237b8f63a2a0fcfb1ffc06e21dad23add44e6d354b2b014364a1d41e419a4dee"),
-        )
-        for wheel, sha256 in wheels:
-            self.assertIn(f"--checksum=sha256:{sha256}", dockerfile)
-            self.assertGreaterEqual(dockerfile.count(f"/opt/{wheel}"), 2)
-        self.assertIn("pip install --no-index --no-deps --force-reinstall", dockerfile)
-        self.assertNotIn("pip install --no-cache-dir /opt/llmcompressor", dockerfile)
-        for runtime_import in (
-            "from compressed_tensors.quantization import QuantizationConfig",
-            "from datasets import Dataset",
-            "from llmcompressor import oneshot",
-            "from llmcompressor.modifiers.quantization import QuantizationModifier",
-            "from transformers import AutoTokenizer",
-        ):
-            self.assertIn(runtime_import, dockerfile)
-        self.assertIn(
-            "COPY --from=gateway --chmod=0444 /usr/share/licenses/dragontales/ "
-            "/usr/share/licenses/dragontales/",
-            dockerfile,
-        )
-        self.assertIn("COPY --chmod=0444 LICENSE /usr/share/licenses/milk-harness/LICENSE", dockerfile)
+
         self.assertEqual(
             hashlib.sha256(prime_license).hexdigest(),
             "f5118b9c9e98b0f4076214ee13f68d5f73c13b077c44544cb9a0c4ed9155065c",
         )
         self.assertEqual(len(prime_license), 11_695)
         self.assertEqual(
-            hashlib.sha256(provenance_raw).hexdigest(),
-            "6371f282f372c5f5cadc6530bf81754c307b100067bb56d3324e75f3bf4a38ec",
+            hashlib.sha256(train_provenance_raw).hexdigest(),
+            "4d863132519b4246cefdbd0773190abfe9c6c485573260d1cf28965791985203",
         )
         self.assertEqual(
-            tuple(provenance),
-            ("schema_version", "platform", "gateway", "base_images", "model", "wheels"),
+            hashlib.sha256(branch_provenance_raw).hexdigest(),
+            "f7c4ddfcfb180a86743f7a97d184ede0e98d660af9d91f7aefa294f4cf7985c8",
         )
-        self.assertEqual(provenance["schema_version"], "milk.student-image-provenance.v1")
-        self.assertEqual(provenance["platform"], "linux/amd64")
-        self.assertEqual(provenance["gateway"]["build_argument"], "MILK_GATEWAY_IMAGE")
-        self.assertEqual(provenance["base_images"]["prime_rl"]["source_revision"], "ab5de8fff44b2c4a5c85e24b6e6e3f7d57eee7b1")
-        self.assertEqual(provenance["base_images"]["vllm"]["source_revision"], "2cf0a6915ce544dc493a0990f2ea38d81601128a")
-        self.assertEqual(provenance["model"]["revision"], verifier.EXPECTED_PROFILE["model_revision"])
-        self.assertEqual(len(provenance["wheels"]), 13)
-        self.assertEqual([wheel["name"] for wheel in provenance["wheels"]], list(dict.fromkeys(wheel["name"] for wheel in provenance["wheels"])))
-        for wheel in provenance["wheels"]:
-            self.assertIn(f"--checksum=sha256:{wheel['sha256']}", dockerfile)
-            self.assertIn(wheel["artifact"], dockerfile)
-        self.assertIn(
-            "COPY --chmod=0444 deploy/licenses/prime-rl-v0.9.0.LICENSE "
-            "/usr/share/licenses/prime-rl/LICENSE",
-            dockerfile,
+        self.assertEqual(
+            train_provenance["schema_version"],
+            "milk.student-train-image-provenance.v1",
         )
-        self.assertIn(
-            "COPY --chmod=0444 deploy/student/provenance.json "
-            "/usr/share/milk/student-provenance.json",
-            dockerfile,
+        self.assertEqual(train_provenance["artifact_role"], "student-train")
+        self.assertEqual(train_provenance["platform"], "linux/amd64")
+        self.assertEqual(
+            train_provenance["base_image"]["source_revision"],
+            "ab5de8fff44b2c4a5c85e24b6e6e3f7d57eee7b1",
         )
-        self.assertIn("6371f282f372c5f5cadc6530bf81754c307b100067bb56d3324e75f3bf4a38ec", dockerfile)
-        self.assertEqual(dockerfile.count("/model/LICENSE"), 1)
-        for authority in ("profile.json", "model.manifest.sha256", "verify.py"):
-            self.assertIn(f"deploy/models/qwen3-4b-instruct-2507/{authority}", dockerfile)
-        for name, sha256, _size, _source in verifier.FILES:
-            self.assertIn(
-                f"ADD --checksum=sha256:{sha256} \\\n    {source}/{name} \\\n    /model/{name}",
-                dockerfile,
-            )
-        self.assertEqual(dockerfile.count(source + "/"), len(verifier.FILES))
-        self.assertIn(
-            'runpy.run_path("models/qwen3-4b-instruct-2507/verify.py")["verify_tree"](Path("/model"))',
-            dockerfile,
+        self.assertEqual(
+            train_provenance["model"]["revision"],
+            verifier.EXPECTED_PROFILE["model_revision"],
         )
-        self.assertIn('ENTRYPOINT ["/opt/dragontales/deploy/student-job.sh"]', dockerfile)
-        self.assertIn("RUN test -x /usr/bin/setpriv", dockerfile)
-        self.assertIn("USER 0:0", dockerfile)
-        self.assertIn("deploy/student/qwen3-chat-template.jinja", dockerfile)
-        self.assertIn(
-            "/app/.venv/bin/python adapter_train/sft_entrypoint.py parity \\\n"
-            "      --model /model --template student/qwen3-chat-template.jinja",
-            dockerfile,
+        self.assertEqual(
+            train_provenance["model"]["distribution"], "external_read_only_mount"
+        )
+        self.assertEqual(train_provenance["model"]["mount_path"], str(runtime.MODEL))
+        self.assertIs(train_provenance["model"]["verified_before_training"], True)
+        self.assertEqual(
+            [wheel["name"] for wheel in train_provenance["wheels"]],
+            ["accelerate", "peft"],
+        )
+
+        self.assertEqual(
+            branch_provenance["schema_version"],
+            "milk.student-branch-image-provenance.v1",
+        )
+        self.assertEqual(branch_provenance["artifact_role"], "student-branch")
+        self.assertEqual(branch_provenance["platform"], "linux/amd64")
+        self.assertEqual(
+            branch_provenance["base_image"]["source_revision"],
+            "2cf0a6915ce544dc493a0990f2ea38d81601128a",
+        )
+        self.assertEqual(
+            branch_provenance["model_distribution"],
+            "gateway_materialized_candidate_only",
+        )
+        self.assertIsNone(branch_provenance["qwen_base_mount"])
+        for role, provenance, dockerfile in (
+            ("student-train", train_provenance, train_dockerfile),
+            ("student-branch", branch_provenance, branch_dockerfile),
+        ):
+            names = [wheel["name"] for wheel in provenance["wheels"]]
+            self.assertEqual(names, list(dict.fromkeys(names)))
+            for wheel in provenance["wheels"]:
+                self.assertIn(f"--checksum=sha256:{wheel['sha256']}", dockerfile)
+                expected_occurrences = (
+                    3
+                    if role == "student-branch"
+                    and wheel["name"] == "compressed-tensors"
+                    else 2
+                )
+                self.assertEqual(
+                    dockerfile.count(f"/wheels/{wheel['artifact']}"),
+                    expected_occurrences,
+                )
+        retained = [
+            wheel
+            for wheel in branch_provenance["wheels"]
+            if wheel.get("retained_for_runtime_probe") is True
+        ]
+        self.assertEqual(
+            [wheel["name"] for wheel in retained],
+            ["compressed-tensors"],
+        )
+
+        train_source = inspect.getsource(runtime.train_stage)
+        self.assertLess(
+            train_source.index("model_manifest_sha256 = _verify_base_model()"),
+            train_source.index("_gpu_probe(working)"),
+        )
+        self.assertLess(
+            train_source.index('"parity"'),
+            train_source.index("_gpu_probe(working)"),
         )
         self.assertEqual(runtime.recipe_sha256("production"), PRODUCTION_RECIPE_SHA256)
         self.assertEqual(runtime.recipe_sha256("fixture"), FIXTURE_RECIPE_SHA256)
@@ -774,7 +886,8 @@ class StudentRuntimeTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "regular file"):
                     verifier.verify_tree(model)
 
-    def test_retained_model_and_serve_command_are_fail_closed(self):
+    @mock.patch.object(runtime, "_artifact_role", return_value="student-branch")
+    def test_retained_model_and_serve_command_are_fail_closed(self, _role):
         real_h100 = runtime._h100()
 
         class FakeRuntime:
@@ -901,21 +1014,10 @@ class StudentRuntimeTest(unittest.TestCase):
             root = Path(temporary)
             claim_path, input_path, claim, inputs = fixture_files(root)
             train_output = root / "train-output"
-            subprocess.run(
-                [
-                    str(RUNNER),
-                    "fixture-train",
-                    "--claim",
-                    str(claim_path),
-                    "--input",
-                    str(input_path),
-                    "--output",
-                    str(train_output),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            with mock.patch.object(
+                runtime, "_artifact_role", return_value="student-train"
+            ):
+                runtime.train_stage(claim_path, input_path, train_output, "fixture")
             train = parse_line(train_output / "result.json")
             self.assertEqual(train["schema_version"], "dragontales.student-train-result.v1")
             self.assertEqual(train["outcome"]["kind"], "succeeded")
@@ -924,19 +1026,26 @@ class StudentRuntimeTest(unittest.TestCase):
                 ["kind", "adapter_manifest", "merged_model_manifest"],
             )
             self.assertEqual(parse_line(train_output / "upload.json")["student_job_id"], claim["student_job_id"])
+            train_gpu = parse_line(
+                train_output / "artifact" / train["gpu_evidence"]["sha256"]
+            )
+            self.assertEqual(
+                (train_gpu["schema_version"], train_gpu["runtime"]["stage"], train_gpu["kernels"]),
+                ("dragontales.student-gpu-evidence.v2", "train", []),
+            )
 
             train_path, fanout_path, model, manifest, fanout = fixture_fanout(
                 root, claim, train_output
             )
-            self.assertEqual(fanout["schema_version"], "dragontales.student-fanout-claim.v3")
+            self.assertEqual(fanout["schema_version"], "dragontales.student-fanout-claim.v4")
             self.assertEqual(tuple(fanout), runtime.FANOUT_KEYS)
             self.assertEqual(
                 fanout["max_total_gpu_seconds"], runtime.MAX_TOTAL_GPU_SECONDS
             )
             wrong_image_fanout = root / "wrong-image-fanout.json"
             wrong_image = dict(fanout)
-            wrong_image["runtime_image_reference"] = (
-                "fixture/other-student@sha256:" + "9" * 64
+            wrong_image["student_branch_runtime_image_reference"] = (
+                "fixture/other-student-branch@sha256:" + "9" * 64
             )
             wrong_image_fanout.write_bytes(compact(wrong_image))
             wrong_image_fanout.chmod(0o400)
@@ -951,7 +1060,7 @@ class StudentRuntimeTest(unittest.TestCase):
                 )
             legacy_fanout = root / "legacy-fanout.json"
             legacy = dict(fanout)
-            legacy["schema_version"] = "dragontales.student-fanout-claim.v2"
+            legacy["schema_version"] = "dragontales.student-fanout-claim.v3"
             legacy_fanout.write_bytes(compact(legacy))
             legacy_fanout.chmod(0o400)
             with self.assertRaisesRegex(ValueError, "differs from its train authority"):
@@ -996,31 +1105,20 @@ class StudentRuntimeTest(unittest.TestCase):
             branch_results = []
             for variant, branch_claim in zip(runtime.VARIANTS, fanout["branches"]):
                 output = root / f"branch-{variant}"
-                subprocess.run(
-                    [
-                        str(RUNNER),
-                        "fixture-branch",
-                        "--claim",
-                        str(claim_path),
-                        "--input",
-                        str(input_path),
-                        "--train-result",
-                        str(train_path),
-                        "--fanout-claim",
-                        str(fanout_path),
-                        "--merged-model",
-                        str(model),
-                        "--merged-model-manifest",
-                        str(manifest),
-                        "--variant",
+                with mock.patch.object(
+                    runtime, "_artifact_role", return_value="student-branch"
+                ):
+                    runtime.branch_stage(
+                        claim_path,
+                        input_path,
+                        train_path,
+                        fanout_path,
+                        model,
+                        manifest,
                         variant,
-                        "--output",
-                        str(output),
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
+                        output,
+                        "fixture",
+                    )
                 result = parse_line(output / "result.json")
                 branch_results.append(result)
                 self.assertEqual(result["schema_version"], "dragontales.student-branch-result.v1")
@@ -1029,6 +1127,14 @@ class StudentRuntimeTest(unittest.TestCase):
                 self.assertEqual(result["outcome"]["kind"], "succeeded")
                 self.assertEqual(result["outcome"]["summary"]["dev_rows"], len(inputs["dev"]))
                 self.assertEqual(result["outcome"]["summary"]["mean_score_bps"], 10_000)
+                branch_gpu = parse_line(
+                    output
+                    / "artifact"
+                    / result["outcome"]["gpu_evidence"]["sha256"]
+                )
+                self.assertEqual(branch_gpu["schema_version"], "dragontales.student-gpu-evidence.v2")
+                self.assertEqual(branch_gpu["runtime"]["stage"], "branch")
+                self.assertEqual([item["variant"] for item in branch_gpu["kernels"]], [variant])
                 receipt = parse_line(
                     output / "artifact" / result["outcome"]["dev_receipt"]["sha256"]
                 )
@@ -1042,6 +1148,8 @@ class StudentRuntimeTest(unittest.TestCase):
             failed_output = root / "branch-failed"
             with mock.patch.object(
                 runtime, "_model_artifact", side_effect=RuntimeError("seal failed")
+            ), mock.patch.object(
+                runtime, "_artifact_role", return_value="student-branch"
             ), self.assertRaisesRegex(RuntimeError, "seal failed"):
                 runtime.branch_stage(
                     claim_path,
@@ -1069,23 +1177,11 @@ class StudentRuntimeTest(unittest.TestCase):
             claim_path, input_path, _claim, _inputs = fixture_files(root)
             input_path.write_bytes(input_path.read_bytes() + b"\n")
             output = root / "output"
-            process = subprocess.run(
-                [
-                    str(RUNNER),
-                    "fixture-train",
-                    "--claim",
-                    str(claim_path),
-                    "--input",
-                    str(input_path),
-                    "--output",
-                    str(output),
-                ],
-                capture_output=True,
-                text=True,
-            )
-            self.assertNotEqual(process.returncode, 0)
+            with mock.patch.object(
+                runtime, "_artifact_role", return_value="student-train"
+            ), self.assertRaisesRegex(ValueError, "exactly one LF"):
+                runtime.train_stage(claim_path, input_path, output, "fixture")
             self.assertFalse(output.exists())
-            self.assertIn("exactly one LF", process.stderr)
             self.assertNotEqual(
                 runtime.recipe_sha256("production"), runtime.recipe_sha256("fixture")
             )

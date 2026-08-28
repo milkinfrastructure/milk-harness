@@ -24,6 +24,25 @@ TEACHER_MODEL_ALLOW_PATTERNS = (
     "tokenizer.json",
     "tokenizer_config.json",
 )
+STUDENT_MODEL_SOURCE = (
+    "hf://Qwen/Qwen3-4B-Instruct-2507@cdbee75f17c01a7cc42f958dc650907174af0554"
+)
+STUDENT_MODEL_MOUNT = "/model"
+STUDENT_MODEL_ALLOW_PATTERNS = (
+    ".gitattributes",
+    "LICENSE",
+    "README.md",
+    "config.json",
+    "generation_config.json",
+    "merges.txt",
+    "model-00001-of-00003.safetensors",
+    "model-00002-of-00003.safetensors",
+    "model-00003-of-00003.safetensors",
+    "model.safetensors.index.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+)
 VARIANTS = ("bf16", "dynamic_fp8", "static_fp8")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
@@ -233,10 +252,12 @@ def _request_body(settings, student_job_id, variant=None, branch_id=None):
         "DRAGONTALES_CONFIG_JSON": _secret(settings["config_secret"]),
         "DRAGONTALES_STUDENT_JOB_ID": student_job_id,
     }
-    return name, {
+    body = {
         "training_job": {
             "image": {
-                "base_image": settings["student_image"],
+                "base_image": settings[
+                    "student_train_image" if variant is None else "student_branch_image"
+                ],
                 "docker_auth": {
                     "registry": "ghcr.io",
                     "auth_method": "REGISTRY_SECRET",
@@ -263,6 +284,15 @@ def _request_body(settings, student_job_id, variant=None, branch_id=None):
             "priority": 0,
         }
     }
+    if variant is None:
+        body["training_job"]["weights"] = [
+            {
+                "source": STUDENT_MODEL_SOURCE,
+                "mount_location": STUDENT_MODEL_MOUNT,
+                "allow_patterns": list(STUDENT_MODEL_ALLOW_PATTERNS),
+            }
+        ]
+    return name, body
 
 
 def _teacher_request_body(settings, launch):

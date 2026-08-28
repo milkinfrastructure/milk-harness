@@ -69,7 +69,8 @@ class SchedulerWorkflowTest(unittest.TestCase):
         )
         for argument in (
             "--jobs-image",
-            "--student-image",
+            "--student-train-image",
+            "--student-branch-image",
             "--teacher-image",
             "--image-release-sha256",
             "--provider-create-requested",

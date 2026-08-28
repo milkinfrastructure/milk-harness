@@ -653,7 +653,12 @@ class SchedulerTest(unittest.TestCase):
         images = {
             "gateway": "ghcr.io/milkinfrastructure/milk-gateway@sha256:" + HEX,
             "jobs": "ghcr.io/milkinfrastructure/milk-jobs@sha256:" + HEX,
-            "student": "ghcr.io/milkinfrastructure/milk-student@sha256:" + HEX,
+            "student_train": (
+                "ghcr.io/milkinfrastructure/milk-student-train@sha256:" + "a" * 64
+            ),
+            "student_branch": (
+                "ghcr.io/milkinfrastructure/milk-student-branch@sha256:" + "b" * 64
+            ),
             "teacher": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss@sha256:" + HEX,
         }
         contract = {
@@ -661,7 +666,8 @@ class SchedulerTest(unittest.TestCase):
             "teacher_max_gpu_seconds": 3600,
             "teacher_max_calls": 10,
             "teacher_max_parallel_runs": 1,
-            "student_runtime_image_reference": images["student"],
+            "student_train_runtime_image_reference": images["student_train"],
+            "student_branch_runtime_image_reference": images["student_branch"],
             "student_recipe_sha256": "b" * 64,
             "teacher_deployment_sha256": "c" * 64,
             "teacher_terms_sha256": "d" * 64,
@@ -696,7 +702,8 @@ class SchedulerTest(unittest.TestCase):
                     "max_calls": 10,
                     "max_parallel_runs": 1,
                 },
-                "student_runtime_image_reference": images["student"],
+                "student_train_runtime_image_reference": images["student_train"],
+                "student_branch_runtime_image_reference": images["student_branch"],
                 "student_recipe_sha256": "b" * 64,
                 "deployment_sha256": "c" * 64,
                 "terms_sha256": "d" * 64,
@@ -738,6 +745,8 @@ class SchedulerTest(unittest.TestCase):
             "modal_candidate_secret_id": "st-candidate",
             "modal_teacher_volume_name": "modal-teacher",
             "modal_teacher_volume_id": "vo-teacher",
+            "modal_student_train_volume_name": "modal-student",
+            "modal_student_train_volume_id": "vo-student",
         }
         store_identities = {
             "gateway_capture": store_identity_sha256(
@@ -785,6 +794,28 @@ class SchedulerTest(unittest.TestCase):
         }
         manifest_raw = canonical_json(manifest)
         confirmed = hashlib.sha256(manifest_raw).hexdigest()
+        same_student_digest = {
+            **manifest,
+            "images": {
+                **images,
+                "student_branch": (
+                    "ghcr.io/milkinfrastructure/milk-student-branch@sha256:"
+                    + "a" * 64
+                ),
+            },
+        }
+        same_student_digest_raw = canonical_json(same_student_digest)
+        with self.assertRaisesRegex(ValueError, "distinct digests"):
+            verify_gateway_run_config(
+                same_student_digest_raw,
+                hashlib.sha256(same_student_digest_raw).hexdigest(),
+                source_commit,
+                root,
+                gateway_raw,
+                images["gateway"],
+                "gateway-capture-access",
+                "gateway-control-access",
+            )
         self.assertEqual(
             verify_gateway_run_config(
                 manifest_raw,
@@ -923,7 +954,7 @@ class SchedulerTest(unittest.TestCase):
         self.assertNotIn(b"must-not-survive", encoded)
         self.assertEqual(decode_gateway_summary(encode_summary(summary)), summary)
         winner_out, winner_err = self.streams(
-            b'{"schema_version":"dragontales.student-winner-deployment-launch.v1"}\n'
+            b'{"schema_version":"dragontales.student-winner-deployment-launch.v2"}\n'
         )
         self.assertEqual(
             summarize_step(
@@ -1125,7 +1156,12 @@ class SchedulerTest(unittest.TestCase):
             "provider_summary": self.provider_summary(),
             "gateway_image": "ghcr.io/milkinfrastructure/milk-gateway@sha256:" + HEX,
             "jobs_image": "ghcr.io/milkinfrastructure/milk-jobs@sha256:" + HEX,
-            "student_image": "ghcr.io/milkinfrastructure/milk-student@sha256:" + HEX,
+            "student_train_image": (
+                "ghcr.io/milkinfrastructure/milk-student-train@sha256:" + "a" * 64
+            ),
+            "student_branch_image": (
+                "ghcr.io/milkinfrastructure/milk-student-branch@sha256:" + "b" * 64
+            ),
             "teacher_image": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss@sha256:" + HEX,
             "image_release_sha256": HEX,
             "campaign_id": campaign_id,
@@ -1139,6 +1175,12 @@ class SchedulerTest(unittest.TestCase):
             "confirmation_sha256": "",
             "expected_confirmation_sha256": "",
         }
+        same_student_digest = dict(arguments)
+        same_student_digest["student_branch_image"] = (
+            "ghcr.io/milkinfrastructure/milk-student-branch@sha256:" + "a" * 64
+        )
+        with self.assertRaisesRegex(ValueError, "distinct digests"):
+            archive_scheduler_pass(**same_student_digest)
         reference = archive_scheduler_pass(**arguments)
         self.assertEqual(reference, archive_scheduler_pass(**arguments))
         artifact_raw = ops.get(f"operational/v1/scheduler-passes/{pass_id}/archive.json")

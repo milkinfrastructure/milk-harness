@@ -13,7 +13,8 @@ import adapter
 
 
 STUDENT = "1" * 64
-IMAGE = "ghcr.io/example/dragontales@sha256:" + "2" * 64
+TRAIN_IMAGE = "ghcr.io/example/dragontales-train@sha256:" + "2" * 64
+BRANCH_IMAGE = "ghcr.io/example/dragontales-branch@sha256:" + "3" * 64
 FIXTURE_IMAGE = "fixture/dragontales@sha256:" + "9" * 64
 TEACHER_RUN = "8" * 64
 TEACHER_IMAGE = "ghcr.io/example/dragontales-teacher@sha256:" + "a" * 64
@@ -22,7 +23,8 @@ PROJECT = "project_123"
 
 def settings():
     return {
-        "student_image": IMAGE,
+        "student_train_image": TRAIN_IMAGE,
+        "student_branch_image": BRANCH_IMAGE,
         "teacher_image": TEACHER_IMAGE,
         "registry_secret": "dragontales_ghcr",
         "config_secret": "dragontales_config",
@@ -173,7 +175,7 @@ class AdapterTest(unittest.TestCase):
         name, payload = adapter._request_body(settings(), STUDENT)
         self.assertEqual(name, f"dt-train-{STUDENT}")
         job = payload["training_job"]
-        self.assertEqual(job["image"]["base_image"], IMAGE)
+        self.assertEqual(job["image"]["base_image"], TRAIN_IMAGE)
         self.assertEqual(
             job["compute"],
             {
@@ -183,6 +185,24 @@ class AdapterTest(unittest.TestCase):
                 "accelerator": {"accelerator": "H100", "count": 1},
                 "availability_model": "dedicated",
             },
+        )
+        self.assertEqual(
+            job["weights"],
+            [
+                {
+                    "source": adapter.STUDENT_MODEL_SOURCE,
+                    "mount_location": adapter.STUDENT_MODEL_MOUNT,
+                    "allow_patterns": list(adapter.STUDENT_MODEL_ALLOW_PATTERNS),
+                }
+            ],
+        )
+        manifest = (
+            Path(__file__).parents[1]
+            / "models/qwen3-4b-instruct-2507/model.manifest.sha256"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(
+            list(adapter.STUDENT_MODEL_ALLOW_PATTERNS),
+            [line.split("  ", 1)[1] for line in manifest.splitlines()],
         )
         environment = job["runtime"]["environment_variables"]
         self.assertEqual(
@@ -230,6 +250,10 @@ class AdapterTest(unittest.TestCase):
             "--variant static_fp8",
             branch_payload["training_job"]["runtime"]["start_commands"][0],
         )
+        self.assertEqual(
+            branch_payload["training_job"]["image"]["base_image"], BRANCH_IMAGE
+        )
+        self.assertNotIn("weights", branch_payload["training_job"])
 
     def test_teacher_request_builder_is_pure_pinned_and_bounded(self):
         name, payload = adapter._teacher_request_body(settings(), teacher_launch())
@@ -308,7 +332,8 @@ class AdapterTest(unittest.TestCase):
             adapter._provider_execution(malformed, PROJECT, name)
 
     def test_image_validation_remains_strict(self):
-        self.assertEqual(adapter.immutable_ghcr_image(IMAGE), IMAGE)
+        self.assertEqual(adapter.immutable_ghcr_image(TRAIN_IMAGE), TRAIN_IMAGE)
+        self.assertEqual(adapter.immutable_ghcr_image(BRANCH_IMAGE), BRANCH_IMAGE)
         self.assertEqual(adapter.immutable_image(FIXTURE_IMAGE), FIXTURE_IMAGE)
         for value in (
             "ghcr.io/example/image:latest",

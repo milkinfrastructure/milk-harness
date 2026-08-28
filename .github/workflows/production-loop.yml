@@ -161,7 +161,8 @@ jobs:
     env:
       MILK_GATEWAY_IMAGE: ${{ vars.MILK_GATEWAY_IMAGE }}
       MILK_JOBS_IMAGE: ${{ vars.MILK_JOBS_IMAGE }}
-      MILK_STUDENT_IMAGE: ${{ vars.MILK_STUDENT_IMAGE }}
+      MILK_STUDENT_TRAIN_IMAGE: ${{ vars.MILK_STUDENT_TRAIN_IMAGE }}
+      MILK_STUDENT_BRANCH_IMAGE: ${{ vars.MILK_STUDENT_BRANCH_IMAGE }}
       MILK_TEACHER_IMAGE: ${{ vars.MILK_TEACHER_IMAGE }}
       MILK_IMAGE_RELEASE_SHA256: ${{ vars.MILK_IMAGE_RELEASE_SHA256 }}
       MILK_CONFIRMED_RUN_CONFIG_SHA256: ${{ vars.MILK_CONFIRMED_RUN_CONFIG_SHA256 }}
@@ -197,6 +198,8 @@ jobs:
       MILK_MODAL_CANDIDATE_SECRET_ID: ${{ vars.MILK_MODAL_CANDIDATE_SECRET_ID }}
       MILK_MODAL_TEACHER_VOLUME_NAME: ${{ vars.MILK_MODAL_TEACHER_VOLUME_NAME }}
       MILK_MODAL_TEACHER_VOLUME_ID: ${{ vars.MILK_MODAL_TEACHER_VOLUME_ID }}
+      MILK_MODAL_STUDENT_TRAIN_VOLUME_NAME: ${{ vars.MILK_MODAL_STUDENT_TRAIN_VOLUME_NAME }}
+      MILK_MODAL_STUDENT_TRAIN_VOLUME_ID: ${{ vars.MILK_MODAL_STUDENT_TRAIN_VOLUME_ID }}
       MILK_GATEWAY_SOURCE_COMMIT: ${{ vars.MILK_GATEWAY_SOURCE_COMMIT }}
       MILK_GATEWAY_CONTAINER_APPLICATION_ID: ${{ vars.MILK_GATEWAY_CONTAINER_APPLICATION_ID }}
       MILK_GATEWAY_CONTAINER_APPLICATION_VERSION: ${{ vars.MILK_GATEWAY_CONTAINER_APPLICATION_VERSION }}
@@ -289,7 +292,8 @@ jobs:
           python3 -m milk_harness.scheduler validate-images \
             --gateway-image "$MILK_GATEWAY_IMAGE" \
             --jobs-image "$MILK_JOBS_IMAGE" \
-            --student-image "$MILK_STUDENT_IMAGE" \
+            --student-train-image "$MILK_STUDENT_TRAIN_IMAGE" \
+            --student-branch-image "$MILK_STUDENT_BRANCH_IMAGE" \
             --teacher-image "$MILK_TEACHER_IMAGE" \
             --image-release-sha256 "$MILK_IMAGE_RELEASE_SHA256"
 
@@ -385,7 +389,8 @@ jobs:
             --winner-model-alias "$MILK_WINNER_MODEL_ALIAS"
             --scope-prefix "$MILK_SCOPE_PREFIX"
             --lease-token "$lease_container_token"
-            --student-image "$MILK_STUDENT_IMAGE"
+            --student-train-image "$MILK_STUDENT_TRAIN_IMAGE"
+            --student-branch-image "$MILK_STUDENT_BRANCH_IMAGE"
             --teacher-image "$MILK_TEACHER_IMAGE"
             --jobs-image "$MILK_JOBS_IMAGE"
             --image-release-sha256 "$MILK_IMAGE_RELEASE_SHA256"
@@ -413,6 +418,8 @@ jobs:
             --modal-candidate-secret-id "$MILK_MODAL_CANDIDATE_SECRET_ID"
             --modal-teacher-volume-name "$MILK_MODAL_TEACHER_VOLUME_NAME"
             --modal-teacher-volume-id "$MILK_MODAL_TEACHER_VOLUME_ID"
+            --modal-student-train-volume-name "$MILK_MODAL_STUDENT_TRAIN_VOLUME_NAME"
+            --modal-student-train-volume-id "$MILK_MODAL_STUDENT_TRAIN_VOLUME_ID"
           )
           if [ -n "$MILK_BASETEN_CAPTURE_SESSION_SECRET" ]; then
             job_arguments+=(--capture-store-session-token-secret "$MILK_BASETEN_CAPTURE_SESSION_SECRET")
@@ -447,7 +454,8 @@ jobs:
               --scope-prefix "$MILK_SCOPE_PREFIX" \
               --gateway-image "$MILK_GATEWAY_IMAGE" \
               --jobs-image "$MILK_JOBS_IMAGE" \
-              --student-image "$MILK_STUDENT_IMAGE" \
+              --student-train-image "$MILK_STUDENT_TRAIN_IMAGE" \
+              --student-branch-image "$MILK_STUDENT_BRANCH_IMAGE" \
               --teacher-image "$MILK_TEACHER_IMAGE" \
               --image-release-sha256 "$MILK_IMAGE_RELEASE_SHA256" \
               --registry-secret "$MILK_BASETEN_REGISTRY_SECRET" \
@@ -475,7 +483,9 @@ jobs:
               --modal-candidate-secret-name "$MILK_MODAL_CANDIDATE_SECRET_NAME" \
               --modal-candidate-secret-id "$MILK_MODAL_CANDIDATE_SECRET_ID" \
               --modal-teacher-volume-name "$MILK_MODAL_TEACHER_VOLUME_NAME" \
-              --modal-teacher-volume-id "$MILK_MODAL_TEACHER_VOLUME_ID"; then
+              --modal-teacher-volume-id "$MILK_MODAL_TEACHER_VOLUME_ID" \
+              --modal-student-train-volume-name "$MILK_MODAL_STUDENT_TRAIN_VOLUME_NAME" \
+              --modal-student-train-volume-id "$MILK_MODAL_STUDENT_TRAIN_VOLUME_ID"; then
               configuration_verified=true
             else
               create_granted=false
@@ -729,7 +739,8 @@ jobs:
             --provider-summary "$summary" \
             --gateway-image "$MILK_GATEWAY_IMAGE" \
             --jobs-image "$MILK_JOBS_IMAGE" \
-            --student-image "$MILK_STUDENT_IMAGE" \
+            --student-train-image "$MILK_STUDENT_TRAIN_IMAGE" \
+            --student-branch-image "$MILK_STUDENT_BRANCH_IMAGE" \
             --teacher-image "$MILK_TEACHER_IMAGE" \
             --image-release-sha256 "$MILK_IMAGE_RELEASE_SHA256" \
             --campaign-id "$MILK_CAMPAIGN_ID" \

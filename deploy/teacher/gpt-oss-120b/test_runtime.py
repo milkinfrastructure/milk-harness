@@ -483,6 +483,14 @@ class RuntimeTest(unittest.TestCase):
         self.assertNotIn("EXPOSE", dockerfile)
         self.assertIn("ARG MILK_GATEWAY_IMAGE", dockerfile)
         self.assertIn("COPY --from=gateway", dockerfile)
+        copy_instructions = [
+            line for line in dockerfile.splitlines() if line.startswith("COPY ")
+        ]
+        self.assertTrue(copy_instructions)
+        self.assertTrue(
+            all("--link" in instruction.split() for instruction in copy_instructions)
+        )
+        self.assertNotRegex(dockerfile, r"(?m)^(?:ADD|RUN)\s")
         self.assertIn('ENTRYPOINT ["/opt/dragontales/job.sh"]', dockerfile)
         self.assertNotRegex(dockerfile, r"(?m)^(COPY|ADD).*models/gpt-oss")
         self.assertNotIn("--enable-auto-tool-choice", json.dumps(runtime.PROFILE))

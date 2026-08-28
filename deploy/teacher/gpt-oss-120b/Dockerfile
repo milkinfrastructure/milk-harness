@@ -4,24 +4,16 @@ FROM ${MILK_GATEWAY_IMAGE} AS gateway
 
 FROM vllm/vllm-openai@sha256:50509e700235cea487715cedeb501d20a1cd15fa6a54ce93688284bd0d96995d
 
-RUN python3 - <<'PY'
-from importlib.metadata import version
-from openai_harmony import HarmonyEncodingName
-
-assert version("vllm") == "0.28.0+cu129"
-assert HarmonyEncodingName.HARMONY_GPT_OSS
-PY
-
-COPY --chmod=0444 LICENSE /licenses/dragontales/LICENSE
-COPY --chmod=0444 deploy/teacher/gpt-oss-120b/LICENSE.openai-gpt-oss /licenses/openai-gpt-oss/LICENSE
-COPY --chmod=0444 deploy/teacher/gpt-oss-120b/USAGE_POLICY.openai-gpt-oss /licenses/openai-gpt-oss/USAGE_POLICY
-COPY --chmod=0555 deploy/teacher/gpt-oss-120b/runtime.py /opt/dragontales/runtime.py
-COPY --chmod=0555 deploy/teacher/gpt-oss-120b/job.sh /opt/dragontales/job.sh
-COPY --chmod=0444 deploy/teacher/gpt-oss-120b/profile.json /opt/dragontales/profile.json
-COPY --chmod=0444 deploy/teacher/gpt-oss-120b/model.manifest.json /opt/dragontales/model.manifest.json
-COPY --chmod=0444 deploy/teacher/gpt-oss-120b/provenance.json /opt/dragontales/provenance.json
-COPY --from=gateway --chmod=0555 /usr/local/bin/dragontales-gateway /usr/local/bin/dragontales-gateway
-COPY --from=gateway --chmod=0444 /usr/share/licenses/dragontales/ /usr/share/licenses/dragontales/
+COPY --link --chmod=0444 LICENSE /licenses/dragontales/LICENSE
+COPY --link --chmod=0444 deploy/teacher/gpt-oss-120b/LICENSE.openai-gpt-oss /licenses/openai-gpt-oss/LICENSE
+COPY --link --chmod=0444 deploy/teacher/gpt-oss-120b/USAGE_POLICY.openai-gpt-oss /licenses/openai-gpt-oss/USAGE_POLICY
+COPY --link --chmod=0555 deploy/teacher/gpt-oss-120b/runtime.py /opt/dragontales/runtime.py
+COPY --link --chmod=0555 deploy/teacher/gpt-oss-120b/job.sh /opt/dragontales/job.sh
+COPY --link --chmod=0444 deploy/teacher/gpt-oss-120b/profile.json /opt/dragontales/profile.json
+COPY --link --chmod=0444 deploy/teacher/gpt-oss-120b/model.manifest.json /opt/dragontales/model.manifest.json
+COPY --link --chmod=0444 deploy/teacher/gpt-oss-120b/provenance.json /opt/dragontales/provenance.json
+COPY --from=gateway --link --chmod=0555 /usr/local/bin/dragontales-gateway /usr/local/bin/dragontales-gateway
+COPY --from=gateway --link --chmod=0444 /usr/share/licenses/dragontales/ /usr/share/licenses/dragontales/
 
 ENV VLLM_SYSTEM_START_DATE=2025-08-05 \
     HF_HUB_OFFLINE=1 \
