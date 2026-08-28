@@ -21,8 +21,8 @@ RUNTIME_PATH = Path(__file__).resolve().with_name("runtime.py")
 SPEC = importlib.util.spec_from_file_location("student_runtime", RUNTIME_PATH)
 runtime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runtime)
-PRODUCTION_RECIPE_SHA256 = "38db8aabfb583e3e86427a9518b7a94aeed66cc1a6bf6822b75a81e175ddf967"
-FIXTURE_RECIPE_SHA256 = "62678ee6d0376fd9e970e7b7af8d2fa9f19fc6585e848cf35115d34b17de7931"
+PRODUCTION_RECIPE_SHA256 = "4b885bd86d91c8ef1303652bc2bc0fb14ebc3b80c5eeb850f8709746caa1e7eb"
+FIXTURE_RECIPE_SHA256 = "cac916e7b430fb318685c8fe4435db6415181d770857881cf933ceada7ac1770"
 FIXTURE_IMAGE = "fixture/dragontales-student@sha256:" + "1" * 64
 
 

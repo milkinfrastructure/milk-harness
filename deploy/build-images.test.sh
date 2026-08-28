@@ -225,6 +225,142 @@ print(hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest())
 PY
 )
 
+fake_verifier=$test_root/fake-verifier.py
+cat >"$fake_verifier" <<'PY'
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+repositories = {
+    "student": "ghcr.io/milkinfrastructure/milk-student",
+    "teacher-gpt-oss": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss",
+    "planner": "ghcr.io/milkinfrastructure/milk-planner",
+    "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
+}
+parser = argparse.ArgumentParser()
+parser.add_argument("--artifact", required=True, choices=tuple(repositories))
+parser.add_argument("--tagged-reference", required=True)
+parser.add_argument("--source-commit", required=True)
+parser.add_argument("--source-date-epoch", type=int, required=True)
+parser.add_argument("--source-context-sha256", required=True)
+parser.add_argument("--gateway-image-reference")
+parser.add_argument("--metadata", required=True)
+parser.add_argument("--docker-config", required=True)
+parser.add_argument("--evidence-dir", required=True)
+parser.add_argument("--registry-token-stdin", action="store_true", required=True)
+arguments = parser.parse_args()
+token = sys.stdin.read().strip()
+if token != "ephemeral-test-password":
+    raise SystemExit(93)
+if token in repr(vars(arguments)) or token in repr(dict(os.environ)):
+    raise SystemExit(94)
+if os.environ.get("TEST_FAIL_VERIFY") == "1":
+    raise SystemExit(70)
+
+repository = repositories[arguments.artifact]
+index_digest = "sha256:" + os.environ["TEST_INDEX_DIGEST"]
+manifest_digest = "sha256:" + os.environ["TEST_MANIFEST_DIGEST"]
+attestation_digest = "sha256:" + os.environ["TEST_ATTESTATION_DIGEST"]
+for reference in (
+    repository + "@" + index_digest,
+    repository + "@" + manifest_digest,
+    repository + "@" + attestation_digest,
+):
+    subprocess.run(
+        [
+            "docker", "--config", arguments.docker_config, "buildx", "imagetools",
+            "inspect", "--raw", reference,
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+root = Path(arguments.evidence_dir)
+for name, source in (
+    ("index.json", os.environ["TEST_INDEX"]),
+    ("amd64-manifest.json", os.environ["TEST_MANIFEST"]),
+    ("attestation-manifest.json", os.environ["TEST_ATTESTATION"]),
+):
+    root.joinpath(name).write_bytes(Path(source).read_bytes())
+root.joinpath("config.json").write_text("{}", encoding="utf-8")
+root.joinpath("slsa-provenance.json").write_text("{}", encoding="utf-8")
+root.joinpath("spdx-sbom.json").write_text("{}", encoding="utf-8")
+log = json.loads(root.joinpath("build-log.json").read_bytes())
+gateway = arguments.gateway_image_reference
+image_reference = repository + "@" + index_digest
+attestations = [
+    {"layer_sha256": "4" * 64, "predicate_type": "https://slsa.dev/provenance/v1"},
+    {"layer_sha256": "3" * 64, "predicate_type": "https://spdx.dev/Document"},
+]
+receipt = {
+    "schema_version": "milk.private-harness-image-build.v1",
+    "artifact": arguments.artifact,
+    "source_commit": arguments.source_commit,
+    "source_date_epoch": arguments.source_date_epoch,
+    "source_repository": "https://github.com/milkinfrastructure/milk-harness",
+    "tagged_reference": arguments.tagged_reference,
+    "image_reference": image_reference,
+    "index_sha256": os.environ["TEST_INDEX_DIGEST"],
+    "amd64_manifest_sha256": os.environ["TEST_MANIFEST_DIGEST"],
+    "attestation_manifest_sha256": os.environ["TEST_ATTESTATION_DIGEST"],
+    "attestation_predicates": [item["predicate_type"] for item in attestations],
+    "config_sha256": "0" * 64,
+    "gateway_image_reference": gateway,
+    "build_log": log,
+    "visibility": "private",
+    "build_authority": "local-socket",
+    "buildkit_image_reference": "moby/buildkit@sha256:ddd1ca44b21eda906e81ab14a3d467fa6c39cd73b9a39df1196210edcb8db59e",
+    "dockerfile_frontend_reference": "docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e",
+    "platform": "linux/amd64",
+    "provenance": "max",
+    "provenance_version": "v1",
+    "sbom": True,
+}
+root.joinpath("receipt.json").write_text(
+    json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+admission = {
+    "schema_version": "milk.private-image-admission.v1",
+    "artifact": arguments.artifact,
+    "repository": repository,
+    "image_reference": image_reference,
+    "source_repository": "https://github.com/milkinfrastructure/milk-harness",
+    "source_commit": arguments.source_commit,
+    "source_context_method": "git-archive-tar-v1",
+    "source_context_sha256": arguments.source_context_sha256,
+    "gateway_image_reference": gateway,
+    "index_sha256": os.environ["TEST_INDEX_DIGEST"],
+    "amd64_manifest_sha256": os.environ["TEST_MANIFEST_DIGEST"],
+    "config_sha256": "0" * 64,
+    "attestation_manifest_sha256": os.environ["TEST_ATTESTATION_DIGEST"],
+    "attestations": attestations,
+    "platform": "linux/amd64",
+    "visibility": "private",
+    "builder": {
+        "authority": "local-socket",
+        "driver": "docker-container",
+        "endpoint_kind": "local-socket",
+        "buildkit_image_reference": receipt["buildkit_image_reference"],
+        "buildkit_version": "v0.23.2",
+        "dockerfile_frontend_reference": receipt["dockerfile_frontend_reference"],
+        "provenance_mode": "max",
+        "provenance_version": "v1",
+        "sbom": True,
+    },
+}
+admission_raw = json.dumps(admission, sort_keys=True, separators=(",", ":")) + "\n"
+root.joinpath("admission.json").write_text(admission_raw, encoding="utf-8")
+with Path(os.environ["TEST_COMMAND_LOG"]).open("a", encoding="utf-8") as output:
+    output.write("verifier|" + "|".join(sys.argv[1:]) + "\n")
+print(image_reference + "\t" + hashlib.sha256(admission_raw.encode()).hexdigest())
+PY
+
 cat >"$test_root/bin/git" <<'EOF'
 #!/bin/sh
 set -eu
@@ -327,12 +463,26 @@ case "${1:-} ${2:-}" in
   *) exit 92 ;;
 esac
 EOF
-chmod 0700 "$test_root/bin/git" "$test_root/bin/gh" "$test_root/bin/docker"
+
+cat >"$test_root/bin/python3" <<'EOF'
+#!/bin/sh
+set -eu
+if [ "${1:-}" = "$TEST_REPO/deploy/verify-private-image.py" ]; then
+  shift
+  exec "$TEST_REAL_PYTHON" "$TEST_FAKE_VERIFIER" "$@"
+fi
+exec "$TEST_REAL_PYTHON" "$@"
+EOF
+chmod 0700 \
+  "$test_root/bin/git" "$test_root/bin/gh" "$test_root/bin/docker" \
+  "$test_root/bin/python3"
 
 run_builder() {
   HOME="$test_root/home" \
   PATH="$test_root/bin:$PATH" \
   TEST_REPO="$root" \
+  TEST_REAL_PYTHON="$(command -v python3)" \
+  TEST_FAKE_VERIFIER="$fake_verifier" \
   TEST_REVISION="$revision" \
   TEST_SOURCE_CONTEXT="$source_context" \
   TEST_COMMAND_LOG="$test_root/commands.log" \
@@ -356,19 +506,26 @@ for artifact in student teacher-gpt-oss planner jobs; do
   [ -s "$output/$artifact/metadata.json" ]
   [ -s "$output/$artifact/index.json" ]
   [ -s "$output/$artifact/amd64-manifest.json" ]
+  [ -s "$output/$artifact/config.json" ]
   [ -s "$output/$artifact/attestation-manifest.json" ]
+  [ -s "$output/$artifact/slsa-provenance.json" ]
+  [ -s "$output/$artifact/spdx-sbom.json" ]
   [ -s "$output/$artifact/build-log.json" ]
   [ -s "$output/$artifact/receipt.json" ]
   [ -s "$output/$artifact/admission.json" ]
 done
 [ -z "$(find "$output" -type f -name '*.log' -print)" ]
+! grep -R -Fq 'ephemeral-test-password' "$output" "$test_root/commands.log"
 
 [ "$(grep -c '^docker|.*buildx|build|' "$test_root/commands.log")" -eq 4 ]
 [ "$(grep -c '^docker|.*buildx|imagetools|inspect|--raw|' "$test_root/commands.log")" -eq 12 ]
+[ "$(grep -c '^verifier|' "$test_root/commands.log")" -eq 4 ]
+[ "$(grep -c '^gh|auth|token|--hostname|github.com$' "$test_root/commands.log")" -eq 5 ]
 [ "$(grep -o -- '--platform|linux/amd64' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
 [ "$(grep -o -- '--provenance=mode=max,version=v1' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
 [ "$(grep -o -- '--sbom=true' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
 [ "$(grep -o -- '--build-arg|BUILDKIT_SYNTAX=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
+[ "$(grep -o -- "--build-arg|MILK_SOURCE_CONTEXT_SHA256=$source_context_digest" "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
 [ "$(grep -o -- '--build-arg|SOURCE_DATE_EPOCH=1700000000' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
 [ "$(grep -o -- "--build-arg|MILK_GATEWAY_IMAGE=$gateway" "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 2 ]
 grep -Fq -- "--driver-opt|image=moby/buildkit@sha256:ddd1ca44b21eda906e81ab14a3d467fa6c39cd73b9a39df1196210edcb8db59e" "$test_root/commands.log"
@@ -502,7 +659,7 @@ assert_rejected() {
   [ ! -e "$test_root/rejected-$name" ]
 }
 
-base_env="HOME=$test_root/home PATH=$test_root/bin:$PATH TEST_REPO=$root TEST_REVISION=$revision TEST_SOURCE_CONTEXT=$source_context TEST_COMMAND_LOG=$test_root/commands.log TEST_INDEX=$index TEST_INDEX_DIGEST=$index_digest TEST_MANIFEST=$manifest TEST_MANIFEST_DIGEST=$manifest_digest TEST_ATTESTATION=$attestation TEST_ATTESTATION_DIGEST=$attestation_digest"
+base_env="HOME=$test_root/home PATH=$test_root/bin:$PATH TEST_REPO=$root TEST_REAL_PYTHON=$(command -v python3) TEST_FAKE_VERIFIER=$fake_verifier TEST_REVISION=$revision TEST_SOURCE_CONTEXT=$source_context TEST_COMMAND_LOG=$test_root/commands.log TEST_INDEX=$index TEST_INDEX_DIGEST=$index_digest TEST_MANIFEST=$manifest TEST_MANIFEST_DIGEST=$manifest_digest TEST_ATTESTATION=$attestation TEST_ATTESTATION_DIGEST=$attestation_digest"
 
 assert_rejected source-revision env $base_env \
   "$builder" "$gateway" "$revision" "$test_root/rejected-source-revision"
@@ -574,10 +731,35 @@ assert observation["content_retained"] is False
 assert observation["bytes"] > 0
 PY
 
-grep -Fxq '# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e' \
-  "$root/Dockerfile.planner"
-grep -Fxq '# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e' \
-  "$root/Dockerfile.jobs"
+rm -f -- "$test_root/commands.log"
+set +e
+env $base_env TEST_FAIL_VERIFY=1 \
+  "$builder" "$gateway" "$test_root/verify-failure" >/dev/null 2>&1
+status=$?
+set -e
+[ "$status" -eq 70 ]
+[ -s "$test_root/verify-failure/failure.json" ]
+[ ! -e "$test_root/verify-failure/release.json" ]
+python3 - "$test_root/verify-failure" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+failure = json.loads(root.joinpath("failure.json").read_bytes())
+assert failure["stage"] == "verify-student"
+PY
+! grep -R -Fq 'ephemeral-test-password' \
+  "$test_root/verify-failure" "$test_root/commands.log"
+
+for dockerfile in \
+  "$root/deploy/student/Dockerfile" \
+  "$root/deploy/teacher/gpt-oss-120b/Dockerfile" \
+  "$root/Dockerfile.planner" \
+  "$root/Dockerfile.jobs"; do
+  grep -Fxq '# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e' \
+    "$dockerfile"
+done
 grep -Fxq 'USER 65532:65532' "$root/Dockerfile.planner"
 grep -Fxq 'USER 65532:65532' "$root/Dockerfile.jobs"
 grep -Fq 'import modal, truss' "$root/Dockerfile.jobs"
@@ -595,6 +777,8 @@ grep -Fxq '!milk_harness/image_admission.py' "$root/Dockerfile.jobs.dockerignore
 ! grep -Fq '!deploy/teacher/' "$root/Dockerfile.jobs.dockerignore"
 
 sh -n "$builder" "$0"
+python3 -m py_compile "$root/deploy/verify-private-image.py"
+python3 -m unittest "$root/deploy/test_verify_private_image.py"
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -s sh "$builder" "$0"
 fi
