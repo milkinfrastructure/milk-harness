@@ -41,7 +41,7 @@ evidence_parent=$(dirname -- "$requested_evidence_dir")
 evidence_parent=$(CDPATH= cd -- "$evidence_parent" && pwd -P)
 evidence_dir=$evidence_parent/$(basename -- "$requested_evidence_dir")
 
-for command_name in date docker env gh git grep python3 sed tar; do
+for command_name in date docker env gh git grep ln python3 sed tar; do
   require_command "$command_name"
 done
 
@@ -99,6 +99,22 @@ case "$endpoint" in
   *) fail 'Docker context must use a local socket' 64 ;;
 esac
 "$docker" buildx version >/dev/null 2>&1 || fail 'docker buildx is unavailable' 69
+buildx_plugin=
+if [ -n "${HOME:-}" ] && [ -x "$HOME/.docker/cli-plugins/docker-buildx" ]; then
+  buildx_plugin=$HOME/.docker/cli-plugins/docker-buildx
+else
+  for candidate in \
+    /opt/homebrew/lib/docker/cli-plugins/docker-buildx \
+    /usr/local/lib/docker/cli-plugins/docker-buildx \
+    /usr/libexec/docker/cli-plugins/docker-buildx \
+    /usr/lib/docker/cli-plugins/docker-buildx; do
+    if [ -x "$candidate" ]; then
+      buildx_plugin=$candidate
+      break
+    fi
+  done
+fi
+[ -n "$buildx_plugin" ] || fail 'cannot locate the docker buildx plugin executable' 69
 
 mkdir -m 0700 -- "$evidence_dir" || fail 'could not create evidence directory' 73
 started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -148,6 +164,11 @@ scratch=$(mktemp -d "${TMPDIR:-/tmp}/milk-harness-release.XXXXXX") || \
   fail 'cannot create release scratch directory' 73
 docker_config=$scratch/docker-config
 mkdir -m 0700 -- "$docker_config" || fail 'cannot create isolated Docker configuration' 73
+mkdir -m 0700 -- "$docker_config/cli-plugins" || fail 'cannot create isolated Docker plugin directory' 73
+ln -s -- "$buildx_plugin" "$docker_config/cli-plugins/docker-buildx" || \
+  fail 'cannot install docker buildx into the isolated configuration' 73
+"$docker" --config "$docker_config" buildx version >/dev/null 2>&1 || \
+  fail 'docker buildx is unavailable in the isolated configuration' 69
 builder=milk-harness-$(printf '%s' "$commit" | cut -c1-12)-$$
 
 failure_stage=source-context

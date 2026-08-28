@@ -166,6 +166,12 @@ assert "| truss 0.18.25 | MIT |" in notices
 PY
 
 mkdir "$test_root/bin"
+mkdir -p "$test_root/home/.docker/cli-plugins"
+cat >"$test_root/home/.docker/cli-plugins/docker-buildx" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod 0700 "$test_root/home/.docker/cli-plugins/docker-buildx"
 revision=1111111111111111111111111111111111111111
 gateway=ghcr.io/milkinfrastructure/milk-gateway@sha256:$(printf '%064d' 9)
 source_context=$test_root/source-context.tar
@@ -269,7 +275,12 @@ set -eu
 printf 'docker' >>"$TEST_COMMAND_LOG"
 for argument do printf '|%s' "$argument" >>"$TEST_COMMAND_LOG"; done
 printf '\n' >>"$TEST_COMMAND_LOG"
-if [ "${1:-}" = --config ]; then shift 2; fi
+if [ "${1:-}" = --config ]; then
+  config=$2
+  [ -x "$config/cli-plugins/docker-buildx" ]
+  [ "$(readlink "$config/cli-plugins/docker-buildx")" = "$HOME/.docker/cli-plugins/docker-buildx" ]
+  shift 2
+fi
 case "${1:-} ${2:-}" in
   'context show') printf '%s\n' 'desktop-linux' ;;
   'context inspect') printf '%s\n' 'unix:///tmp/docker.sock' ;;
@@ -319,6 +330,7 @@ EOF
 chmod 0700 "$test_root/bin/git" "$test_root/bin/gh" "$test_root/bin/docker"
 
 run_builder() {
+  HOME="$test_root/home" \
   PATH="$test_root/bin:$PATH" \
   TEST_REPO="$root" \
   TEST_REVISION="$revision" \
@@ -490,7 +502,7 @@ assert_rejected() {
   [ ! -e "$test_root/rejected-$name" ]
 }
 
-base_env="PATH=$test_root/bin:$PATH TEST_REPO=$root TEST_REVISION=$revision TEST_SOURCE_CONTEXT=$source_context TEST_COMMAND_LOG=$test_root/commands.log TEST_INDEX=$index TEST_INDEX_DIGEST=$index_digest TEST_MANIFEST=$manifest TEST_MANIFEST_DIGEST=$manifest_digest TEST_ATTESTATION=$attestation TEST_ATTESTATION_DIGEST=$attestation_digest"
+base_env="HOME=$test_root/home PATH=$test_root/bin:$PATH TEST_REPO=$root TEST_REVISION=$revision TEST_SOURCE_CONTEXT=$source_context TEST_COMMAND_LOG=$test_root/commands.log TEST_INDEX=$index TEST_INDEX_DIGEST=$index_digest TEST_MANIFEST=$manifest TEST_MANIFEST_DIGEST=$manifest_digest TEST_ATTESTATION=$attestation TEST_ATTESTATION_DIGEST=$attestation_digest"
 
 assert_rejected source-revision env $base_env \
   "$builder" "$gateway" "$revision" "$test_root/rejected-source-revision"
