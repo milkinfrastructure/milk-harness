@@ -1,6 +1,6 @@
 # Production scheduler and operational records
 
-`.github/workflows/production-loop.yml` is the only scheduler. Its concurrency group includes the active `MILK_EVAL_ID` and uses the bounded platform queue without cancellation, so attempts for one eval serialize while a later admitted eval has an independent group. That GitHub setting is defense in depth, not the singleton authority.
+`.github/workflows/production-loop.yml` is the only scheduler. Its concurrency group includes the active `MILK_EVAL_ID` without cancellation, so attempts for one eval serialize while a later admitted eval has an independent group. That GitHub setting is defense in depth, not the singleton authority.
 
 The `2/5 * * * *` schedule and a hash-bound manual dispatch with `authorize_provider_creates: false` run gateway state recovery, provider reconciliation, and teardown with create authority fixed false. Either may adopt an existing canary, publish its signed zero successor, and remove an already-installed candidate credential; neither can prepare or publish a new canary, install a missing credential, or create paid provider work. A manual dispatch can create work only when all three checks pass:
 

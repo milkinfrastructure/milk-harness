@@ -41,7 +41,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertIn('cron: "2/5 * * * *"', self.text)
         self.assertIn("group: milk-production-loop-v1", self.text)
         self.assertIn("cancel-in-progress: false", self.text)
-        self.assertIn("queue: max", self.text)
+        self.assertNotIn("queue:", self.text)
         self.assertEqual(
             re.findall(
                 r"^  ([a-z][a-z0-9-]+):$",
