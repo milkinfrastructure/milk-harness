@@ -360,9 +360,15 @@ jobs:
           printf '%s' "$MILK_GATEWAY_INGEST_CONFIG_JSON" >"$provider_gateway_config"
           printf '%s' "$MILK_CONFIRMED_RUN_CONFIG_JSON" >"$provider_gateway_run_config"
           chmod 0400 "$provider_gateway_config" "$provider_gateway_run_config"
+          python3 -m milk_harness.scheduler validate-run-config \
+            --phase provider_base \
+            --manifest "$provider_gateway_run_config" \
+            --confirmed-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256" \
+            --harness-source-commit "$GITHUB_SHA" \
+            --root "$GITHUB_WORKSPACE"
           env -i HOME="$scratch/npm-home" PATH=/usr/bin:/bin PYTHONPATH="$GITHUB_WORKSPACE" \
             python3 -m milk_harness.scheduler validate-run-config \
-              --phase route \
+              --phase gateway_anchor \
               --manifest "$provider_gateway_run_config" \
               --confirmed-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256" \
               --harness-source-commit "$GITHUB_SHA" \
@@ -885,11 +891,11 @@ jobs:
           MILK_ROUTE_STORE_ACCESS_KEY_ID: ${{ secrets.MILK_ROUTE_ROUTE_R2_ACCESS_KEY_ID }}
           MILK_ROUTE_STORE_SECRET_ACCESS_KEY: ${{ secrets.MILK_ROUTE_ROUTE_R2_SECRET_ACCESS_KEY }}
           MILK_ROUTE_STORE_SESSION_TOKEN: ${{ secrets.MILK_ROUTE_ROUTE_R2_SESSION_TOKEN }}
-          MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && secrets.MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID || '' }}
-          MILK_ROUTE_EVIDENCE_R2_BUCKET: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && secrets.MILK_ROUTE_EVIDENCE_R2_BUCKET || '' }}
-          MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && secrets.MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID || '' }}
-          MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && secrets.MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY || '' }}
-          MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && secrets.MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN || '' }}
+          MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID }}
+          MILK_ROUTE_EVIDENCE_R2_BUCKET: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_BUCKET }}
+          MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID }}
+          MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY }}
+          MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN }}
         run: |
           set -euo pipefail
           umask 077
@@ -1003,6 +1009,11 @@ jobs:
           smoke_credential_json=
           unset gateway_config_json confirmed_run_config_json signing_key_pem smoke_credential_json
           env -i HOME="$scratch/npm-home" PATH=/usr/bin:/bin PYTHONPATH="$GITHUB_WORKSPACE" \
+            MILK_CONTROL_STORE_ACCESS_KEY_ID="$control_access" \
+            MILK_ROUTE_STORE_ACCESS_KEY_ID="$route_access" \
+            MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID="$evidence_account" \
+            MILK_ROUTE_EVIDENCE_R2_BUCKET="$evidence_bucket" \
+            MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID="$evidence_access" \
             python3 -m milk_harness.scheduler validate-run-config \
               --phase route \
               --manifest "$run_config" \

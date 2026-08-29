@@ -444,8 +444,13 @@ class SchedulerWorkflowTest(unittest.TestCase):
         for argument in arguments.values():
             self.assertIn(argument, self.provider)
             self.assertIn(argument, self.route)
-        provider_validate = self.provider.index("--phase route")
+        provider_validate = self.provider.index("--phase gateway_anchor")
         self.assertLess(provider_validate, self.provider.index("serve-baseten"))
+        provider_base_validate = self.provider.index("--phase provider_base")
+        self.assertLess(
+            provider_base_validate,
+            self.provider.index("milk_harness.scheduler create-gate"),
+        )
         validate = self.route.index("--phase route")
         self.assertLess(validate, self.route.index("advance_phase canary"))
         self.assertLess(validate, self.route.index("prepare-modal-candidate-credential"))

@@ -71,6 +71,9 @@ STORE_IDENTITIES = (
     "create_authority_read",
     "gateway_ingest_control",
     "gateway_ingest_route",
+    "route_control",
+    "route_routes",
+    "route_evidence",
 )
 PROVIDER_RUNTIME_FIELDS = (
     "gpu_provider",
@@ -1280,6 +1283,45 @@ def verify_route_run_config(
     gateway_config_raw,
     gateway_image,
     gateway_deployment,
+    control_access_key_id,
+    route_access_key_id,
+    route_evidence_identity,
+):
+    manifest = _validated_run_manifest(
+        manifest_raw, confirmed_sha256, harness_source_commit, root
+    )
+    config = _strict_object(gateway_config_raw)
+    actual_identities = {
+        "route_control": _gateway_store_identity(
+            config, "control", control_access_key_id
+        ),
+        "route_routes": _gateway_store_identity(config, "routes", route_access_key_id),
+        "route_evidence": route_evidence_identity,
+    }
+    expected_identities = {
+        name: manifest["store_identity_sha256s"][name]
+        for name in actual_identities
+    }
+    if (
+        hashlib.sha256(canonical_json(config)).hexdigest()
+        != manifest["gateway_config_sha256"]
+        or manifest["images"]["gateway"] != immutable_image("gateway", gateway_image)
+        or manifest["gateway_deployment"]
+        != _gateway_deployment(gateway_deployment)
+        or actual_identities != expected_identities
+    ):
+        raise ValueError("route gateway settings differ from the confirmed run config")
+    return manifest
+
+
+def verify_gateway_anchor_run_config(
+    manifest_raw,
+    confirmed_sha256,
+    harness_source_commit,
+    root,
+    gateway_config_raw,
+    gateway_image,
+    gateway_deployment,
 ):
     manifest = _validated_run_manifest(
         manifest_raw, confirmed_sha256, harness_source_commit, root
@@ -1292,7 +1334,7 @@ def verify_route_run_config(
         or manifest["gateway_deployment"]
         != _gateway_deployment(gateway_deployment)
     ):
-        raise ValueError("route gateway settings differ from the confirmed run config")
+        raise ValueError("gateway anchor differs from the confirmed run config")
     return manifest
 
 
@@ -1414,6 +1456,7 @@ def verify_provider_run_config(
     provider_secret_names,
     store_identities,
     gateway_deployment,
+    include_create_authority=True,
 ):
     manifest = _validated_run_manifest(
         manifest_raw, confirmed_sha256, harness_source_commit, root
@@ -1423,17 +1466,20 @@ def verify_provider_run_config(
     actual_images = {
         name: immutable_image(name, images[name]) for name in IMAGE_REPOSITORIES
     }
+    required_store_identities = (
+        "provider_control",
+        "evidence",
+        "ops_log",
+        "gateway_ingest_control",
+        "gateway_ingest_route",
+    ) + (
+        ("create_authority_write", "create_authority_read")
+        if include_create_authority
+        else ()
+    )
     store_identities = _actual_store_identities(
         store_identities,
-        (
-            "provider_control",
-            "evidence",
-            "ops_log",
-            "create_authority_write",
-            "create_authority_read",
-            "gateway_ingest_control",
-            "gateway_ingest_route",
-        ),
+        required_store_identities,
     )
     if (
         manifest["campaign_id"] != campaign_id
@@ -1448,27 +1494,11 @@ def verify_provider_run_config(
         != _provider_secret_names(provider_secret_names)
         or {
             name: store_identities[name]
-            for name in (
-                "provider_control",
-                "evidence",
-                "ops_log",
-                "create_authority_write",
-                "create_authority_read",
-                "gateway_ingest_control",
-                "gateway_ingest_route",
-            )
+            for name in required_store_identities
         }
         != {
             name: manifest["store_identity_sha256s"][name]
-            for name in (
-                "provider_control",
-                "evidence",
-                "ops_log",
-                "create_authority_write",
-                "create_authority_read",
-                "gateway_ingest_control",
-                "gateway_ingest_route",
-            )
+            for name in required_store_identities
         }
     ):
         raise ValueError("actual provider settings differ from the confirmed run config")
@@ -2193,7 +2223,14 @@ def main(argv=None):
     run_config = commands.add_parser("validate-run-config")
     run_config.add_argument(
         "--phase",
-        choices=("gateway", "provider", "gateway_ingest", "route"),
+        choices=(
+            "gateway",
+            "provider",
+            "provider_base",
+            "gateway_ingest",
+            "route",
+            "gateway_anchor",
+        ),
         required=True,
     )
     run_config.add_argument("--manifest", required=True)
@@ -2215,6 +2252,9 @@ def main(argv=None):
     run_config.add_argument("--gateway-container-image")
     run_config.add_argument("--gateway-worker-version-id")
     run_config.add_argument("--gateway-anchor-output")
+    run_config.add_argument(
+        "--include-create-authority", choices=("true", "false"), default="true"
+    )
     for name in PROVIDER_RUNTIME_FIELDS:
         run_config.add_argument(f"--{name.replace('_', '-')}")
     for name in PROVIDER_SECRET_FIELDS:
@@ -2327,13 +2367,98 @@ def main(argv=None):
                 os.environ.get("MILK_GATEWAY_INGEST_CONTROL_R2_ACCESS_KEY_ID"),
                 os.environ.get("MILK_GATEWAY_INGEST_ROUTE_R2_ACCESS_KEY_ID"),
             )
-        elif arguments.phase == "route":
+        elif arguments.phase == "provider_base":
+            confirmed_manifest = _validated_run_manifest(
+                manifest_raw,
+                arguments.confirmed_sha256,
+                arguments.harness_source_commit,
+                arguments.root,
+            )
+            runtime_environment = {
+                "baseten_team_name": "MILK_BASETEN_TEAM_NAME",
+                "winner_model_alias": "MILK_WINNER_MODEL_ALIAS",
+                **{
+                    name: f"MILK_{name.upper()}"
+                    for name in PROVIDER_RUNTIME_FIELDS
+                    if name
+                    not in {"gpu_provider", "baseten_team_name", "winner_model_alias"}
+                },
+            }
+            secret_environment = {
+                "registry": "MILK_BASETEN_REGISTRY_SECRET",
+                "config": "MILK_BASETEN_CONFIG_SECRET",
+                "capture_access": "MILK_BASETEN_CAPTURE_ACCESS_SECRET",
+                "capture_secret": "MILK_BASETEN_CAPTURE_SECRET_SECRET",
+                "capture_session": "MILK_BASETEN_CAPTURE_SESSION_SECRET",
+                "control_access": "MILK_BASETEN_CONTROL_ACCESS_SECRET",
+                "control_secret": "MILK_BASETEN_CONTROL_SECRET_SECRET",
+                "control_session": "MILK_BASETEN_CONTROL_SESSION_SECRET",
+            }
+            verify_provider_run_config(
+                manifest_raw,
+                arguments.confirmed_sha256,
+                arguments.harness_source_commit,
+                arguments.root,
+                campaign_id=os.environ.get("MILK_CAMPAIGN_ID"),
+                provider_project_id=os.environ.get("MILK_BASETEN_PROJECT_ID"),
+                scope_prefix=os.environ.get("MILK_SCOPE_PREFIX"),
+                images={
+                    name: os.environ.get(f"MILK_{name.upper()}_IMAGE")
+                    for name in IMAGE_REPOSITORIES
+                },
+                image_release_sha256=os.environ.get("MILK_IMAGE_RELEASE_SHA256"),
+                provider_runtime={
+                    "gpu_provider": confirmed_manifest["provider_runtime"][
+                        "gpu_provider"
+                    ],
+                    **{
+                        name: os.environ.get(environment)
+                        for name, environment in runtime_environment.items()
+                    },
+                },
+                provider_secret_names={
+                    name: os.environ.get(environment) or None
+                    for name, environment in secret_environment.items()
+                },
+                store_identities={
+                    "provider_control": _environment_store_identity("MILK_CONTROL_R2_"),
+                    "evidence": _environment_store_identity("MILK_EVIDENCE_R2_"),
+                    "ops_log": _environment_store_identity("MILK_OPS_LOG_R2_"),
+                    "gateway_ingest_control": _environment_store_identity(
+                        "MILK_GATEWAY_INGEST_CONTROL_R2_"
+                    ),
+                    "gateway_ingest_route": _environment_store_identity(
+                        "MILK_GATEWAY_INGEST_ROUTE_R2_"
+                    ),
+                },
+                gateway_deployment={
+                    "source_commit": os.environ.get("MILK_GATEWAY_SOURCE_COMMIT"),
+                    "image_admission_sha256": os.environ.get(
+                        "MILK_GATEWAY_IMAGE_ADMISSION_SHA256"
+                    ),
+                    "release_sha256": os.environ.get("MILK_GATEWAY_RELEASE_SHA256"),
+                    "application_id": os.environ.get(
+                        "MILK_GATEWAY_CONTAINER_APPLICATION_ID"
+                    ),
+                    "application_version": int(
+                        os.environ.get("MILK_GATEWAY_CONTAINER_APPLICATION_VERSION", "0")
+                    ),
+                    "container_image": os.environ.get(
+                        "MILK_GATEWAY_CONTAINER_IMAGE"
+                    ),
+                    "worker_version_id": os.environ.get(
+                        "MILK_GATEWAY_WORKER_VERSION_ID"
+                    ),
+                },
+                include_create_authority=False,
+            )
+        elif arguments.phase in {"route", "gateway_anchor"}:
             if (
                 arguments.gateway_config is None
                 or arguments.gateway_image is None
             ):
                 raise ValueError("route config validation inputs are required")
-            manifest = verify_route_run_config(
+            common = (
                 manifest_raw,
                 arguments.confirmed_sha256,
                 arguments.harness_source_commit,
@@ -2341,6 +2466,16 @@ def main(argv=None):
                 _regular_file(arguments.gateway_config).read_bytes(),
                 arguments.gateway_image,
                 _gateway_deployment_arguments(arguments),
+            )
+            manifest = (
+                verify_route_run_config(
+                    *common,
+                    os.environ.get("MILK_CONTROL_STORE_ACCESS_KEY_ID"),
+                    os.environ.get("MILK_ROUTE_STORE_ACCESS_KEY_ID"),
+                    _environment_store_identity("MILK_ROUTE_EVIDENCE_R2_"),
+                )
+                if arguments.phase == "route"
+                else verify_gateway_anchor_run_config(*common)
             )
             if arguments.gateway_anchor_output is not None:
                 output = Path(arguments.gateway_anchor_output)
@@ -2350,7 +2485,11 @@ def main(argv=None):
                     stream.write(canonical_json(manifest["gateway_deployment"]))
                 output.chmod(0o600)
         else:
-            _validate_create_authority_environment()
+            include_create_authority = arguments.include_create_authority == "true"
+            if include_create_authority:
+                _validate_create_authority_environment()
+            else:
+                _require_no_create_authority_environment()
             images = {
                 name: getattr(arguments, f"{name}_image")
                 for name in IMAGE_REPOSITORIES
@@ -2381,11 +2520,17 @@ def main(argv=None):
                     "provider_control": _environment_store_identity("MILK_CONTROL_R2_"),
                     "evidence": _environment_store_identity("MILK_EVIDENCE_R2_"),
                     "ops_log": _environment_store_identity("MILK_OPS_LOG_R2_"),
-                    "create_authority_write": _environment_store_identity(
-                        "MILK_CREATE_AUTHORITY_WRITE_R2_"
-                    ),
-                    "create_authority_read": _environment_store_identity(
-                        "MILK_CREATE_AUTHORITY_READ_R2_"
+                    **(
+                        {
+                            "create_authority_write": _environment_store_identity(
+                                "MILK_CREATE_AUTHORITY_WRITE_R2_"
+                            ),
+                            "create_authority_read": _environment_store_identity(
+                                "MILK_CREATE_AUTHORITY_READ_R2_"
+                            ),
+                        }
+                        if include_create_authority
+                        else {}
                     ),
                     "gateway_ingest_control": _environment_store_identity(
                         "MILK_GATEWAY_INGEST_CONTROL_R2_"
@@ -2394,6 +2539,7 @@ def main(argv=None):
                         "MILK_GATEWAY_INGEST_ROUTE_R2_"
                     ),
                 },
+                include_create_authority=include_create_authority,
             )
         return 0
     if arguments.command == "lease-acquire":

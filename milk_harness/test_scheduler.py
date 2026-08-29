@@ -787,6 +787,15 @@ class SchedulerTest(unittest.TestCase):
             "gateway_ingest_route": store_identity_sha256(
                 "account", "routes", "gateway-ingest-route"
             ),
+            "route_control": store_identity_sha256(
+                "account", "control", "route-control-access"
+            ),
+            "route_routes": store_identity_sha256(
+                "account", "routes", "route-routes-access"
+            ),
+            "route_evidence": store_identity_sha256(
+                "account", "route-evidence", "route-evidence-access"
+            ),
         }
         manifest = {
             "schema_version": "milk.confirmed-production-run-config.v5",
@@ -933,6 +942,9 @@ class SchedulerTest(unittest.TestCase):
                 gateway_raw,
                 images["gateway"],
                 gateway_deployment,
+                "route-control-access",
+                "route-routes-access",
+                store_identities["route_evidence"],
             ),
             manifest,
         )
@@ -949,6 +961,22 @@ class SchedulerTest(unittest.TestCase):
                 gateway_raw,
                 images["gateway"],
                 changed_gateway_deployment,
+                "route-control-access",
+                "route-routes-access",
+                store_identities["route_evidence"],
+            )
+        with self.assertRaisesRegex(ValueError, "route gateway settings"):
+            verify_route_run_config(
+                manifest_raw,
+                confirmed,
+                source_commit,
+                root,
+                gateway_raw,
+                images["gateway"],
+                gateway_deployment,
+                "route-control-access",
+                "route-routes-access",
+                "0" * 64,
             )
         v4_manifest = {
             **manifest,
@@ -992,6 +1020,35 @@ class SchedulerTest(unittest.TestCase):
                         "gateway_ingest_route",
                     )
                 },
+            ),
+            manifest,
+        )
+        base_store_identities = {
+            name: store_identities[name]
+            for name in (
+                "provider_control",
+                "evidence",
+                "ops_log",
+                "gateway_ingest_control",
+                "gateway_ingest_route",
+            )
+        }
+        self.assertEqual(
+            verify_provider_run_config(
+                manifest_raw,
+                confirmed,
+                source_commit,
+                root,
+                campaign_id="e" * 64,
+                provider_project_id="project_1",
+                scope_prefix=scope,
+                images=images,
+                image_release_sha256="f" * 64,
+                gateway_deployment=gateway_deployment,
+                provider_runtime=provider_runtime,
+                provider_secret_names=provider_secrets,
+                store_identities=base_store_identities,
+                include_create_authority=False,
             ),
             manifest,
         )
