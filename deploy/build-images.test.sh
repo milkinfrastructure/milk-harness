@@ -30,20 +30,67 @@ from pathlib import Path
 root = Path(sys.argv[1])
 dockerfile = root.joinpath("Dockerfile.jobs").read_text(encoding="utf-8")
 context = root.joinpath("Dockerfile.jobs.dockerignore").read_text(encoding="utf-8")
+lock = root.joinpath(
+    "third_party/truss/requirements-linux-amd64-cp312.lock"
+).read_text(encoding="utf-8")
+notices = root.joinpath("third_party/truss/THIRD_PARTY_NOTICES.md").read_text(
+    encoding="utf-8"
+)
+
+requirements = {}
+for line in lock.splitlines():
+    if not line or line.startswith("#"):
+        continue
+    match = re.fullmatch(
+        r"([a-z0-9-]+)==([^ ]+) --hash=sha256:([0-9a-f]{64})", line
+    )
+    assert match, line
+    name, version, digest = match.groups()
+    assert name not in requirements
+    requirements[name] = (version, digest)
+assert len(requirements) == 76
+assert list(requirements) == sorted(requirements)
+assert requirements["truss"] == (
+    "0.18.25",
+    "386ec68ecb5bcb1c582d26765cc47c34192ef092ffd1934224ed308c063b8b5a",
+)
+assert requirements["truss-transfer"][0] == "0.0.43"
+assert requirements["watchfiles"][0] == "0.19.0"
+assert not {
+    "aiohttp-socks",
+    "async-timeout",
+    "backports-tarfile",
+    "exceptiongroup",
+    "importlib-metadata",
+    "modal",
+    "python-socks",
+    "zipp",
+} & requirements.keys()
+assert "Public PyPI wheels only: 76 files, 56,207,642 bytes" in lock
+assert "--require-hashes --requirement requirements-linux-amd64-cp312.lock" in lock
 
 assert "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7" in dockerfile
-assert "pip install" not in dockerfile
-assert "RUN chmod 0555 ./milk_harness ./deploy ./deploy/baseten" in dockerfile
-assert dockerfile.index("USER 65532:65532") < dockerfile.index(
-    "RUN PYTHONDONTWRITEBYTECODE=1"
-)
+assert dockerfile.count("python3 -m pip --isolated install") == 1
 for required in (
+    "--index-url https://pypi.org/simple",
+    "--only-binary=:all:",
+    "--require-hashes",
+    "requirements-linux-amd64-cp312.lock",
+    "THIRD_PARTY_NOTICES.md",
+    "JOBS-PYTHON-THIRD-PARTY-NOTICES.md",
     "milk_harness/provider_acceptance.py",
     "milk_harness/baseten_winner.py",
     "milk_harness/scheduler.py",
     "deploy/baseten/winner.py",
     "deploy/baseten/adapter.py",
     "deploy/winner_admission.py",
+    'version("truss") == "0.18.25"',
+    "/usr/local/bin/truss --version",
+    "truss-direct-image-runtime-v1",
+    "/usr/local/bin/truss --non-interactive push --help",
+    "--disable-truss-download",
+    "COLUMNS=240 TRUSS_NO_UPDATE_CHECK=true",
+    "chmod 0555 ./milk_harness ./deploy ./deploy/baseten",
 ):
     assert required in dockerfile, required
 for forbidden in (
@@ -51,11 +98,11 @@ for forbidden in (
     "BASETEN_API_KEY",
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
-    "modal",
-    "Modal",
-    "third_party",
     "PIP_EXTRA_INDEX_URL",
-    "truss",
+    "import modal",
+    "milk_harness/modal_jobs.py",
+    "third_party/modal/",
+    "deploy/modal/admit.py",
 ):
     assert forbidden not in dockerfile
 
@@ -66,9 +113,15 @@ for included in (
     "!deploy/baseten/winner.py",
     "!deploy/baseten/adapter.py",
     "!deploy/winner_admission.py",
+    "!third_party/truss/requirements-linux-amd64-cp312.lock",
+    "!third_party/truss/THIRD_PARTY_NOTICES.md",
 ):
     assert included in context
-for forbidden in ("publish_image_admission", "modal", "third_party"):
+for forbidden in (
+    "publish_image_admission",
+    "modal_jobs",
+    "deploy/modal",
+):
     assert forbidden not in context
 
 copied_paths = set(
@@ -108,8 +161,24 @@ for relative in copied_paths:
             candidate = root.joinpath(*parts).with_suffix(".py")
             if candidate.is_file():
                 required_paths.add(candidate.relative_to(root).as_posix())
-missing = required_paths - copied_paths
-assert missing == {"milk_harness/modal_jobs.py"}, sorted(missing)
+assert required_paths <= copied_paths, sorted(required_paths - copied_paths)
+
+notice_entries = re.findall(
+    r"^\| ([^|]+) \| ([^|]+) \| ([^|]+) \|$",
+    notices,
+    flags=re.MULTILINE,
+)[2:]
+assert len(notice_entries) == len(requirements)
+notice_rows = {package.rsplit(" ", 1)[0] for package, _, _ in notice_entries}
+assert notice_rows == requirements.keys()
+assert all(
+    license_name.strip()
+    and (re.search(r"`[0-9a-f]{64}`", evidence) or evidence.startswith("Metadata only;"))
+    for _, license_name, evidence in notice_entries
+)
+assert "| truss 0.18.25 | MIT |" in notices
+assert "| truss-transfer 0.0.43 | MIT |" in notices
+assert "| modal " not in notices
 PY
 
 mkdir "$test_root/bin"
@@ -905,8 +974,10 @@ assert_absent -Eq '^(ADD|RUN)[[:space:]]' "$teacher_dockerfile"
   "$(grep -c '^COPY ' "$teacher_dockerfile")" ]
 grep -Fq -- '--sbom=true' "$builder"
 grep -Fxq 'USER 65532:65532' "$root/Dockerfile.jobs"
-assert_absent -Fiq 'modal' "$root/Dockerfile.jobs"
-assert_absent -Fq 'truss' "$root/Dockerfile.jobs"
+assert_absent -Fq 'import modal' "$root/Dockerfile.jobs"
+assert_absent -Fq 'milk_harness/modal_jobs.py' "$root/Dockerfile.jobs"
+grep -Fq '/usr/local/bin/truss --version' "$root/Dockerfile.jobs"
+grep -Fq 'truss-direct-image-runtime-v1' "$root/Dockerfile.jobs"
 grep -Fq 'milk_harness/image_admission.py' "$root/Dockerfile.jobs"
 grep -Fq 'milk_harness/provider_acceptance.py' "$root/Dockerfile.jobs"
 grep -Fq 'deploy/baseten/winner.py' "$root/Dockerfile.jobs"

@@ -7,6 +7,17 @@ RUN test "$(python3 -c 'import platform; print(platform.python_version())')" = 3
 
 WORKDIR /opt/milk-harness
 COPY --chmod=0444 LICENSE /usr/share/licenses/milk-harness/LICENSE
+COPY --chmod=0444 third_party/truss/THIRD_PARTY_NOTICES.md \
+  /usr/share/licenses/milk-harness/JOBS-PYTHON-THIRD-PARTY-NOTICES.md
+COPY --chmod=0444 third_party/truss/requirements-linux-amd64-cp312.lock /tmp/jobs.lock
+RUN python3 -m pip --isolated install \
+      --disable-pip-version-check \
+      --no-cache-dir \
+      --index-url https://pypi.org/simple \
+      --only-binary=:all: \
+      --require-hashes \
+      --requirement /tmp/jobs.lock && \
+    rm -f -- /tmp/jobs.lock
 COPY --chmod=0444 milk_harness/__init__.py milk_harness/evidence.py milk_harness/budget.py \
   milk_harness/image_admission.py \
   milk_harness/logs.py milk_harness/log_collection.py milk_harness/metrics_collection.py \
@@ -14,10 +25,21 @@ COPY --chmod=0444 milk_harness/__init__.py milk_harness/evidence.py milk_harness
   milk_harness/scheduler.py milk_harness/jobs.py ./milk_harness/
 COPY --chmod=0444 deploy/baseten/adapter.py deploy/baseten/winner.py ./deploy/baseten/
 COPY --chmod=0444 deploy/winner_admission.py ./deploy/
-RUN chmod 0555 ./milk_harness ./deploy ./deploy/baseten
-USER 65532:65532
-RUN PYTHONDONTWRITEBYTECODE=1 python3 -c \
-  'import deploy.baseten.adapter, deploy.baseten.winner, deploy.winner_admission; import milk_harness.baseten_winner, milk_harness.jobs, milk_harness.provider_acceptance, milk_harness.scheduler'
+RUN chmod 0555 ./milk_harness ./deploy ./deploy/baseten && \
+    PYTHONDONTWRITEBYTECODE=1 python3 -c \
+  'from importlib.metadata import version; import deploy.baseten.adapter, deploy.baseten.winner, deploy.winner_admission; import milk_harness.baseten_winner, milk_harness.jobs, milk_harness.provider_acceptance, milk_harness.scheduler; assert version("truss") == "0.18.25"' && \
+    test "$(TRUSS_NO_UPDATE_CHECK=true /usr/local/bin/truss --version)" = \
+      "truss, version 0.18.25" && \
+    test "$(/usr/local/bin/python3 -I -c 'from importlib.metadata import version; from truss.base.truss_config import DockerServer; assert version("truss") == "0.18.25"; value = DockerServer.model_validate({"no_build": True, "server_port": 8000, "predict_endpoint": "/v1/chat/completions", "readiness_endpoint": "/health", "liveness_endpoint": "/health"}); assert value.no_build is True and value.start_command is None; print("truss-direct-image-runtime-v1")')" = \
+      "truss-direct-image-runtime-v1" && \
+    COLUMNS=240 TRUSS_NO_UPDATE_CHECK=true \
+      /usr/local/bin/truss --non-interactive push --help \
+      > /tmp/truss-push.help && \
+    for option in --publish --disable-truss-download --deployment-name --wait \
+      --team --labels --output; do \
+      test "$(grep -F -c -- "$option" /tmp/truss-push.help)" = 1; \
+    done && \
+    rm -f -- /tmp/truss-push.help
 
 ENV HOME=/tmp \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -25,4 +47,5 @@ ENV HOME=/tmp \
 LABEL org.opencontainers.image.title="Milk jobs executor" \
       org.opencontainers.image.source="https://github.com/milkinfrastructure/milk-harness" \
       org.opencontainers.image.licenses="MIT"
+USER 65532:65532
 ENTRYPOINT ["python3", "-m", "milk_harness.jobs"]

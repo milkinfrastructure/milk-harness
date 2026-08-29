@@ -151,8 +151,16 @@ class WinnerPureContractTest(unittest.TestCase):
         )
 
     def test_config_is_one_private_no_build_h100_with_zero_floor(self):
-        self.assertFalse(winner.DIRECT_IMAGE_RUNTIME_VERIFIED)
-        self.assertIn("non-root", winner.DIRECT_IMAGE_RUNTIME_BLOCKER)
+        self.assertEqual(
+            winner.TRUSS_VERSION_ARGV,
+            ("/usr/local/bin/truss", "--version"),
+        )
+        self.assertEqual(
+            winner.TRUSS_VERSION_OUTPUT,
+            b"truss, version 0.18.25\n",
+        )
+        self.assertIn("DockerServer.model_validate", winner.TRUSS_RUNTIME_PROBE_ARGV[3])
+        self.assertIn("--disable-truss-download", winner.TRUSS_PUSH_REQUIRED_OPTIONS)
         raw = winner.truss_config(values(), RUN)
         self.assertIn(f"model_name: {winner.model_name(RUN)}\n", raw)
         self.assertIn(f"  image: {IMAGE}\n", raw)
@@ -204,6 +212,7 @@ class WinnerPureContractTest(unittest.TestCase):
         self.assertEqual(winner.SERVING_AUTOSCALING["min_replica"], 0)
         self.assertEqual(winner.SERVING_AUTOSCALING["max_replica"], 1)
         argv = winner.push_argv("/tmp/milk-winner/truss", RUN, CLAIM, "milk")
+        self.assertEqual(argv[0], winner.TRUSS_EXECUTABLE)
         self.assertNotIn("--promote", argv)
         self.assertEqual(argv[argv.index("--team") + 1], "milk")
         self.assertEqual(

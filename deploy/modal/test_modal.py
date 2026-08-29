@@ -1,18 +1,10 @@
-import importlib.util
 import hashlib
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
 
-
-MODAL_DIR = os.path.dirname(os.path.abspath(__file__))
-admit_spec = importlib.util.spec_from_file_location(
-    "dragontales_modal_admit", os.path.join(MODAL_DIR, "admit.py")
-)
-admit = importlib.util.module_from_spec(admit_spec)
-admit_spec.loader.exec_module(admit)
+from deploy import winner_admission as admit
 
 JOB = "a" * 64
 CANDIDATE_KEY = b"candidate-secret"

@@ -1073,6 +1073,10 @@ class _RetryableBasetenUnavailable(RuntimeError):
         super().__init__("Baseten is retryably unavailable")
 
 
+class _DirectImageRuntimeUnavailable(RuntimeError):
+    pass
+
+
 class BasetenWinnerRuntime:
     """Exact Baseten I/O used only through ``BasetenWinnerLifecycle``."""
 
@@ -1102,6 +1106,72 @@ class BasetenWinnerRuntime:
         self.timeout_seconds = timeout_seconds
         self.opener = opener or urllib.request.build_opener(_NoRedirect)
         self.runner = runner
+        self._direct_image_runtime_verified = False
+
+    @staticmethod
+    def _truss_environment(home_dir):
+        return {
+            "COLUMNS": "240",
+            "HOME": str(home_dir),
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "TRUSS_NO_UPDATE_CHECK": "true",
+        }
+
+    def _verify_direct_image_runtime(self, *, home_dir=None, force=False):
+        if self._direct_image_runtime_verified and not force:
+            return
+        if force:
+            self._direct_image_runtime_verified = False
+        if home_dir is None:
+            with tempfile.TemporaryDirectory(prefix="milk-truss-preflight-") as root:
+                self._verify_direct_image_runtime(
+                    home_dir=Path(root),
+                    force=force,
+                )
+            return
+        environment = self._truss_environment(home_dir)
+        checks = (
+            (contract.TRUSS_VERSION_ARGV, contract.TRUSS_VERSION_OUTPUT, ()),
+            (
+                contract.TRUSS_RUNTIME_PROBE_ARGV,
+                contract.TRUSS_RUNTIME_PROBE_OUTPUT,
+                (),
+            ),
+            (
+                contract.TRUSS_PUSH_HELP_ARGV,
+                None,
+                contract.TRUSS_PUSH_REQUIRED_OPTIONS,
+            ),
+        )
+        try:
+            for argv, expected, required in checks:
+                result = self.runner(
+                    list(argv),
+                    capture_output=True,
+                    check=False,
+                    timeout=30,
+                    env=environment,
+                )
+                stdout = getattr(result, "stdout", None)
+                stderr = getattr(result, "stderr", None)
+                if (
+                    getattr(result, "returncode", None) != 0
+                    or not isinstance(stdout, bytes)
+                    or not 1 <= len(stdout) <= MAX_PROVIDER_BYTES
+                    or stderr != b""
+                    or expected is not None
+                    and stdout != expected
+                    or any(stdout.count(option.encode()) != 1 for option in required)
+                ):
+                    raise _DirectImageRuntimeUnavailable(
+                        "pinned Truss direct-image runtime capability is unavailable"
+                    )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise _DirectImageRuntimeUnavailable(
+                "pinned Truss direct-image runtime capability is unavailable"
+            ) from error
+        self._direct_image_runtime_verified = True
 
     def _team(self, team_name):
         if team_name != self.team_name:
@@ -1231,8 +1301,7 @@ class BasetenWinnerRuntime:
 
     def _preflight(self, team_name, observed_at):
         self._team(team_name)
-        if not contract.DIRECT_IMAGE_RUNTIME_VERIFIED:
-            raise RuntimeError(contract.DIRECT_IMAGE_RUNTIME_BLOCKER)
+        self._verify_direct_image_runtime()
         teams_raw = self._request("GET", "/teams", query={"name": team_name})
         teams = _provider_object(teams_raw, "Baseten teams").get("teams")
         if not isinstance(teams, list):
@@ -1362,14 +1431,12 @@ class BasetenWinnerRuntime:
 
     def _push_truss(self, team_name, truss, argv):
         self._team(team_name)
-        if not contract.DIRECT_IMAGE_RUNTIME_VERIFIED:
-            raise RuntimeError(contract.DIRECT_IMAGE_RUNTIME_BLOCKER)
         if (
             not isinstance(truss, str)
             or not 1 <= len(truss.encode()) <= 64 * 1024
             or not isinstance(argv, list)
             or len(argv) < 8
-            or argv[0] != "/usr/local/bin/truss"
+            or argv[0] != contract.TRUSS_EXECUTABLE
             or argv[1:3] != ["--non-interactive", "push"]
             or argv.count("--team") != 1
             or argv[argv.index("--team") + 1] != team_name
@@ -1399,26 +1466,10 @@ class BasetenWinnerRuntime:
         descriptor = os.open(truss_dir / "config.yaml", flags, 0o600)
         with os.fdopen(descriptor, "wb") as config:
             config.write(truss.encode())
-        environment = {
-            "BASETEN_API_KEY": self.api_key,
-            "HOME": str(home_dir),
-            "PATH": "/usr/local/bin:/usr/bin:/bin",
-        }
+        environment = self._truss_environment(home_dir)
+        environment["BASETEN_API_KEY"] = self.api_key
         try:
-            version = self.runner(
-                ["/usr/local/bin/truss", "--version"],
-                capture_output=True,
-                check=False,
-                timeout=30,
-                env=environment,
-            )
-            if (
-                version.returncode != 0
-                or version.stdout != contract.TRUSS_VERSION_OUTPUT
-                or not isinstance(version.stderr, bytes)
-                or len(version.stderr) > MAX_PROVIDER_BYTES
-            ):
-                raise RuntimeError("pinned Truss runtime verification failed")
+            self._verify_direct_image_runtime(home_dir=home_dir, force=True)
             result = self.runner(
                 list(argv),
                 capture_output=True,
@@ -1681,15 +1732,17 @@ class BasetenWinnerLifecycle:
 
     def preflight(self):
         observed_at = _utc(self.now(), "clock")
-        if not contract.DIRECT_IMAGE_RUNTIME_VERIFIED:
+        if self.runtime is None:
+            raise ValueError("concrete Baseten winner runtime is required")
+        try:
+            self.runtime._verify_direct_image_runtime()
+        except _DirectImageRuntimeUnavailable:
             return baseten_unavailable_preflight_receipt(
                 self.team_name,
                 "capability_unavailable",
                 None,
                 observed_at,
             )
-        if self.runtime is None:
-            raise ValueError("concrete Baseten winner runtime is required")
         try:
             return self._provider(
                 self.runtime._preflight,

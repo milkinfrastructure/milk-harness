@@ -17,3 +17,7 @@
 !deploy/baseten/adapter.py
 !deploy/baseten/winner.py
 !deploy/winner_admission.py
+!third_party/
+!third_party/truss/
+!third_party/truss/requirements-linux-amd64-cp312.lock
+!third_party/truss/THIRD_PARTY_NOTICES.md
