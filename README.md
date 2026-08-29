@@ -1,94 +1,85 @@
 # Milk Harness
 
-Milk Harness is the operator-side control loop for [`milk-gateway`](https://github.com/milkinfrastructure/milk-gateway). Every five-minute pass reloads and validates the exact `MILK_EVAL_CONFIG_JSON`, runs `gateway tick --once` over completed traffic and durable per-eval counts in R2, reconciles disposable provider jobs and route state, then exits. The fixed [production workflow](.github/workflows/production-loop.yml) is the only clock. There is no resident manager, database, queue, or third service.
+Milk Harness is the operator loop for
+[`milk-gateway`](https://github.com/milkinfrastructure/milk-gateway). It turns
+completed gateway traffic into bounded teacher, training, evaluation, and route
+jobs, then exits. GitHub Actions is the clock. R2 is the durable authority.
+Baseten is the only GPU provider.
 
-The current hosted pilot is Stripe-like at the SDK boundary but single-tenant: one gateway deployment owns one tenant, project, environment, and workload scope. It is not a shared multi-customer endpoint.
+There is no resident manager, database, queue, or local GPU dependency. The
+public system is two repositories:
 
-| User | Managed surface | Current support |
-| --- | --- | --- |
-| Hosted customer | Official SDK base URL and one `dt_live_...` key | Pilot, after the live qualification gate passes |
-| Milk operator | Gateway, eval, R2, providers, routes, and release evidence | Implemented candidate path; live cloud qualification pending |
-| External self-hoster | Gateway plus the local config/control smoke | Provider images and custom domains are not turnkey yet |
+- `milk-gateway`: the OpenAI-compatible CPU gateway and R2 state machine;
+- `milk-harness`: eval configuration, disposable jobs, release checks, and the
+  production workflow.
 
-The customer path is three steps:
+The hosted pilot is intentionally single-tenant. A customer points an official
+OpenAI SDK at the gateway, supplies one `dt_live_...` bearer key, and sends
+normal chat-completions traffic. That key cannot inspect results, change routes,
+or start paid work.
 
-1. Point the official OpenAI SDK at the Milk gateway.
-2. Send one `dt_live_...` key as the Bearer credential.
-3. Send normal application traffic.
+Source is MIT-licensed. Production OCI images remain private. The hosted release
+is not production-qualified until the complete cloud proof has passed.
 
-Milk Infrastructure is the operator for the hosted pilot and owns its eval configuration, storage and provider credentials, route policy, and operator-only status/results inspection. A self-host operator supplies the equivalent configuration and secrets. Customers receive only the `dt_live_...` traffic key; it authorizes chat traffic, not provider work or status/results access. Customer traffic keys never enter the harness or provider jobs.
+## Control loop
 
-For the shortest no-cloud start, run the bounded config/control smoke in [`examples/self-host`](examples/self-host). It validates and materializes the example eval and exercises the fixed Exo host command without contacting a provider. Full provider execution remains Milk-managed because production admission accepts only Milk release receipts and immutable Milk image repositories.
+Every pass performs three bounded steps:
 
-No local Mac GPU is used. The gateway and scheduler are CPU-only; only an explicitly confirmed provider job can start a cloud GPU.
+1. `gateway tick --once` discovers or repairs work from completed R2 captures.
+2. `jobs` reconciles existing Baseten work and, only with one-use authority,
+   creates the next admitted job.
+3. Route control ingests verified results, advances or rolls back a canary, and
+   proves signed zero after teardown.
 
-The MIT-licensed gateway and harness source repositories are public. Runtime OCI images remain private during production qualification. The complete cloud proof has not run, so the hosted release remains unqualified.
+Scheduled passes can reconcile and clean up. They cannot authorize a provider
+create or paid proof traffic. A manual pass must match the exact active eval ID
+and canonical eval SHA-256 before either action is enabled.
 
-## Product contract
+## Eval contract
 
-One canonical `milk.eval.v1` document contains every non-secret setting for one Milk-managed eval:
+One canonical `milk.eval.v1` document contains every non-secret setting for one
+eval:
 
 - tenant, project, environment, and workload scope;
-- hard call and decision limits;
-- gateway stores and immutable release identities;
-- stage-specific Baseten and Modal policy plus exact provider resources;
+- hard call, wall-time, concurrency, and cost limits;
+- R2 locations and immutable release identities;
+- exact Baseten team, project, image, and secret names;
 - teacher, student, route, and budget policy.
 
-Production admits the exact document through two repository variables:
+Production admits it through two repository variables:
 
 ```text
 MILK_EVAL_CONFIG_JSON=<canonical milk.eval.v1 JSON>
-MILK_EVAL_ID=<stable campaign/eval ID embedded in the manifest and gateway config>
+MILK_EVAL_ID=<stable eval ID embedded in the manifest and gateway config>
 ```
 
-`MILK_EVAL_ID` is the stable campaign identity: it must equal both `manifest.campaign_id` and `gateway_config.eval_id`. It is not the document hash. Validation separately computes `MILK_EVAL_CONFIG_SHA256` over the exact canonical outer document; an explicitly confirmed manual dispatch must match that digest before paid work can start.
+`MILK_EVAL_ID`, `manifest.campaign_id`, and `gateway_config.eval_id` must be
+identical. The provider policy is exactly `{"only":"baseten"}`. Fallback fields,
+Modal identities, and Modal pricing are rejected.
 
-The workflow does not discover arbitrary configs from object storage. Each pass revalidates those admitted bytes, then reads completed traces and per-eval control state from R2. This keeps configuration explicit while R2 remains the authority for counts, claims, budgets, results, and routes.
+Secrets are separate masked environment values. They are not embedded in the
+eval, written to R2, placed in model inputs, or bundled into one shared secret.
+Provider workloads receive only the credential roles and secret names required
+for that operation.
 
-Every manual dispatch also carries that stable identity as `managed_eval_id`.
-Every production job runs only when it equals the active repository
-`MILK_EVAL_ID`; a missing or stale manual identity runs nothing. Scheduled runs
-use the active repository identity directly.
+## Spend limits
 
-Credentials remain individual operator-owned masked environment secrets. They are not embedded in the eval document, written to R2, bundled into JSON secret blobs, or exposed to model tool calls. Only the provider-reconciliation job receives provider API credentials.
+Every create requires all of the following:
 
-The scheduled loop performs three bounded, separately credentialed steps:
+- an immutable Baseten price receipt;
+- a pessimistic reservation in the shared campaign ledger;
+- one create-only authority object;
+- an explicitly confirmed manual dispatch for the exact eval digest.
 
-1. `gateway tick --once` discovers or repairs work from captured traffic.
-2. `jobs` reconciles existing provider state and, only with one-use authorization, uses Baseten first or Modal as the fallback.
-3. Route control ingests verified results, advances or rolls back a canary, and proves provider zero.
+The GPU ledger ceiling is `$1,000`. New work stops at `$850`, preserving `$150`
+for running work and teardown. The first cloud proof is narrower: `$160` maximum
+GPU reservation plus `$15` external reserve, or `$175` total authorization.
 
-GitHub Actions is only the clock. Exo can request only `status`, `reconcile`, or one explicitly approved `run_confirmed`; it cannot submit arbitrary commands or credentials.
+The proof starts with one 20-call teacher job. No later create is admitted until
+that job proves the exact private image and profile, all calls terminal, complete
+logs and OOM evidence, and zero Baseten compute after termination.
 
-## Limits and spend
-
-`teacher.max_decisions` is the teacher-decision limit for one eval. Durable gateway keys include the eval ID before the tenant, project, environment, and workload IDs, so another eval cannot reuse its claims or limit. The gateway stops creating new teacher claims at the limit while allowing reconciliation and teardown to finish.
-
-Paid work has three gates:
-
-- an immutable price receipt for the exact provider;
-- a pessimistic reservation inside the campaign budget;
-- a confirmed manual dispatch whose hash matches the exact admitted outer eval document.
-
-The provider ledger has a `$1,000` GPU-authorization ceiling. New GPU work stops at `$850`, preserving `$150` for running work and teardown. It is not an invoice cap for Cloudflare, OpenAI, or another billing surface. The first cloud proof separately reserves at most `$15` for its fixed and non-GPU work, so its exact authorization envelope is `$175`: `$160` GPU plus `$15` external. Scheduled runs cannot authorize provider creates.
-
-The cloud-mechanics eval starts with one 20-call teacher job. No later provider create is authorized until a Baseten-selected job proves the exact private image and profile, all 20 calls ready within the live latency target, `logs_source_complete=true`, `oom_source_complete=true`, `oom_matched_record_count=0`, and zero compute after termination. A Modal-selected job can produce mechanics results but cannot pass this Baseten gate.
-
-After teacher admission, disposable jobs may use Modal fallback. Winner serving is currently Modal-only; Baseten winner deployment remains disabled until its non-root, secret-free runtime contract is qualified.
-
-## Exo integration
-
-[`tools/exo`](tools/exo) adds one narrow `milk` tool to an existing Exo harness. Its input is only:
-
-```json
-{"action":"status|reconcile|run_confirmed","eval_id":"<campaign ID>"}
-```
-
-The host command accepts only an operator-admitted config under `/etc/milk/evals/<eval_id>.json`. Exo receives no provider token, arbitrary command, route key, or spending authority.
-
-The host operator may set a GitHub repository, workflow file, and ref for a fork. Those values come only from the service environment; they are never model inputs. Milk production remains the default. See [`tools/exo/README.md`](tools/exo/README.md).
-
-## Cloud deployment
+## Production setup
 
 Production uses three GitHub environments:
 
@@ -96,69 +87,59 @@ Production uses three GitHub environments:
 - `milk-provider-jobs-prod`
 - `milk-route-control-prod`
 
-Those environments bind fourteen distinct least-privilege R2 access-key pairs across seven buckets. A credential identity is the canonical pair `account_id + access_key_id`; the bucket and required capabilities are validated separately. Reusing one credential across buckets therefore fails even if the bucket names differ. Two identities are provider-workload roles: capture read-only and control read-write. Only their access-key IDs reach the scheduler host for identity verification. Provider requests bind the expected identity hashes and secret-object names; Baseten or Modal injects the values, and the provider launch wrapper verifies the injected access-key ID before the unchanged GPU image entrypoint can do storage or model work.
+They bind fourteen least-privilege R2 identities across seven buckets. The two
+GPU identities live in Baseten Secrets; the scheduler sees only their access-key
+IDs for identity verification.
 
-The production workflow is [`production-loop.yml`](.github/workflows/production-loop.yml). Keep only that production workflow disabled until all three environments, the two eval variables, provider resources, and object-store credentials are complete. Offline CI in [`offline-gates.yml`](.github/workflows/offline-gates.yml) can run without production credentials or paid work. Enabling the production workflow starts the five-minute reconciliation clock; it does not by itself authorize paid work.
+[`bootstrap-baseten-registry.yml`](.github/workflows/bootstrap-baseten-registry.yml)
+is a manual, eval-bound credential sync. It sends the existing read-only GHCR
+credential directly from the protected GitHub environment to Baseten and verifies
+only secret metadata. It cannot start a job or expose the credential value.
 
-Follow the ordered [`production runbook`](docs/reference/production-runbook.md) for release, gateway deployment, workflow activation, one-use proof dispatches, and final evidence checks.
+[`production-loop.yml`](.github/workflows/production-loop.yml) is the only
+production clock. Follow the ordered
+[`production runbook`](docs/reference/production-runbook.md) before enabling it.
+Current provider and release evidence is tracked in
+[`production status`](docs/reference/production-status.md).
 
-The mechanics proof uses the existing typed GPT-OSS teacher profile. Hosted GLM is the next explicit typed teacher profile after mechanics reaches the production gate; it uses the same eval and scheduler contract rather than a generic provider framework.
+No local Mac GPU is used. CPU images are built for `linux/amd64`; the gateway
+runtime is a shell-free Chainguard image. GPU images use pinned CUDA, PyTorch,
+Prime-RL, and vLLM layers, so Alpine is not a compatible substitute. Model
+weights stay outside the images and are mounted and hash-verified at runtime.
 
-The current v6 candidate admissions record these compressed `linux/amd64` sizes:
+The mechanics proof uses the typed GPT-OSS teacher profile. Hosted GLM is the
+next typed teacher profile after the mechanics gate passes; it uses the same eval
+and job contract.
 
-| Image | Compressed size |
-| --- | ---: |
-| CPU `milk-gateway` | 12.0520439 MiB |
-| CPU `milk-jobs` | 58.23 MiB |
-| GPU `milk-teacher-gpt-oss` | 10,420.52 MiB |
-| GPU `milk-student-train` | 6,371.98 MiB |
-| GPU `milk-student-branch` | 10,836.95 MiB |
+## Harness tool
 
-Cloudflare pulls the separately admitted gateway image. Modal and Baseten pull the exact jobs and GPU images. They do not rebuild images. The local Mac does not build or run GPU images.
+[`tools/exo`](tools/exo) exposes one narrow host command:
 
-Alpine cannot materially shrink the pinned CUDA, PyTorch, and vLLM layers; model weights remain external and are mounted and hash-verified at runtime. The teacher and branch share the same vLLM layers, so all five images contain 16.88 GiB of unique compressed content rather than their 27.05 GiB arithmetic sum. Milk adds 463.57 MiB across the five images; the remaining unique bytes are pinned upstream runtimes.
+```json
+{"action":"status|reconcile|run_confirmed","eval_id":"<eval ID>"}
+```
 
-The current gateway release (`39760f00e041d5fd91f84990584cf99dd4b2eb7ded9eac07615a53415bd884e4`) is bound to gateway source `659b1723539fa3126472348b6fc3afb52831dfca`. Its image is `milk-gateway@sha256:2e0180deda8854c6bc76a1fa0b9ab02e43f49c9d14325c0e0f300c613d30be20` and its admission is `a3bd04a269f5a81190cc60c4c57b4614ea2e63aad7f5a0a054ed61f4302ae5be`. The CPU-only build completed in 1 hour 3 minutes 20 seconds and removed its ephemeral builder. Harness image release v5 (`aadbb2fcc88cd775c51e7d976a1256110482a16105570fe5b4007061517830fb`) is bound to harness source `3553ad5c4f7b8c72a6a071b1510f6104fad57a4d`. It retains the three GPU images and admissions byte-for-byte from harness `aa294358bede782d1e533fc1f6432615b5366a82`; those images retain their embedded gateway build dependency `milk-gateway@sha256:f5fd6786a5d36870045c9fc8271ac28940ae88809569f5c3fb8fbb2d2582ca4c` from gateway source `bc1b53c45c337d95daa38cd8170da46c246e5a70`. It selectively replaces only `milk-jobs` with `milk-jobs@sha256:97e00265eee7c1350b12ba0821a24012fcc312f127f2ce75a463fe991af5e056`; its admission is `6b594d17a39b7ab4e3e782916c4be57d32e3034e3385400840bf1ec85dae9868` and build context is `b77f25092b46c979ab8788eae320748a91f5590c48fec2d113134fa2ce50c03e`. The CPU-only selective build completed in 3 minutes 58 seconds, used no local GPU, and removed its ephemeral builder. Both immutable release records validate locally, but the current v6 evidence is not published to production R2. The five objects currently in `milk-prod-evidence` are the previous harness release; current publication requires the new gateway admission and release plus the new jobs admission and harness release, followed by metadata and least-privilege body readback. The hosted release remains a candidate until that readback and the complete cloud proof below pass.
-
-See [`docs/reference/production-scheduler.md`](docs/reference/production-scheduler.md) for the credential boundaries and [`docs/reference/spend-policy.md`](docs/reference/spend-policy.md) for budget semantics.
+It accepts only an operator-admitted config. The model receives no provider
+token, shell command, route key, or spending authority.
 
 ## Development
 
-The harness uses the Python standard library for the control path. Run the complete offline suite with:
+The control path uses the Python standard library. Run the offline gates with:
 
 ```sh
 python3 -m unittest discover -s milk_harness -p 'test_*.py'
+python3 -m unittest discover -s deploy/baseten -p 'test_*.py'
 sh deploy/build-images.test.sh
 sh tools/exo/milk-managed.test.sh
 node --test tools/exo/index.test.mjs
 ```
 
-Builds run on a clean CPU-only x86 host. The release script accepts no provider, R2-authority, route-signing, OpenAI, or local-GPU credentials.
+For a no-cloud introduction, use [`examples/self-host`](examples/self-host). It
+validates and materializes an eval and exercises the fixed host-command boundary.
+It cannot contact a provider or create paid work.
 
-Current qualification evidence and remaining gates are recorded in [`docs/reference/production-status.md`](docs/reference/production-status.md).
-
-## Live-proof boundary
-
-Offline tests, the self-host smoke, public source, published images, and generated mechanics traffic do not prove a production deployment. One passing 20-call teacher job is only the first provider gate.
-
-A synthetic cloud-mechanics eval uses ID `959caacb397004bf3e60f13613da50f4ed3160a65d18b178c3d996398e29b5a0`, 320 decisions partitioned as 63 TRAIN, 91 DEV, and 166 CALIBRATION, `max_calls=20`, `max_gpu_seconds=3600`, and `max_parallel_runs=1`. Its first Baseten-selected job is the teacher admission gate above. The eval validator requires those exact limits plus a 3,600-second, `$7.50` winner bound. At the conservative `$0.125` per GPU-minute reservation rate, the maximum admitted workload is `$142.50`: `$120` for 16 teacher jobs, `$3.75` for train/merge, `$11.25` for three branches, and `$7.50` for the winner. The `$160` GPU ceiling therefore includes `$17.50` of headroom; the separately approved external reserve is `$15`, producing a `$175` all-in authorization envelope. It tests the cloud chain only; none of its generated traffic or results satisfy the real-traffic production gates below.
-
-Its official-SDK proof is one fixed `gpt-5.4` contract with SHA-256 `cf9e41c3220544bc163a6dfb82721154a8e078c9db3c9fa86a148a84ea275263`:
-
-| Step | SDK calls | Baseline | Candidate | Completion-token cap |
-| --- | ---: | ---: | ---: | ---: |
-| Deployment baseline | 1 | 1 | 0 | 128 |
-| Generated mechanics | 320 | 320 | 0 | 128 |
-| Candidate | 1 | 0 | 1 | 128 |
-| Saturation fallback | 2 | 1 | 1 | 3,840 |
-| **Total** | **324** | **322** | **2** |  |
-
-The 320-call mechanics step is one-shot. Before network traffic, the operator writes a create-only intent to route-evidence R2. The intent binds the exact outer eval digest, inner v6 manifest, gateway source and tool digests, gateway config, store credential identity, and proof contract. A valid content-free, create-only receipt makes a retry a no-op; an intent without a receipt is ambiguous and is never replayed.
-
-Production qualification requires one complete live chain:
-
-1. A normal official-SDK response and its persisted completed trace.
-2. At least 251 retained teacher results: 50 TRAIN, 73 DEV, and 128 CALIBRATION. The current 80/10/10 partition should plan for roughly 1,280 eligible captures to obtain 128 CALIBRATION rows; skipped traffic can require more. Generated traffic and local fixtures do not count.
-3. One trained and merged student plus BF16, dynamic FP8, and static FP8 evaluations on the same ordered DEV set.
-4. A deterministic winner, authenticated canary, and verified baseline fallback.
-5. An active signed zero route and both Baseten and Modal observed at zero compute.
+Offline tests, public source, published images, and generated mechanics traffic
+do not prove production. Qualification requires a normal SDK capture, retained
+real-traffic teacher results, one trained student, the three admitted evaluation
+variants, a deterministic winner, an authenticated canary with baseline
+fallback, signed zero, and verified zero Baseten compute.
