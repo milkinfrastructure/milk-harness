@@ -133,6 +133,17 @@ jobs:
           docker --config "$docker_config" image inspect "$MILK_GATEWAY_IMAGE" >/dev/null 2>&1 || \
             fail 'exact private gateway image is absent after pull' 69
 
+          gateway_store_env=(
+            -e MILK_CAPTURE_STORE_ACCESS_KEY_ID
+            -e MILK_CAPTURE_STORE_SECRET_ACCESS_KEY
+            -e MILK_CONTROL_STORE_ACCESS_KEY_ID
+            -e MILK_CONTROL_STORE_SECRET_ACCESS_KEY
+          )
+          [ -z "$MILK_CAPTURE_STORE_SESSION_TOKEN" ] || \
+            gateway_store_env+=(-e MILK_CAPTURE_STORE_SESSION_TOKEN)
+          [ -z "$MILK_CONTROL_STORE_SESSION_TOKEN" ] || \
+            gateway_store_env+=(-e MILK_CONTROL_STORE_SESSION_TOKEN)
+
           started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
           set +e
           docker --config "$docker_config" run --rm \
@@ -143,12 +154,7 @@ jobs:
             --pids-limit 128 \
             --memory 1g \
             --cpus 1 \
-            -e MILK_CAPTURE_STORE_ACCESS_KEY_ID \
-            -e MILK_CAPTURE_STORE_SECRET_ACCESS_KEY \
-            -e MILK_CAPTURE_STORE_SESSION_TOKEN \
-            -e MILK_CONTROL_STORE_ACCESS_KEY_ID \
-            -e MILK_CONTROL_STORE_SECRET_ACCESS_KEY \
-            -e MILK_CONTROL_STORE_SESSION_TOKEN \
+            "${gateway_store_env[@]}" \
             --mount "type=bind,source=$config,target=/run/secrets/config.json,readonly" \
             "$MILK_GATEWAY_IMAGE" --config /run/secrets/config.json tick --once \
             >"$stdout" 2>"$stderr"
@@ -538,8 +544,9 @@ jobs:
               -e MILK_CREATE_AUTHORITY_READ_R2_BUCKET
               -e MILK_CREATE_AUTHORITY_READ_R2_ACCESS_KEY_ID
               -e MILK_CREATE_AUTHORITY_READ_R2_SECRET_ACCESS_KEY
-              -e MILK_CREATE_AUTHORITY_READ_R2_SESSION_TOKEN
             )
+            [ -z "$MILK_CREATE_AUTHORITY_READ_R2_SESSION_TOKEN" ] || \
+              create_authority_env+=(-e MILK_CREATE_AUTHORITY_READ_R2_SESSION_TOKEN)
           else
             unset \
               MILK_CREATE_AUTHORITY_WRITE_R2_ACCOUNT_ID \
@@ -596,6 +603,21 @@ jobs:
           done
           [ "$candidate_socket_ready" = true ] || fail 'candidate credential helper did not become ready' 70
 
+          provider_store_env=(
+            -e MILK_CONTROL_R2_ACCOUNT_ID
+            -e MILK_CONTROL_R2_BUCKET
+            -e MILK_CONTROL_R2_ACCESS_KEY_ID
+            -e MILK_CONTROL_R2_SECRET_ACCESS_KEY
+            -e MILK_EVIDENCE_R2_ACCOUNT_ID
+            -e MILK_EVIDENCE_R2_BUCKET
+            -e MILK_EVIDENCE_R2_ACCESS_KEY_ID
+            -e MILK_EVIDENCE_R2_SECRET_ACCESS_KEY
+          )
+          [ -z "$MILK_CONTROL_R2_SESSION_TOKEN" ] || \
+            provider_store_env+=(-e MILK_CONTROL_R2_SESSION_TOKEN)
+          [ -z "$MILK_EVIDENCE_R2_SESSION_TOKEN" ] || \
+            provider_store_env+=(-e MILK_EVIDENCE_R2_SESSION_TOKEN)
+
           started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
           set +e
           docker --config "$docker_config" run --rm \
@@ -609,16 +631,7 @@ jobs:
             --mount "type=bind,src=$lease_token,dst=$lease_container_token,readonly" \
             --mount "type=bind,src=$candidate_socket,dst=$candidate_container_socket" \
             "${provider_credential_env[@]}" \
-            -e MILK_CONTROL_R2_ACCOUNT_ID \
-            -e MILK_CONTROL_R2_BUCKET \
-            -e MILK_CONTROL_R2_ACCESS_KEY_ID \
-            -e MILK_CONTROL_R2_SECRET_ACCESS_KEY \
-            -e MILK_CONTROL_R2_SESSION_TOKEN \
-            -e MILK_EVIDENCE_R2_ACCOUNT_ID \
-            -e MILK_EVIDENCE_R2_BUCKET \
-            -e MILK_EVIDENCE_R2_ACCESS_KEY_ID \
-            -e MILK_EVIDENCE_R2_SECRET_ACCESS_KEY \
-            -e MILK_EVIDENCE_R2_SESSION_TOKEN \
+            "${provider_store_env[@]}" \
             "${create_authority_env[@]}" \
             "$MILK_JOBS_IMAGE" "${job_arguments[@]}" \
             >"$stdout" 2>"$stderr"
@@ -674,6 +687,31 @@ jobs:
 
               docker --config "$docker_config" pull "$MILK_GATEWAY_IMAGE" >/dev/null 2>&1
               docker --config "$docker_config" image inspect "$MILK_GATEWAY_IMAGE" >/dev/null 2>&1
+              export \
+                MILK_CONTROL_STORE_ACCESS_KEY_ID="$MILK_GATEWAY_INGEST_CONTROL_R2_ACCESS_KEY_ID" \
+                MILK_CONTROL_STORE_SECRET_ACCESS_KEY="$MILK_GATEWAY_INGEST_CONTROL_R2_SECRET_ACCESS_KEY" \
+                MILK_ROUTE_STORE_ACCESS_KEY_ID="$MILK_GATEWAY_INGEST_ROUTE_R2_ACCESS_KEY_ID" \
+                MILK_ROUTE_STORE_SECRET_ACCESS_KEY="$MILK_GATEWAY_INGEST_ROUTE_R2_SECRET_ACCESS_KEY"
+              gateway_ingest_control_env=(
+                -e MILK_CONTROL_STORE_ACCESS_KEY_ID
+                -e MILK_CONTROL_STORE_SECRET_ACCESS_KEY
+              )
+              gateway_ingest_route_env=(
+                -e MILK_ROUTE_STORE_ACCESS_KEY_ID
+                -e MILK_ROUTE_STORE_SECRET_ACCESS_KEY
+              )
+              if [ -n "$MILK_GATEWAY_INGEST_CONTROL_R2_SESSION_TOKEN" ]; then
+                export MILK_CONTROL_STORE_SESSION_TOKEN="$MILK_GATEWAY_INGEST_CONTROL_R2_SESSION_TOKEN"
+                gateway_ingest_control_env+=(-e MILK_CONTROL_STORE_SESSION_TOKEN)
+              else
+                unset MILK_CONTROL_STORE_SESSION_TOKEN
+              fi
+              if [ -n "$MILK_GATEWAY_INGEST_ROUTE_R2_SESSION_TOKEN" ]; then
+                export MILK_ROUTE_STORE_SESSION_TOKEN="$MILK_GATEWAY_INGEST_ROUTE_R2_SESSION_TOKEN"
+                gateway_ingest_route_env+=(-e MILK_ROUTE_STORE_SESSION_TOKEN)
+              else
+                unset MILK_ROUTE_STORE_SESSION_TOKEN
+              fi
               while IFS=$'\t' read -r kind file; do
                 [[ "$file" =~ ^[0-9]{2}-(winner|teardown)-[0-9a-f]{64}\.json$ ]]
                 [ "$kind" = "${BASH_REMATCH[1]}" ]
@@ -681,9 +719,6 @@ jobs:
                 chmod 0600 "$result"
                 sudo chown 65532:65532 "$result"
                 if [ "$kind" = winner ]; then
-                  MILK_CONTROL_STORE_ACCESS_KEY_ID="$MILK_GATEWAY_INGEST_CONTROL_R2_ACCESS_KEY_ID" \
-                  MILK_CONTROL_STORE_SECRET_ACCESS_KEY="$MILK_GATEWAY_INGEST_CONTROL_R2_SECRET_ACCESS_KEY" \
-                  MILK_CONTROL_STORE_SESSION_TOKEN="$MILK_GATEWAY_INGEST_CONTROL_R2_SESSION_TOKEN" \
                   timeout --signal=TERM --kill-after=10s 90s \
                   docker --config "$docker_config" run --rm \
                     --read-only \
@@ -693,21 +728,13 @@ jobs:
                     --pids-limit 128 \
                     --memory 1g \
                     --cpus 1 \
-                    -e MILK_CONTROL_STORE_ACCESS_KEY_ID \
-                    -e MILK_CONTROL_STORE_SECRET_ACCESS_KEY \
-                    -e MILK_CONTROL_STORE_SESSION_TOKEN \
+                    "${gateway_ingest_control_env[@]}" \
                     --mount "type=bind,source=$gateway_ingest_config,target=/run/secrets/config.json,readonly" \
                     --mount "type=bind,source=$result,target=/run/secrets/result.json,readonly" \
                     "$MILK_GATEWAY_IMAGE" --config /run/secrets/config.json \
                     ingest-student-winner-deployment-result --result /run/secrets/result.json \
                     >"$gateway_ingest_stdout" 2>"$gateway_ingest_stderr"
                 else
-                  MILK_CONTROL_STORE_ACCESS_KEY_ID="$MILK_GATEWAY_INGEST_CONTROL_R2_ACCESS_KEY_ID" \
-                  MILK_CONTROL_STORE_SECRET_ACCESS_KEY="$MILK_GATEWAY_INGEST_CONTROL_R2_SECRET_ACCESS_KEY" \
-                  MILK_CONTROL_STORE_SESSION_TOKEN="$MILK_GATEWAY_INGEST_CONTROL_R2_SESSION_TOKEN" \
-                  MILK_ROUTE_STORE_ACCESS_KEY_ID="$MILK_GATEWAY_INGEST_ROUTE_R2_ACCESS_KEY_ID" \
-                  MILK_ROUTE_STORE_SECRET_ACCESS_KEY="$MILK_GATEWAY_INGEST_ROUTE_R2_SECRET_ACCESS_KEY" \
-                  MILK_ROUTE_STORE_SESSION_TOKEN="$MILK_GATEWAY_INGEST_ROUTE_R2_SESSION_TOKEN" \
                   timeout --signal=TERM --kill-after=10s 90s \
                   docker --config "$docker_config" run --rm \
                     --read-only \
@@ -717,12 +744,8 @@ jobs:
                     --pids-limit 128 \
                     --memory 1g \
                     --cpus 1 \
-                    -e MILK_CONTROL_STORE_ACCESS_KEY_ID \
-                    -e MILK_CONTROL_STORE_SECRET_ACCESS_KEY \
-                    -e MILK_CONTROL_STORE_SESSION_TOKEN \
-                    -e MILK_ROUTE_STORE_ACCESS_KEY_ID \
-                    -e MILK_ROUTE_STORE_SECRET_ACCESS_KEY \
-                    -e MILK_ROUTE_STORE_SESSION_TOKEN \
+                    "${gateway_ingest_control_env[@]}" \
+                    "${gateway_ingest_route_env[@]}" \
                     --mount "type=bind,source=$gateway_ingest_config,target=/run/secrets/config.json,readonly" \
                     --mount "type=bind,source=$result,target=/run/secrets/result.json,readonly" \
                     "$MILK_GATEWAY_IMAGE" --config /run/secrets/config.json \

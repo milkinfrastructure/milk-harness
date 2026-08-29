@@ -188,6 +188,68 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertIn("persist-credentials: false", self.gateway)
         self.assertIn("persist-credentials: false", self.provider)
 
+    def test_empty_r2_session_tokens_are_not_passed_to_containers(self):
+        cases = (
+            (
+                self.gateway,
+                "gateway_store_env",
+                "MILK_CAPTURE_STORE_SESSION_TOKEN",
+            ),
+            (
+                self.gateway,
+                "gateway_store_env",
+                "MILK_CONTROL_STORE_SESSION_TOKEN",
+            ),
+            (
+                self.provider,
+                "provider_store_env",
+                "MILK_CONTROL_R2_SESSION_TOKEN",
+            ),
+            (
+                self.provider,
+                "provider_store_env",
+                "MILK_EVIDENCE_R2_SESSION_TOKEN",
+            ),
+            (
+                self.provider,
+                "create_authority_env",
+                "MILK_CREATE_AUTHORITY_READ_R2_SESSION_TOKEN",
+            ),
+        )
+        for section, array, name in cases:
+            with self.subTest(name=name):
+                self.assertRegex(
+                    section,
+                    rf'\[ -z "\${name}" \] \|\| \\\n\s+{array}\+=\(-e {name}\)',
+                )
+                self.assertNotRegex(section, rf"(?m)^\s+-e {name} \\$")
+                self.assertIn(f'"${{{array}[@]}}"', section)
+
+        for source, target, array in (
+            (
+                "MILK_GATEWAY_INGEST_CONTROL_R2_SESSION_TOKEN",
+                "MILK_CONTROL_STORE_SESSION_TOKEN",
+                "gateway_ingest_control_env",
+            ),
+            (
+                "MILK_GATEWAY_INGEST_ROUTE_R2_SESSION_TOKEN",
+                "MILK_ROUTE_STORE_SESSION_TOKEN",
+                "gateway_ingest_route_env",
+            ),
+        ):
+            with self.subTest(name=target):
+                self.assertIn(f'if [ -n "${source}" ]; then', self.gateway_ingest)
+                self.assertIn(
+                    f'{array}+=(-e {target})',
+                    self.gateway_ingest,
+                )
+                self.assertIn(f"unset {target}", self.gateway_ingest)
+                self.assertNotRegex(
+                    self.gateway_ingest,
+                    rf"(?m)^\s+-e {target} \\$",
+                )
+                self.assertIn(f'"${{{array}[@]}}"', self.gateway_ingest)
+
     def test_exact_cross_provider_runtime_is_bound_to_the_confirmed_config(self):
         for name in PROVIDER_RUNTIME_FIELDS:
             argument = f"--{name.replace('_', '-')}"
@@ -258,7 +320,8 @@ class SchedulerWorkflowTest(unittest.TestCase):
         )[1].split("\n                else\n", 1)
         teardown_run = teardown_run.split("\n                fi\n", 1)[0]
         self.assertNotIn("MILK_ROUTE_STORE_", winner_run)
-        self.assertIn("MILK_ROUTE_STORE_ACCESS_KEY_ID", teardown_run)
+        self.assertIn("-e MILK_ROUTE_STORE_ACCESS_KEY_ID", self.gateway_ingest)
+        self.assertIn('"${gateway_ingest_route_env[@]}"', teardown_run)
         self.assertIn('>"$gateway_ingest_stdout" 2>"$gateway_ingest_stderr"', winner_run)
         self.assertIn(
             '>"$gateway_ingest_stdout" 2>"$gateway_ingest_stderr"', teardown_run
