@@ -7,7 +7,7 @@ The current hosted pilot is Stripe-like at the SDK boundary but single-tenant: o
 | User | Managed surface | Current support |
 | --- | --- | --- |
 | Hosted customer | Official SDK base URL and one `dt_live_...` key | Pilot, after the live qualification gate passes |
-| Milk operator | Gateway, eval, R2, providers, routes, and release evidence | Complete maintained production path |
+| Milk operator | Gateway, eval, R2, providers, routes, and release evidence | Implemented candidate path; live cloud qualification pending |
 | External self-hoster | Gateway plus the local config/control smoke | Provider images and custom domains are not turnkey yet |
 
 The customer path is three steps:

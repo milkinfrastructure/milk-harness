@@ -69,7 +69,7 @@ jobs:
       MILK_PROVIDER_CREATE_CONFIRMATION: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && inputs.confirmed_run_config_sha256 || '' }}
     steps:
       - name: Read scheduler code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -254,7 +254,7 @@ jobs:
       MILK_PROVIDER_CREATE_CONFIRMATION: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && inputs.confirmed_run_config_sha256 || '' }}
     steps:
       - name: Read scheduler code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -278,7 +278,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
 
       - name: Read exact gateway credential helper
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: milkinfrastructure/milk-gateway
           ref: ${{ steps.eval.outputs.gateway_source_commit }}
@@ -869,7 +869,7 @@ jobs:
       MILK_ROUTE_STUDENT_JOB_ID: ${{ needs.provider-jobs.outputs.route_student_job_id }}
     steps:
       - name: Read scheduler code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -911,7 +911,7 @@ jobs:
           printf 'authorized=%s\n' "$authorized" >>"$GITHUB_OUTPUT"
 
       - name: Read exact gateway route tools
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: milkinfrastructure/milk-gateway
           ref: ${{ steps.eval.outputs.gateway_source_commit }}
@@ -1986,7 +1986,7 @@ jobs:
       MILK_EVAL_ID: ${{ vars.MILK_EVAL_ID }}
     steps:
       - name: Read scheduler code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -2010,7 +2010,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
 
       - name: Read exact gateway mechanics tool
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: milkinfrastructure/milk-gateway
           ref: ${{ steps.eval.outputs.gateway_source_commit }}
