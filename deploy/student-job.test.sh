@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 source_wrapper=$root/deploy/student-job.sh
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/milk-student-job.XXXXXX")
 image_root=$test_root/image
@@ -243,7 +243,7 @@ empty_session_work=$test_root/empty-session
 : >"$log"
 set +e
 DRAGONTALES_CONFIG_JSON=config-secret MILK_CONTROL_STORE_ACCESS_KEY_ID=control-access \
-MILK_CONTROL_STORE_SECRET_ACCESS_KEY=control-secret MILK_CONTROL_STORE_SESSION_TOKEN= \
+MILK_CONTROL_STORE_SECRET_ACCESS_KEY=control-secret MILK_CONTROL_STORE_SESSION_TOKEN='' \
 TEST_LOG=$log TEST_CONFIG=$config TEST_RUNNER_BEHAVIOR=success \
 TEST_WORKER_UID=$worker_uid TEST_WORKER_GID=$worker_gid \
   "$wrapper" train --config "$config" --student-job-id "$job_id" \
@@ -336,12 +336,14 @@ done
 
 grep -Fq 'worker_uid=65532' "$source_wrapper"
 grep -Fq 'worker_gid=65532' "$source_wrapper"
-grep -Fq 'env -i \' "$source_wrapper"
-grep -Fq 'run_as_worker /usr/bin/test -r "$config"' "$source_wrapper"
-grep -Fq 'mkdir -m 0711 -- "$work_dir"' "$source_wrapper"
-grep -Fq 'chown -hR "$worker_uid:$worker_gid" "$work_dir/input" "$worker_dir"' "$source_wrapper"
-grep -Fq -- '--no-new-privs "$runner" "$@"' "$source_wrapper"
-! grep -Eq 'fixture-train|fixture-branch|DRAGONTALES_(GATEWAY_BIN|STUDENT_RUNNER)' "$source_wrapper"
+grep -Fq "env -i \\" "$source_wrapper"
+grep -Fq "run_as_worker /usr/bin/test -r \"\$config\"" "$source_wrapper"
+grep -Fq "mkdir -m 0711 -- \"\$work_dir\"" "$source_wrapper"
+grep -Fq "chown -hR \"\$worker_uid:\$worker_gid\" \"\$work_dir/input\" \"\$worker_dir\"" "$source_wrapper"
+grep -Fq -- "--no-new-privs \"\$runner\" \"\$@\"" "$source_wrapper"
+if grep -Eq 'fixture-train|fixture-branch|DRAGONTALES_(GATEWAY_BIN|STUDENT_RUNNER)' "$source_wrapper"; then
+  exit 1
+fi
 
 sh -n "$source_wrapper" "$wrapper" "$0"
 if command -v shellcheck >/dev/null 2>&1; then

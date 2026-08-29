@@ -39,10 +39,11 @@ read_one_line() {
   exec 3<&-
 }
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 role_path=/usr/share/milk/student-artifact-role
-[ -f "$role_path" ] && [ ! -L "$role_path" ] ||
+if [ ! -f "$role_path" ] || [ -L "$role_path" ]; then
   fail 'student artifact role authority is unavailable'
+fi
 read_one_line "$role_path" || fail 'student artifact role authority is invalid'
 artifact_role=$line
 case "$artifact_role:${1:-}" in
@@ -76,8 +77,10 @@ run_as_worker() {
 
 if [ "${1:-}" = serve ]; then
   [ "$#" -ge 8 ] || usage
-  [ "$2" = --model ] && [ "$4" = --model-manifest ] &&
-    [ "$6" = --model-alias ] || usage
+  if [ "$2" != --model ] || [ "$4" != --model-manifest ] ||
+    [ "$6" != --model-alias ]; then
+    usage
+  fi
   case $#:$8 in
     9:--api-key-file) case $3:$5:$9 in /*:/*:/*) ;; *) usage ;; esac ;;
     8:--trusted-ingress-auth) case $3:$5 in /*:/*) ;; *) usage ;; esac ;;
@@ -86,21 +89,31 @@ if [ "${1:-}" = serve ]; then
   runner=$(resolve_executable "$script_dir/student-run.sh") ||
     fail 'student runner is unavailable'
   serve_dir=${3%/*}
-  [ -n "$serve_dir" ] && [ "$3" = "$serve_dir/model" ] && \
-    [ "$5" = "$serve_dir/model-manifest.json" ] ||
+  if [ -z "$serve_dir" ] || [ "$3" != "$serve_dir/model" ] ||
+    [ "$5" != "$serve_dir/model-manifest.json" ]; then
     fail 'model and manifest are not one fixed materialized tree'
-  [ -d "$serve_dir" ] && [ ! -L "$serve_dir" ] ||
+  fi
+  if [ ! -d "$serve_dir" ] || [ -L "$serve_dir" ]; then
     fail 'materialized tree root is not a directory'
-  [ -d "$3" ] && [ ! -L "$3" ] || fail 'model is not a directory'
-  [ -f "$5" ] && [ ! -L "$5" ] || fail 'model manifest is not a file'
+  fi
+  if [ ! -d "$3" ] || [ -L "$3" ]; then
+    fail 'model is not a directory'
+  fi
+  if [ ! -f "$5" ] || [ -L "$5" ]; then
+    fail 'model manifest is not a file'
+  fi
   chown -hR "$worker_uid:$worker_gid" "$serve_dir" ||
     fail 'could not transfer materialized tree ownership'
   if [ "$8" = --api-key-file ]; then
-    [ -f "$9" ] && [ ! -L "$9" ] || fail 'API key is not a file'
+    if [ ! -f "$9" ] || [ -L "$9" ]; then
+      fail 'API key is not a file'
+    fi
     chown "$worker_uid:$worker_gid" "$9" || fail 'could not transfer API key ownership'
   fi
-  run_as_worker /usr/bin/test -x "$3" && run_as_worker /usr/bin/test -r "$5" ||
+  if ! run_as_worker /usr/bin/test -x "$3" ||
+    ! run_as_worker /usr/bin/test -r "$5"; then
     fail 'materialized tree is not accessible to the student worker'
+  fi
   if [ "$8" = --api-key-file ]; then
     run_as_worker /usr/bin/test -r "$9" || fail 'API key is not accessible to the student worker'
   fi
@@ -111,15 +124,20 @@ fi
 case ${1:-} in
   train)
     [ "$#" -eq 7 ] || usage
-    [ "$2" = --config ] && [ "$4" = --student-job-id ] && [ "$6" = --work-dir ] || usage
+    if [ "$2" != --config ] || [ "$4" != --student-job-id ] ||
+      [ "$6" != --work-dir ]; then
+      usage
+    fi
     operation=$1
     variant=
     work_dir=$7
     ;;
   branch)
     [ "$#" -eq 9 ] || usage
-    [ "$2" = --config ] && [ "$4" = --student-job-id ] &&
-      [ "$6" = --variant ] && [ "$8" = --work-dir ] || usage
+    if [ "$2" != --config ] || [ "$4" != --student-job-id ] ||
+      [ "$6" != --variant ] || [ "$8" != --work-dir ]; then
+      usage
+    fi
     operation=$1
     variant=$7
     case $variant in bf16|dynamic_fp8|static_fp8) ;; *) usage ;; esac
@@ -187,8 +205,9 @@ else
   status=$?
   fail "materialization failed; work preserved at $work_dir" "$status"
 fi
-read_one_line "$materialize_stdout" && [ "$line" = "$student_job_id" ] ||
+if ! read_one_line "$materialize_stdout" || [ "$line" != "$student_job_id" ]; then
   fail "materialization receipt is ambiguous; work preserved at $work_dir"
+fi
 mkdir -m 0700 -- "$worker_dir" ||
   fail "could not create worker directory; work preserved at $work_dir"
 chown -hR "$worker_uid:$worker_gid" "$work_dir/input" "$worker_dir" ||
@@ -219,9 +238,9 @@ upload=$worker_dir/output/upload.json
 artifact_dir=$worker_dir/output/artifact
 if [ -f "$result" ] && [ -f "$upload" ]; then
   if [ -z "$variant" ]; then
-    ingest=ingest-student-train-execution
+    ingest='ingest-student-train-execution'
   else
-    ingest=ingest-student-branch-execution
+    ingest='ingest-student-branch-execution'
   fi
   if run_gateway "$ingest" \
     --result "$result" --upload "$upload" --artifact-dir "$artifact_dir" \
