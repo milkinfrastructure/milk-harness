@@ -1,6 +1,6 @@
 # Production qualification
 
-Last updated: 2026-08-29 00:20 America/Los_Angeles.
+Last updated: 2026-08-29 00:31 America/Los_Angeles.
 
 ## Goal
 
@@ -21,13 +21,15 @@ Budget guard: `$1,000` absolute campaign ceiling, stop new paid work at `$850`, 
 - The three GitHub production environments exist. Actions remain disabled.
 - Shared GHCR/source credentials and the Modal control-plane token are installed in the appropriate GitHub environments.
 - Modal app `milk-prod-gpu` and separate teacher/student volumes exist.
+- `milk-gateway` main includes the published-release ancestry fix and public-facing README at `269594e31d538260543c7cfaa09924818473f569`.
+- `milk-harness` main includes the public product contract, this qualification log, and the exact teacher-volume population helper at `bb629e573cb7cc46219db7fda6027aeaa7f52eb3`.
+- The existing admitted gateway image remains authoritative; documentation-only and deployment-tool commits do not require rebuilding it or its three digest-bound GPU images.
 - No paid teacher GPU has run. No local GPU has run.
 
 ## In progress
 
-- Replace the gateway's current release with one containing the published-release ancestry fix and public-facing README.
 - Create distinct least-privilege R2 credentials for each runtime role.
-- Populate the teacher volume with the admitted 60.794 GiB `openai/gpt-oss-120b` revision.
+- Finish the running CPU-only preload of the admitted 60.794 GiB `openai/gpt-oss-120b` revision and verify every file against its manifest.
 - Materialize and bind the first fresh `milk.eval.v1` document with `max_calls = max_decisions = 1` and `gpu_provider = modal`.
 - Deploy the gateway and enable the scheduler only after all secrets and config are complete.
 
