@@ -420,9 +420,9 @@ EOF
 cat >"$test_root/bin/gh" <<'EOF'
 #!/bin/sh
 set -eu
-printf 'gh' >>"$TEST_COMMAND_LOG"
-for argument do printf '|%s' "$argument" >>"$TEST_COMMAND_LOG"; done
-printf '\n' >>"$TEST_COMMAND_LOG"
+command_log=gh
+for argument do command_log=$command_log'|'$argument; done
+printf '%s\n' "$command_log" >>"$TEST_COMMAND_LOG"
 case "$*" in
   'auth token --hostname github.com') printf '%s\n' 'ephemeral-test-password' ;;
   *'/orgs/milkinfrastructure/packages?package_type=container&per_page=100'*)
@@ -444,9 +444,9 @@ EOF
 cat >"$test_root/bin/docker" <<'EOF'
 #!/bin/sh
 set -eu
-printf 'docker' >>"$TEST_COMMAND_LOG"
-for argument do printf '|%s' "$argument" >>"$TEST_COMMAND_LOG"; done
-printf '\n' >>"$TEST_COMMAND_LOG"
+command_log=docker
+for argument do command_log=$command_log'|'$argument; done
+printf '%s\n' "$command_log" >>"$TEST_COMMAND_LOG"
 if [ "${1:-}" = --config ]; then
   config=$2
   [ -x "$config/cli-plugins/docker-buildx" ]
