@@ -29,6 +29,7 @@ permissions:
 concurrency:
   group: milk-production-loop-v1-${{ vars.MILK_EVAL_ID }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   gateway-tick:
