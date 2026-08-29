@@ -2,7 +2,7 @@
   "schema_version": "milk.snapshot-analyzer-conformance.v1",
   "source_gateway": {
     "repository": "https://github.com/milkinfrastructure/milk-gateway",
-    "source_commit": "6fe98595aeb615587ac7feeba7cbd7d2c4c6b306",
+    "source_commit": "0c75b81fc1207dc83f932a84dc8f85d9d464bf78",
     "source_file": "crates/dragontales-gateway/src/records.rs",
     "source_file_sha256": "88c7d3061528b348ac90fbabd3e8f48b3ef0105b3c932805fd88bb41e77dc7fc"
   },
