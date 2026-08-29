@@ -8,7 +8,7 @@ Run it from the repository root with Python 3 and the GitHub CLI installed:
 smoke_root=$(mktemp -d)
 smoke_root=$(CDPATH= cd -- "$smoke_root" && pwd -P)
 eval_document=$PWD/examples/self-host/milk.eval.example.json
-eval_id=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$eval_document")
+eval_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["manifest"]["campaign_id"])' "$eval_document")
 harness_commit=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["manifest"]["harness_source_commit"])' "$eval_document")
 
 python3 -m milk_harness.eval_config \

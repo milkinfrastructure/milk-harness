@@ -84,7 +84,8 @@ WINNER_AUTHORITY_KEYS = (
     "route_schema_version",
     "winner_admission_schema_version",
 )
-SCOPE_KEYS = ("tenant_id", "project_id", "environment_id", "workload_id")
+SCOPE_UUID_KEYS = ("tenant_id", "project_id", "environment_id", "workload_id")
+SCOPE_KEYS = SCOPE_UUID_KEYS + ("eval_id",)
 
 
 def _digest(value):
@@ -436,6 +437,8 @@ def _winner_claim(raw, acceptance, definition):
         or not isinstance(scope, dict)
         or tuple(scope) != SCOPE_KEYS
         or any(not isinstance(scope[key], str) or not scope[key] for key in scope)
+        or HEX64.fullmatch(scope["eval_id"]) is None
+        or scope["eval_id"] != acceptance["campaign_id"]
         or not isinstance(authority, dict)
         or tuple(authority) != WINNER_AUTHORITY_KEYS
         or not isinstance(model_manifest, dict)

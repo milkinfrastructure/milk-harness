@@ -130,7 +130,8 @@ GATEWAY_UTC_RFC3339 = re.compile(
     r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})"
     r"(?:\.([0-9]{1,9}))?Z\Z"
 )
-SCOPE_FIELDS = ("tenant_id", "project_id", "environment_id", "workload_id")
+SCOPE_UUID_FIELDS = ("tenant_id", "project_id", "environment_id", "workload_id")
+SCOPE_FIELDS = SCOPE_UUID_FIELDS + ("eval_id",)
 STUDENT_VARIANTS = ("bf16", "dynamic_fp8", "static_fp8")
 EXECUTION_FIELDS = {
     "provider",
@@ -355,10 +356,14 @@ def _retained_time_key(nanos):
 
 def _scope_from_prefix(prefix):
     parts = prefix.split("/") if isinstance(prefix, str) else []
-    if len(parts) != 6 or parts[:2] != ["dt", "v2"]:
+    if (
+        len(parts) != 7
+        or parts[:2] != ["dt", "v3"]
+        or HEX64.fullmatch(parts[2]) is None
+    ):
         raise ValueError("scope prefix is invalid")
     values = []
-    for value in parts[2:]:
+    for value in parts[3:]:
         try:
             parsed = uuid.UUID(value)
         except (AttributeError, ValueError) as error:
@@ -366,13 +371,15 @@ def _scope_from_prefix(prefix):
         if parsed.int == 0 or str(parsed) != value:
             raise ValueError("scope prefix is invalid")
         values.append(value)
-    return dict(zip(SCOPE_FIELDS, values))
+    return {**dict(zip(SCOPE_UUID_FIELDS, values)), "eval_id": parts[2]}
 
 
 def _scope_prefix(scope):
     if not isinstance(scope, dict) or set(scope) != set(SCOPE_FIELDS):
         raise ValueError("gateway scope is invalid")
-    prefix = "dt/v2/" + "/".join(scope[field] for field in SCOPE_FIELDS)
+    prefix = "dt/v3/" + "/".join(
+        (scope["eval_id"], *(scope[field] for field in SCOPE_UUID_FIELDS))
+    )
     if _scope_from_prefix(prefix) != scope:
         raise ValueError("gateway scope is invalid")
     return prefix
@@ -1491,6 +1498,8 @@ def provider_neutral_run_id(
         raise ValueError("campaign ID must be lowercase hex64")
     _validate_gpu_operation(operation)
     _validate_launch_source(launch_source)
+    if launch_source["scope"]["eval_id"] != campaign_id:
+        raise ValueError("gateway workload eval differs from the campaign")
     if not _is_hex64(image_release_sha256) or not _is_hex64(
         image_admission_sha256
     ):
@@ -1915,6 +1924,8 @@ def select_baseten_primary_modal_fallback(
     if not _is_hex64(campaign_id) or not _is_hex64(run_id):
         raise ValueError("fixed provider selection identity is invalid")
     _validate_launch_source(launch_source)
+    if launch_source["scope"]["eval_id"] != campaign_id:
+        raise ValueError("provider selection eval differs from its campaign")
     try:
         return _load_selection(
             store,
@@ -2143,6 +2154,8 @@ def select_winner_baseten_primary_modal_fallback(
     ):
         raise ValueError("fixed winner provider selection is invalid")
     _validate_launch_source(launch_source)
+    if launch_source["scope"]["eval_id"] != campaign_id:
+        raise ValueError("winner selection eval differs from its campaign")
     try:
         return _load_winner_selection(
             store,
@@ -2706,6 +2719,8 @@ def _winner_run_from_launch(
         raise ValueError("verified winner GPU launch is invalid")
     source = launch["launch_source"]
     _validate_launch_source(source)
+    if source["scope"]["eval_id"] != campaign_id:
+        raise ValueError("winner eval differs from its campaign")
     operation = launch["operation"]
     _validate_gpu_operation(operation)
     if operation["kind"] != "student_winner_deployment":
@@ -4730,6 +4745,8 @@ def store_gateway_teardown_result_handoff(
 ):
     if not _is_hex64(campaign_id):
         raise ValueError("provider teardown handoff campaign is invalid")
+    if result.get("scope", {}).get("eval_id") != campaign_id:
+        raise ValueError("provider teardown eval differs from its campaign")
     raw = provider_teardown_result_bytes(result)
     run_id = result["run_id"]
     key = (
@@ -9592,7 +9609,11 @@ def main(argv=None):
     parser.add_argument("--reconcile-timeout-seconds", type=int, default=300)
     arguments = parser.parse_args(argv)
     try:
-        _scope_from_prefix(arguments.scope_prefix)
+        if (
+            _scope_from_prefix(arguments.scope_prefix)["eval_id"]
+            != arguments.campaign_id
+        ):
+            raise ValueError("scope eval differs from the campaign")
         store = R2EvidenceStore.from_environment()
         lease_token = load_provider_lease_token(arguments.lease_token)
         evidence_store_identity = store_identity_sha256(

@@ -15,7 +15,7 @@ on:
         default: false
         type: boolean
       confirmed_run_config_sha256:
-        description: Exact outer eval ID; retained name for Exo host compatibility
+        description: SHA-256 of the exact canonical outer eval document
         required: false
         type: string
       managed_request_id:
@@ -37,8 +37,7 @@ jobs:
     if: >-
       ${{ vars.MILK_EVAL_ID != '' &&
           (github.event_name == 'schedule' ||
-           (github.event_name == 'workflow_dispatch' &&
-            inputs.confirmed_run_config_sha256 == vars.MILK_EVAL_ID)) }}
+           github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     environment: milk-gateway-tick-prod
@@ -98,7 +97,7 @@ jobs:
           python3 -m milk_harness.scheduler validate-confirmation \
             --requested "$MILK_PROVIDER_CREATE_REQUESTED" \
             --provided-sha256 "$MILK_PROVIDER_CREATE_CONFIRMATION" \
-            --expected-sha256 "$MILK_EVAL_ID"
+            --expected-sha256 "$MILK_EVAL_CONFIG_SHA256"
 
           scratch=$(mktemp -d "$RUNNER_TEMP/milk-gateway-tick.XXXXXX")
           cleanup() {
@@ -183,8 +182,7 @@ jobs:
       ${{ always() &&
           vars.MILK_EVAL_ID != '' &&
           (github.event_name == 'schedule' ||
-           (github.event_name == 'workflow_dispatch' &&
-            inputs.confirmed_run_config_sha256 == vars.MILK_EVAL_ID)) }}
+           github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     environment: milk-provider-jobs-prod
@@ -459,7 +457,7 @@ jobs:
             --event "$GITHUB_EVENT_NAME" \
             --requested "$MILK_PROVIDER_CREATE_REQUESTED" \
             --provided-sha256 "$MILK_PROVIDER_CREATE_CONFIRMATION" \
-            --expected-sha256 "$MILK_EVAL_ID" \
+            --expected-sha256 "$MILK_EVAL_CONFIG_SHA256" \
             --gateway-result "$GATEWAY_JOB_RESULT" \
             --gateway-accepted "$GATEWAY_SUMMARY_ACCEPTED" \
             --output "$create_gate"
@@ -795,7 +793,7 @@ jobs:
             --provider-configuration-verified "$configuration_verified" \
             --provider-create-granted "$create_granted" \
             --confirmation-sha256 "$confirmation_for_receipt" \
-            --expected-confirmation-sha256 "$MILK_EVAL_ID" \
+            --expected-confirmation-sha256 "$MILK_EVAL_CONFIG_SHA256" \
             >/dev/null
 
           python3 -m milk_harness.scheduler lease-release --token "$lease_token"
@@ -819,8 +817,7 @@ jobs:
           needs.provider-jobs.outputs.route_required == 'true' &&
           vars.MILK_EVAL_ID != '' &&
           (github.event_name == 'schedule' ||
-           (github.event_name == 'workflow_dispatch' &&
-            inputs.confirmed_run_config_sha256 == vars.MILK_EVAL_ID)) }}
+           github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: milk-route-control-prod
@@ -831,7 +828,6 @@ jobs:
       MILK_EVAL_ID: ${{ vars.MILK_EVAL_ID }}
       MILK_ROUTE_CANDIDATE_READY: ${{ needs.provider-jobs.outputs.route_candidate_ready }}
       MILK_ROUTE_STUDENT_JOB_ID: ${{ needs.provider-jobs.outputs.route_student_job_id }}
-      MILK_ROUTE_PAID_PROOF_AUTHORIZED: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true }}
     steps:
       - name: Read scheduler code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -857,6 +853,24 @@ jobs:
             --github-env "$GITHUB_ENV" \
             --github-output "$GITHUB_OUTPUT"
 
+      - name: Gate paid route proof
+        id: route_proof
+        shell: bash
+        env:
+          MILK_ROUTE_PROOF_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true }}
+          MILK_ROUTE_PROOF_CONFIRMATION: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && inputs.confirmed_run_config_sha256 || '' }}
+        run: |
+          set -euo pipefail
+          authorized=false
+          if python3 -m milk_harness.scheduler validate-confirmation \
+            --requested "$MILK_ROUTE_PROOF_REQUESTED" \
+            --provided-sha256 "$MILK_ROUTE_PROOF_CONFIRMATION" \
+            --expected-sha256 "$MILK_EVAL_CONFIG_SHA256" \
+            >/dev/null 2>&1; then
+            [ "$MILK_ROUTE_PROOF_REQUESTED" != true ] || authorized=true
+          fi
+          printf 'authorized=%s\n' "$authorized" >>"$GITHUB_OUTPUT"
+
       - name: Read exact gateway route tools
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -870,12 +884,13 @@ jobs:
         id: route
         shell: bash
         env:
+          MILK_ROUTE_PAID_PROOF_AUTHORIZED: ${{ steps.route_proof.outputs.authorized }}
           MILK_GHCR_PULL_USERNAME: ${{ secrets.MILK_GHCR_PULL_USERNAME }}
           MILK_GHCR_PULL_TOKEN: ${{ secrets.MILK_GHCR_PULL_TOKEN }}
           MILK_ROUTE_SECRET_HEX: ${{ secrets.MILK_ROUTE_SECRET_HEX }}
           MILK_ROUTE_SIGNING_KEY_PEM: ${{ secrets.MILK_ROUTE_SIGNING_KEY_PEM }}
-          MILK_ROUTE_SMOKE_CREDENTIAL_JSON: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && secrets.MILK_ROUTE_SMOKE_CREDENTIAL_JSON || '' }}
-          MILK_MODAL_CANDIDATE_API_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && secrets.MILK_MODAL_CANDIDATE_API_KEY || '' }}
+          MILK_ROUTE_SMOKE_CREDENTIAL_JSON: ${{ steps.route_proof.outputs.authorized == 'true' && secrets.MILK_ROUTE_SMOKE_CREDENTIAL_JSON || '' }}
+          MILK_MODAL_CANDIDATE_API_KEY: ${{ steps.route_proof.outputs.authorized == 'true' && secrets.MILK_MODAL_CANDIDATE_API_KEY || '' }}
           MILK_GATEWAY_CONTAINER_ADMIN_KEY: ${{ secrets.MILK_GATEWAY_CONTAINER_ADMIN_KEY }}
           CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN: ${{ secrets.CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN }}
           MILK_CONTROL_STORE_ACCESS_KEY_ID: ${{ secrets.MILK_ROUTE_CONTROL_R2_ACCESS_KEY_ID }}

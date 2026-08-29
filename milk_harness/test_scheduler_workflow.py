@@ -62,7 +62,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertIn("github.event_name == 'schedule'", self.gateway)
         self.assertIn("github.event_name == 'workflow_dispatch'", self.gateway)
         self.assertIn("inputs.authorize_provider_creates == true", self.gateway)
-        self.assertIn(
+        self.assertNotIn(
             "inputs.confirmed_run_config_sha256 == vars.MILK_EVAL_ID",
             self.gateway,
         )
@@ -75,7 +75,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertIn("needs: gateway-tick", self.provider)
         provider_condition = self.provider.split("    runs-on:", 1)[0]
         self.assertIn("always()", provider_condition)
-        self.assertIn(
+        self.assertNotIn(
             "inputs.confirmed_run_config_sha256 == vars.MILK_EVAL_ID",
             provider_condition,
         )
@@ -94,8 +94,8 @@ class SchedulerWorkflowTest(unittest.TestCase):
             '--confirmed-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256"',
             self.gateway,
         )
-        self.assertIn('--expected-sha256 "$MILK_EVAL_ID"', self.gateway)
-        self.assertIn('--expected-sha256 "$MILK_EVAL_ID"', self.provider)
+        self.assertIn('--expected-sha256 "$MILK_EVAL_CONFIG_SHA256"', self.gateway)
+        self.assertIn('--expected-sha256 "$MILK_EVAL_CONFIG_SHA256"', self.provider)
         self.assertIn('if [ "$create_granted" = true ]; then', self.provider)
         self.assertNotIn("--allow-provider-creates", self.provider)
         self.assertLess(
@@ -406,13 +406,20 @@ class SchedulerWorkflowTest(unittest.TestCase):
         route_condition = self.route.split("    runs-on:", 1)[0]
         self.assertNotIn("route_candidate_ready", route_condition)
         self.assertNotIn("inputs.authorize_provider_creates", route_condition)
-        self.assertIn(
+        self.assertNotIn(
             "inputs.confirmed_run_config_sha256 == vars.MILK_EVAL_ID",
             route_condition,
         )
         self.assertIn(
-            "MILK_ROUTE_PAID_PROOF_AUTHORIZED: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true }}",
+            "MILK_ROUTE_PAID_PROOF_AUTHORIZED: ${{ steps.route_proof.outputs.authorized }}",
             self.route,
+        )
+        self.assertIn("id: route_proof", self.route)
+        self.assertIn('--expected-sha256 "$MILK_EVAL_CONFIG_SHA256"', self.route)
+        self.assertIn("printf 'authorized=%s\\n'", self.route)
+        self.assertLess(
+            self.route.index("id: route_proof"),
+            self.route.index("        id: route\n"),
         )
         self.assertIn("repository: milkinfrastructure/milk-gateway", self.route)
         self.assertIn("ref: ${{ steps.eval.outputs.gateway_source_commit }}", self.route)
@@ -462,7 +469,11 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertNotIn("MILK_GATEWAY_CONTAINER_ADMIN_KEY", route_job_environment)
         self.assertNotIn("CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN", route_job_environment)
         self.assertIn(
-            "MILK_MODAL_CANDIDATE_API_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true",
+            "MILK_MODAL_CANDIDATE_API_KEY: ${{ steps.route_proof.outputs.authorized == 'true'",
+            self.route,
+        )
+        self.assertIn(
+            "MILK_ROUTE_SMOKE_CREDENTIAL_JSON: ${{ steps.route_proof.outputs.authorized == 'true'",
             self.route,
         )
         self.assertIn("prepare-modal-candidate-credential", self.route)
@@ -682,7 +693,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
             self.provider,
         )
         self.assertIn(
-            '--expected-confirmation-sha256 "$MILK_EVAL_ID"',
+            '--expected-confirmation-sha256 "$MILK_EVAL_CONFIG_SHA256"',
             self.provider,
         )
 
@@ -699,7 +710,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
                     break
                 body.append(candidate)
             scripts.append(textwrap.dedent("\n".join(body)))
-        self.assertEqual(len(scripts), 6)
+        self.assertEqual(len(scripts), 7)
         for script in scripts:
             result = subprocess.run(
                 ["bash", "-n"], input=script, text=True, capture_output=True, check=False

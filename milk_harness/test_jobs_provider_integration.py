@@ -605,6 +605,11 @@ class JobsProviderIntegrationTest(unittest.TestCase):
         gateway_launch_raw, claim_raw = strict_winner_gateway_claim()
         gateway_launch = json.loads(gateway_launch_raw)
         claim = json.loads(claim_raw)
+        claim["scope"] = dict(SCOPE)
+        gateway_launch["deployment_claim_object_key"] = (
+            f"{SCOPE_PREFIX}/jobs/student/{claim['student_job_id']}/"
+            "winner-deployment/claim.json"
+        )
         for field in ("model_manifest", "dev_receipt"):
             claim[field]["object_key"] = (
                 f"{SCOPE_PREFIX}/artifacts/{claim['student_job_id']}/"
@@ -1334,6 +1339,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
             control = LocalEvidenceStore(f"{root}/control")
             evidence = LocalEvidenceStore(f"{root}/evidence")
             acceptance = winner_acceptance()
+            acceptance["campaign_id"] = CAMPAIGN
             student_job_id = "b" * 64
             admission = {
                 "schema_version": winner_contract.RECEIPT_SCHEMA,
@@ -1766,6 +1772,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             store = LocalEvidenceStore(root)
             acceptance = winner_acceptance()
+            acceptance["campaign_id"] = CAMPAIGN
             admission = {
                 "schema_version": winner_contract.RECEIPT_SCHEMA,
                 "provider": "modal",

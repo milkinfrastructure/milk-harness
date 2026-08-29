@@ -86,7 +86,8 @@ AUTHORITY_FILES = (
     "models/qwen3-4b-instruct-2507/verify.py",
 )
 
-SCOPE_KEYS = ("tenant_id", "project_id", "environment_id", "workload_id")
+SCOPE_UUID_KEYS = ("tenant_id", "project_id", "environment_id", "workload_id")
+SCOPE_KEYS = SCOPE_UUID_KEYS + ("eval_id",)
 CLAIM_KEYS = ("schema_version", "scope", "student_job_id", "definition", "started_at")
 DEFINITION_KEYS = (
     "schema_version",
@@ -329,9 +330,10 @@ def _uuid(value, name):
 
 def _scope(value):
     _keys(value, SCOPE_KEYS, "student scope")
-    identities = [_uuid(value[key], key) for key in SCOPE_KEYS]
+    identities = [_uuid(value[key], key) for key in SCOPE_UUID_KEYS]
     if len(set(identities)) != len(identities):
         raise ValueError("student scope UUIDs must be distinct")
+    _digest(value["eval_id"], "student eval ID")
     return value
 
 
@@ -555,14 +557,22 @@ def load_inputs(claim_path: Path, input_path: Path, check_clock: bool):
     return claim_raw, input_raw, claim, inputs, started, expires
 
 
-def _artifact_ref(value, name):
+def _artifact_prefix(claim):
+    scope = claim["scope"]
+    identities = "/".join(scope[key] for key in SCOPE_UUID_KEYS)
+    return (
+        f"dt/v3/{scope['eval_id']}/{identities}/artifacts/"
+        f"{claim['student_job_id']}/"
+    )
+
+
+def _artifact_ref(value, name, claim):
     _keys(value, ARTIFACT_REF_KEYS, name)
     key = value["object_key"]
     digest = _digest(value["sha256"], f"{name} object")
     if (
         not isinstance(key, str)
-        or not key.startswith("dt/v2/")
-        or not key.endswith("/" + digest)
+        or key != _artifact_prefix(claim) + digest
     ):
         raise ValueError(f"{name} has an invalid object key")
     _integer(value["bytes"], f"{name} bytes", 1)
@@ -598,9 +608,15 @@ def _branch_inputs(
         or train_outcome["kind"] != "succeeded"
     ):
         raise ValueError("student train result does not authorize fanout")
-    _artifact_ref(train_outcome["adapter_manifest"], "student adapter manifest")
+    _artifact_ref(
+        train_outcome["adapter_manifest"],
+        "student adapter manifest",
+        claim,
+    )
     merged_manifest = _artifact_ref(
-        train_outcome["merged_model_manifest"], "student merged model manifest"
+        train_outcome["merged_model_manifest"],
+        "student merged model manifest",
+        claim,
     )
     train_started = _time(train["started_at"], "student train start")
     train_finished = _time(train["finished_at"], "student train finish")
@@ -613,7 +629,7 @@ def _branch_inputs(
     ):
         raise ValueError("student train result has an invalid execution interval")
     if train["gpu_evidence"] is not None:
-        _artifact_ref(train["gpu_evidence"], "student train GPU evidence")
+        _artifact_ref(train["gpu_evidence"], "student train GPU evidence", claim)
 
     fanout_raw = _read(fanout_claim_path, MAX_CLAIM_BYTES)
     fanout = _keys(
@@ -703,9 +719,7 @@ def _write_new(path: Path, raw: bytes, mode=0o400) -> None:
 
 
 def _artifact_key(claim, digest: str) -> str:
-    scope = claim["scope"]
-    prefix = "/".join(scope[key] for key in SCOPE_KEYS)
-    return f"dt/v2/{prefix}/artifacts/{claim['student_job_id']}/{digest}"
+    return _artifact_prefix(claim) + digest
 
 
 class ArtifactStore:
@@ -1065,7 +1079,7 @@ def _verify_retained_model(model: Path, manifest_path: Path, runtime):
             not isinstance(relative, str)
             or SAFE_NAME.fullmatch(relative) is None
             or not isinstance(item["object_key"], str)
-            or not item["object_key"].startswith("dt/v2/")
+            or not item["object_key"].startswith("dt/v3/")
             or not item["object_key"].endswith(f"/artifacts/{job_id}/{digest}")
         ):
             raise ValueError("student model manifest contains an unsafe file binding")

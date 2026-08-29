@@ -74,8 +74,17 @@ SCOPE = {
     "project_id": "22222222-2222-4222-8222-222222222222",
     "environment_id": "33333333-3333-4333-8333-333333333333",
     "workload_id": "44444444-4444-4444-8444-444444444444",
+    "eval_id": CAMPAIGN,
 }
-SCOPE_PREFIX = "dt/v2/" + "/".join(SCOPE.values())
+SCOPE_PREFIX = "dt/v3/" + "/".join(
+    (
+        CAMPAIGN,
+        SCOPE["tenant_id"],
+        SCOPE["project_id"],
+        SCOPE["environment_id"],
+        SCOPE["workload_id"],
+    )
+)
 TEST_IMAGE_ADMISSIONS = {}
 for _artifact, _repository, _digit in (
     ("student-train", "ghcr.io/milkinfrastructure/milk-student-train", "1"),
@@ -919,6 +928,27 @@ def provider_arguments(release_sha256):
 
 
 class BasetenJobsTests(unittest.TestCase):
+    def test_provider_run_identity_rejects_another_eval_namespace(self):
+        value = workload("a")
+        other_eval = "b" * 64
+        other_prefix = SCOPE_PREFIX.replace(CAMPAIGN, other_eval, 1)
+        source = value["launch_source"]
+        value["launch_source"] = {
+            **source,
+            "scope": {**source["scope"], "eval_id": other_eval},
+            **{
+                field: source[field].replace(SCOPE_PREFIX, other_prefix, 1)
+                for field in (
+                    "frontier_object_key",
+                    "outbox_object_key",
+                    "claim_object_key",
+                )
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "eval differs"):
+            jobs_module._workload_run_id(CAMPAIGN, value)
+
     def test_baseten_preflight_requires_live_h100_capacity(self):
         project = {
             "training_project": {

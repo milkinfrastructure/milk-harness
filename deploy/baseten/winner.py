@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import re
 import urllib.parse
+import uuid
 
 from . import adapter as shared
 from milk_harness import provider_acceptance
@@ -121,6 +122,8 @@ RESULT_KEY_ORDER = (
     "observed_cost_microusd",
     "admission",
 )
+SCOPE_UUID_FIELDS = ("tenant_id", "project_id", "environment_id", "workload_id")
+SCOPE_FIELDS = SCOPE_UUID_FIELDS + ("eval_id",)
 
 
 def _matches(pattern, value):
@@ -563,14 +566,27 @@ def receipt_bytes(receipt):
 def result_bytes(result):
     if set(result) != set(RESULT_KEY_ORDER) or result.get("schema_version") != RESULT_SCHEMA:
         raise ValueError("winner deployment result fields are invalid")
+    scope = result.get("scope")
+    if (
+        not isinstance(scope, dict)
+        or tuple(scope) != SCOPE_FIELDS
+        or not _matches(HEX64, scope.get("eval_id"))
+    ):
+        raise ValueError("winner deployment scope is invalid")
+    for field in SCOPE_UUID_FIELDS:
+        try:
+            identity = uuid.UUID(scope[field])
+        except (AttributeError, ValueError):
+            raise ValueError("winner deployment scope is invalid") from None
+        if identity.int == 0 or str(identity) != scope[field]:
+            raise ValueError("winner deployment scope is invalid")
     admission = result.get("admission")
     receipt_bytes(admission)
-    provider_acceptance.validate(result.get("provider_acceptance"))
+    acceptance = provider_acceptance.validate(result.get("provider_acceptance"))
+    if scope["eval_id"] != acceptance["campaign_id"]:
+        raise ValueError("winner deployment eval differs from its campaign")
     ordered = {key: result[key] for key in RESULT_KEY_ORDER}
-    ordered["scope"] = {
-        key: result["scope"][key]
-        for key in ("tenant_id", "project_id", "environment_id", "workload_id")
-    }
+    ordered["scope"] = {key: scope[key] for key in SCOPE_FIELDS}
     ordered["provider_acceptance"] = result["provider_acceptance"]
     ordered["admission"] = {key: admission[key] for key in RECEIPT_KEY_ORDER}
     return (json.dumps(ordered, separators=(",", ":")) + "\n").encode()

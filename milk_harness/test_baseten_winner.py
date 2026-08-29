@@ -40,7 +40,17 @@ SCOPE = {
     "project_id": "22222222-2222-4222-8222-222222222222",
     "environment_id": "33333333-3333-4333-8333-333333333333",
     "workload_id": "44444444-4444-4444-8444-444444444444",
+    "eval_id": CAMPAIGN,
 }
+SCOPE_PREFIX = "dt/v3/" + "/".join(
+    (
+        CAMPAIGN,
+        SCOPE["tenant_id"],
+        SCOPE["project_id"],
+        SCOPE["environment_id"],
+        SCOPE["workload_id"],
+    )
+)
 
 
 def utc(value):
@@ -106,8 +116,7 @@ def gateway_claim():
         "student_result_sha256": STUDENT_RESULT,
         "winner": "static_fp8",
         "deployment_claim_object_key": (
-            "dt/v2/" + "/".join(SCOPE.values())
-            + f"/jobs/student/{STUDENT}/winner-deployment/claim.json"
+            f"{SCOPE_PREFIX}/jobs/student/{STUDENT}/winner-deployment/claim.json"
         ),
         "deployment_claim_sha256": hashlib.sha256(claim_raw).hexdigest(),
         "provider_binding_sha256": CLAIM_BINDING,
@@ -121,7 +130,7 @@ def gateway_claim():
 
 
 def create_authorities():
-    scope_prefix = "dt/v2/" + "/".join(SCOPE.values())
+    scope_prefix = SCOPE_PREFIX
     authorization = {
         "schema_version": "milk.provider-create-authorization.v1",
         "campaign_id": CAMPAIGN,
@@ -656,7 +665,7 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
         )
 
     def route_receipts(self):
-        prefix = "dt/v2/" + "/".join(SCOPE.values())
+        prefix = SCOPE_PREFIX
 
         def receipt(revision, basis_points, previous):
             return gateway_line(
@@ -693,7 +702,7 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
         self.assertEqual(hashlib.sha256(raw).hexdigest(), acceptance_sha256(self.acceptance))
         self.assertEqual(
             hashlib.sha256(raw).hexdigest(),
-            "965170f72a6e6cc6a40c2b1b46ab1639034b798adf032df07730897d44a98918",
+            "23cafa67018ce703b6f666b3c746fc8f6c0a1a10013616d161d9c4e6cba79ad2",
         )
         self.assertEqual(
             self.acceptance["provider_pass_claim_sha256"],
@@ -706,6 +715,24 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
         tampered["create_authorization_sha256"] = None
         with self.assertRaises(ValueError):
             acceptance_bytes(tampered)
+
+    def test_create_authority_rejects_another_eval_namespace(self):
+        with self.assertRaisesRegex(ValueError, "create authority"):
+            baseten_winner._validate_creation_authorities(
+                self.pass_raw,
+                self.authorization_raw,
+                CAMPAIGN,
+                {**SCOPE, "eval_id": "0" * 64},
+            )
+        with self.assertRaisesRegex(ValueError, "eval differs"):
+            baseten_winner.winner_run_id(
+                campaign_id="0" * 64,
+                launch_raw=self.launch_raw,
+                claim_raw=self.claim_raw,
+                outbox_sha256=OUTBOX,
+                image_release_sha256=IMAGE_RELEASE,
+                image_admission_sha256=IMAGE_ADMISSION,
+            )
 
     def test_concrete_runtime_preflight_proves_team_and_full_access_key(self):
         teams_raw = json.dumps(
@@ -1360,7 +1387,7 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
             "scope": SCOPE,
             "student_job_id": STUDENT,
             "claim_sha256": self.claim_sha,
-            "winner_result_object_key": "dt/v2/winner-result.json",
+            "winner_result_object_key": f"{SCOPE_PREFIX}/winner-result.json",
             "winner_result_sha256": hashlib.sha256(gateway_result_raw).hexdigest(),
             "provider_acceptance_sha256": acceptance_sha256(self.acceptance),
             "run_id": self.run_id,
@@ -1368,7 +1395,7 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
             "execution_id": DEPLOYMENT_ID,
             "trigger": {
                 "kind": "route_zero",
-                "retirement_object_key": "dt/v2/retirement.json",
+                "retirement_object_key": f"{SCOPE_PREFIX}/retirement.json",
                 "retirement_sha256": "8" * 64,
                 "zero_route_revision": "b" * 64,
                 "canary_route_receipt": json.loads(canary),

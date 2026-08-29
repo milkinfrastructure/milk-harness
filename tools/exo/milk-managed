@@ -78,16 +78,6 @@ canonical_private_dir() {
   [ "$canonical_directory" = "$directory" ]
 }
 
-sha256_of() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum -- "$1" 2>/dev/null | cut -d ' ' -f 1
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 -- "$1" 2>/dev/null | cut -d ' ' -f 1
-  else
-    return 1
-  fi
-}
-
 validate_eval_document() {
   canonical_private_dir "$eval_dir" "$eval_owner_uid" 750 || return 1
   eval_document=$eval_dir/$eval_id.json
@@ -99,8 +89,25 @@ validate_eval_document() {
     ''|*[!0-9]*) return 1 ;;
   esac
   [ "$eval_size" -gt 0 ] && [ "$eval_size" -le 262144 ] || return 1
-  observed_eval_id=$(sha256_of "$eval_document" || true)
-  [ "$observed_eval_id" = "$eval_id" ]
+  eval_confirmation_sha256=$(python3 -c '
+import hashlib
+import json
+import sys
+
+raw = open(sys.argv[1], "rb").read()
+value = json.loads(raw)
+manifest = value.get("manifest") if isinstance(value, dict) else None
+gateway = value.get("gateway_config") if isinstance(value, dict) else None
+if (
+    not isinstance(manifest, dict)
+    or not isinstance(gateway, dict)
+    or manifest.get("campaign_id") != sys.argv[2]
+    or gateway.get("eval_id") != sys.argv[2]
+):
+    raise SystemExit(1)
+print(hashlib.sha256(raw).hexdigest())
+' "$eval_document" "$eval_id" 2>/dev/null) || return 1
+  valid_hex "$eval_confirmation_sha256" 64
 }
 
 prepare_eval_state() {
@@ -328,7 +335,7 @@ dispatch() {
     --repo "$repository" \
     --ref "$workflow_ref" \
     --raw-field "authorize_provider_creates=$1" \
-    --raw-field "confirmed_run_config_sha256=$eval_id" \
+    --raw-field "confirmed_run_config_sha256=$eval_confirmation_sha256" \
     --raw-field "managed_request_id=$state_request_id" \
     >/dev/null 2>&1
 }

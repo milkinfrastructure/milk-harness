@@ -45,7 +45,7 @@ export const milkTool = {
         eval_id: {
           type: "string",
           pattern: "^[0-9a-f]{64}$",
-          description: "SHA-256 of the host-admitted canonical eval document.",
+          description: "Stable campaign ID of the host-admitted eval.",
         },
       },
       required: ["action", "eval_id"],

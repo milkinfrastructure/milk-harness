@@ -289,25 +289,42 @@ def winner_fixture():
         b"dragontales.winner-provider-binding.v1\0"
         + json.dumps(authority, separators=(",", ":")).encode()
     ).hexdigest()
+    scope = {
+        "tenant_id": "11111111-1111-4111-8111-111111111111",
+        "project_id": "22222222-2222-4222-8222-222222222222",
+        "environment_id": "33333333-3333-4333-8333-333333333333",
+        "workload_id": "44444444-4444-4444-8444-444444444444",
+        "eval_id": execution["campaign_id"],
+    }
+    scope_prefix = "dt/v3/" + "/".join(
+        (
+            scope["eval_id"],
+            scope["tenant_id"],
+            scope["project_id"],
+            scope["environment_id"],
+            scope["workload_id"],
+        )
+    )
     claim = {
         "schema_version": "dragontales.student-winner-deployment-claim.v2",
-        "scope": {
-            "tenant_id": "11111111-1111-4111-8111-111111111111",
-            "project_id": "22222222-2222-4222-8222-222222222222",
-            "environment_id": "33333333-3333-4333-8333-333333333333",
-            "workload_id": "44444444-4444-4444-8444-444444444444",
-        },
+        "scope": scope,
         "student_job_id": execution["unit"]["student_job_id"],
         "student_claim_sha256": "3" * 64,
         "student_result_sha256": execution["unit"]["student_result_sha256"],
         "winner": execution["unit"]["winner"],
         "model_manifest": {
-            "object_key": "dt/v2/model-manifest",
+            "object_key": (
+                f"{scope_prefix}/artifacts/{execution['unit']['student_job_id']}/"
+                + "a" * 64
+            ),
             "sha256": "a" * 64,
             "bytes": 1,
         },
         "dev_receipt": {
-            "object_key": "dt/v2/dev-receipt",
+            "object_key": (
+                f"{scope_prefix}/artifacts/{execution['unit']['student_job_id']}/"
+                + "d" * 64
+            ),
             "sha256": "d" * 64,
             "bytes": 1,
         },
@@ -351,7 +368,15 @@ def winner_fixture():
 
 
 def route_receipts(claim):
-    scope_prefix = "dt/v2/" + "/".join(claim["scope"].values())
+    scope_prefix = "dt/v3/" + "/".join(
+        (
+            claim["scope"]["eval_id"],
+            claim["scope"]["tenant_id"],
+            claim["scope"]["project_id"],
+            claim["scope"]["environment_id"],
+            claim["scope"]["workload_id"],
+        )
+    )
 
     def receipt(revision, basis_points, previous):
         value = {
@@ -709,6 +734,15 @@ class ModalJobsTests(unittest.TestCase):
         validate_definition(winner, definition(winner))
         self.assertNotIn("operation", winner)
         self.assertNotIn("provider_binding_sha256", fanout)
+
+    def test_winner_claim_rejects_another_eval_namespace(self):
+        value, execution, claim, _raw, _materialization, _probe = winner_fixture()
+        claim["scope"]["eval_id"] = "f" * 64
+        raw = json.dumps(claim, separators=(",", ":")).encode()
+        value["claim_sha256"] = hashlib.sha256(raw).hexdigest()
+
+        with self.assertRaisesRegex(ValueError, "differs from its accepted workload"):
+            modal_jobs._winner_claim(raw, value, execution)
 
     def test_provider_acceptance_wire_is_ordered_compact_and_line_terminated(self):
         for value in (acceptance(), winner_acceptance()):

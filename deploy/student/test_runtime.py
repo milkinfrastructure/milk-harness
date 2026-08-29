@@ -21,7 +21,7 @@ RUNTIME_PATH = Path(__file__).resolve().with_name("runtime.py")
 SPEC = importlib.util.spec_from_file_location("student_runtime", RUNTIME_PATH)
 runtime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runtime)
-PRODUCTION_RECIPE_SHA256 = "21f6f57af13d60d76ce31e4d41fb8c9f2df9398cdfaf8a711fd094a415c7ff95"
+PRODUCTION_RECIPE_SHA256 = "9f0989fdc749c04952f900f02b436cc260b621eef3c6017f8a50df10796a7095"
 FIXTURE_TRAIN_IMAGE = "fixture/dragontales-student-train@sha256:" + "1" * 64
 FIXTURE_BRANCH_IMAGE = "fixture/dragontales-student-branch@sha256:" + "2" * 64
 
@@ -75,6 +75,7 @@ def fixture_files(root):
         "project_id": "00000000-0000-0000-0000-000000000002",
         "environment_id": "00000000-0000-0000-0000-000000000003",
         "workload_id": "00000000-0000-0000-0000-000000000004",
+        "eval_id": "e" * 64,
     }
     inputs = {
         "schema_version": "dragontales.student-input.v1",
@@ -139,7 +140,7 @@ def retained_model(root, variant="bf16"):
     files = [
         {
             "relative_path": item["relative_path"],
-            "object_key": f"dt/v2/tenant/project/environment/workload/artifacts/{job_id}/{item['sha256']}",
+            "object_key": f"dt/v3/{'e' * 64}/tenant/project/environment/workload/artifacts/{job_id}/{item['sha256']}",
             "sha256": item["sha256"],
             "bytes": item["bytes"],
         }
@@ -348,6 +349,26 @@ def mocked_branch_compute():
 
 
 class StudentRuntimeTest(unittest.TestCase):
+    def test_artifact_namespace_is_bound_to_the_claim_eval(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            _claim_path, _input_path, claim, _inputs = fixture_files(Path(temporary))
+            reference = {
+                "object_key": runtime._artifact_key(claim, "a" * 64),
+                "sha256": "a" * 64,
+                "bytes": 1,
+            }
+            self.assertEqual(
+                runtime._artifact_ref(reference, "student artifact", claim),
+                reference,
+            )
+            reference["object_key"] = reference["object_key"].replace(
+                claim["scope"]["eval_id"],
+                "f" * 64,
+                1,
+            )
+            with self.assertRaisesRegex(ValueError, "object key"):
+                runtime._artifact_ref(reference, "student artifact", claim)
+
     def test_v4_split_images_and_budget_wire_are_exact(self):
         self.assertEqual(
             (

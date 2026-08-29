@@ -23,7 +23,8 @@ TIME = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
     r"(?:\.[0-9]{1,9})?Z\Z"
 )
-SCOPE_FIELDS = ("tenant_id", "project_id", "environment_id", "workload_id")
+SCOPE_UUID_FIELDS = ("tenant_id", "project_id", "environment_id", "workload_id")
+SCOPE_FIELDS = SCOPE_UUID_FIELDS + ("eval_id",)
 CANARY_BASIS_POINTS = 100
 KEY_ORDER = (
     "schema_version",
@@ -162,14 +163,18 @@ def _route_object(raw, label):
 def _route_scope_prefix(scope):
     if not isinstance(scope, dict) or tuple(scope) != SCOPE_FIELDS:
         raise ValueError("winner gateway scope is invalid")
-    for field in SCOPE_FIELDS:
+    if not _match(HEX64, scope["eval_id"]):
+        raise ValueError("winner gateway scope is invalid")
+    for field in SCOPE_UUID_FIELDS:
         try:
             parsed = uuid.UUID(scope[field])
         except (AttributeError, ValueError):
             raise ValueError("winner gateway scope is invalid") from None
         if parsed.int == 0 or str(parsed) != scope[field]:
             raise ValueError("winner gateway scope is invalid")
-    return "dt/v2/" + "/".join(scope[field] for field in SCOPE_FIELDS)
+    return "dt/v3/" + "/".join(
+        (scope["eval_id"], *(scope[field] for field in SCOPE_UUID_FIELDS))
+    )
 
 
 def _route_receipt(raw, claim, basis_points, previous_revision):

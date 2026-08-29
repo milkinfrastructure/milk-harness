@@ -54,7 +54,8 @@ API_ROOT = "https://api.baseten.co/v1"
 MANAGEMENT_OPENAPI_SHA256 = (
     "dbf621164d395cce375288447e10ed5ef5737a16773636a892297ee92434f9f8"
 )
-SCOPE_FIELDS = ("tenant_id", "project_id", "environment_id", "workload_id")
+SCOPE_UUID_FIELDS = ("tenant_id", "project_id", "environment_id", "workload_id")
+SCOPE_FIELDS = SCOPE_UUID_FIELDS + ("eval_id",)
 VARIANTS = ("bf16", "dynamic_fp8", "static_fp8")
 TEAM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 GATEWAY_TIME = re.compile(
@@ -299,7 +300,8 @@ def _validate_scope(value):
     if (
         not isinstance(value, dict)
         or tuple(value) != SCOPE_FIELDS
-        or any(not _valid_uuid(value.get(field)) for field in SCOPE_FIELDS)
+        or any(not _valid_uuid(value.get(field)) for field in SCOPE_UUID_FIELDS)
+        or not _matches(HEX64, value.get("eval_id"))
     ):
         raise ValueError("winner gateway scope is invalid")
 
@@ -462,7 +464,9 @@ def _validate_gateway(launch_raw, claim_raw):
 
 def _scope_prefix(scope):
     _validate_scope(scope)
-    return "dt/v2/" + "/".join(scope[field] for field in SCOPE_FIELDS)
+    return "dt/v3/" + "/".join(
+        (scope["eval_id"], *(scope[field] for field in SCOPE_UUID_FIELDS))
+    )
 
 
 def _validate_creation_authorities(
@@ -479,7 +483,8 @@ def _validate_creation_authorities(
     scope_prefix = _scope_prefix(scope)
     authorization_sha256 = hashlib.sha256(create_authorization_raw).hexdigest()
     if (
-        set(provider_pass) != PROVIDER_PASS_FIELDS
+        scope["eval_id"] != campaign_id
+        or set(provider_pass) != PROVIDER_PASS_FIELDS
         or provider_pass.get("schema_version")
         != "milk.provider-jobs-pass-claim.v1"
         or provider_pass.get("campaign_id") != campaign_id
@@ -559,8 +564,9 @@ def winner_run_id(
         for value in (outbox_sha256, image_release_sha256, image_admission_sha256)
     ):
         raise ValueError("winner immutable authority digest is invalid")
-    launch, unused_claim = _validate_gateway(launch_raw, claim_raw)
-    del unused_claim
+    launch, claim = _validate_gateway(launch_raw, claim_raw)
+    if claim["scope"]["eval_id"] != campaign_id:
+        raise ValueError("winner eval differs from its campaign")
     return neutral_winner_run_id(
         campaign_id=campaign_id,
         claim_sha256=launch["deployment_claim_sha256"],

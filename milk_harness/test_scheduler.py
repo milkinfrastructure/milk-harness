@@ -82,7 +82,7 @@ class SchedulerTest(unittest.TestCase):
                     "provider_creates_authorized": authorized,
                     "provider_pass_claim_sha256": HEX,
                     "create_authorization_sha256": HEX if authorized else None,
-                    "scope_prefix": "dt/v2/a/b/c/d",
+                    "scope_prefix": f"dt/v3/{HEX}/a/b/c/d",
                     "reconciliation": {},
                     "dispatched": None,
                     "teardown": None,
@@ -234,7 +234,7 @@ class SchedulerTest(unittest.TestCase):
         now = dt.datetime(2026, 8, 27, tzinfo=dt.timezone.utc)
         campaign = "c" * 64
         scope = (
-            "dt/v2/11111111-1111-4111-8111-111111111111/"
+            f"dt/v3/{campaign}/11111111-1111-4111-8111-111111111111/"
             "22222222-2222-4222-8222-222222222222/"
             "33333333-3333-4333-8333-333333333333/"
             "44444444-4444-4444-8444-444444444444"
@@ -471,7 +471,7 @@ class SchedulerTest(unittest.TestCase):
         now = dt.datetime(2026, 8, 27, tzinfo=dt.timezone.utc)
         campaign = "c" * 64
         scope = (
-            "dt/v2/11111111-1111-4111-8111-111111111111/"
+            f"dt/v3/{campaign}/11111111-1111-4111-8111-111111111111/"
             "22222222-2222-4222-8222-222222222222/"
             "33333333-3333-4333-8333-333333333333/"
             "44444444-4444-4444-8444-444444444444"
@@ -540,7 +540,7 @@ class SchedulerTest(unittest.TestCase):
         now = dt.datetime(2026, 8, 27, tzinfo=dt.timezone.utc)
         campaign = "c" * 64
         scope = (
-            "dt/v2/11111111-1111-4111-8111-111111111111/"
+            f"dt/v3/{campaign}/11111111-1111-4111-8111-111111111111/"
             "22222222-2222-4222-8222-222222222222/"
             "33333333-3333-4333-8333-333333333333/"
             "44444444-4444-4444-8444-444444444444"
@@ -649,8 +649,9 @@ class SchedulerTest(unittest.TestCase):
     def test_confirmation_manifest_binds_actual_code_config_and_provider_inputs(self):
         root = Path(__file__).parents[1]
         source_commit = "1" * 40
+        campaign_id = "e" * 64
         ids = [f"00000000-0000-4000-8000-0000000000{value:02d}" for value in range(10, 14)]
-        scope = "dt/v2/" + "/".join(ids)
+        scope = "dt/v3/" + "/".join((campaign_id, *ids))
         images = {
             "gateway": "ghcr.io/milkinfrastructure/milk-gateway@sha256:" + HEX,
             "jobs": "ghcr.io/milkinfrastructure/milk-jobs@sha256:" + HEX,
@@ -688,6 +689,7 @@ class SchedulerTest(unittest.TestCase):
             "project_id": ids[1],
             "environment_id": ids[2],
             "workload_id": ids[3],
+            "eval_id": campaign_id,
             "stores": {
                 "capture": {
                     "type": "cloudflare_r2",
@@ -800,7 +802,7 @@ class SchedulerTest(unittest.TestCase):
             "schema_version": "milk.confirmed-production-run-config.v5",
             "provider_policy": {"primary": "baseten", "fallback": "modal"},
             "harness_source_commit": source_commit,
-            "campaign_id": "e" * 64,
+            "campaign_id": campaign_id,
             "provider_project_id": "project_1",
             "provider_runtime": provider_runtime,
             "scope_prefix": scope,
@@ -1191,7 +1193,7 @@ class SchedulerTest(unittest.TestCase):
         evidence = LocalEvidenceStore(self.root / "ingest-evidence")
         campaign = "c" * 64
         run_id = "d" * 64
-        scope = "dt/v2/a/b/c/d"
+        scope = f"dt/v3/{campaign}/a/b/c/d"
         winner_key = (
             f"campaigns/v1/{campaign}/winner-jobs/{run_id}/gateway-result.json"
         )

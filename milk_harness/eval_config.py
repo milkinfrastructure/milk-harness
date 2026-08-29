@@ -34,8 +34,8 @@ def validate_eval_document(raw, eval_id, harness_source_commit, root):
     canonical = canonical_json(value)
     if raw != canonical:
         raise ValueError("eval document must be canonical JSON")
-    if HEX64.fullmatch(eval_id or "") is None or hashlib.sha256(canonical).hexdigest() != eval_id:
-        raise ValueError("eval ID differs from the canonical document")
+    if HEX64.fullmatch(eval_id or "") is None:
+        raise ValueError("eval ID is invalid")
     if (
         set(value)
         != {
@@ -65,6 +65,11 @@ def validate_eval_document(raw, eval_id, harness_source_commit, root):
         harness_source_commit,
         root,
     )
+    if (
+        manifest["campaign_id"] != eval_id
+        or value["gateway_config"].get("eval_id") != eval_id
+    ):
+        raise ValueError("eval ID differs from the campaign or gateway config")
     gateway_raw = canonical_json(value["gateway_config"])
     if hashlib.sha256(gateway_raw).hexdigest() != manifest["gateway_config_sha256"]:
         raise ValueError("eval gateway config SHA-256 differs")
@@ -101,7 +106,13 @@ def _single_line(value, name):
     return text
 
 
-def materialized_environment(value, manifest_sha256, manifest_path, gateway_path):
+def materialized_environment(
+    value,
+    manifest_sha256,
+    eval_config_sha256,
+    manifest_path,
+    gateway_path,
+):
     manifest = value["manifest"]
     gateway = value["gateway_config"]
     runtime = manifest["provider_runtime"]
@@ -111,6 +122,7 @@ def materialized_environment(value, manifest_sha256, manifest_path, gateway_path
     stores = gateway["stores"]
     env = {
         "MILK_CONFIRMED_RUN_CONFIG_SHA256": manifest_sha256,
+        "MILK_EVAL_CONFIG_SHA256": eval_config_sha256,
         "MILK_CONFIRMED_RUN_CONFIG_PATH": str(Path(manifest_path).resolve()),
         "MILK_GATEWAY_CONFIG_PATH": str(Path(gateway_path).resolve()),
         "MILK_CAMPAIGN_ID": manifest["campaign_id"],
@@ -197,8 +209,9 @@ def main(argv=None):
     document = Path(arguments.document)
     if document.is_symlink() or not document.is_file():
         raise ValueError("eval document must be a regular file")
+    raw = document.read_bytes()
     value, manifest_raw, gateway_raw = validate_eval_document(
-        document.read_bytes(),
+        raw,
         arguments.eval_id,
         arguments.harness_source_commit,
         arguments.root,
@@ -210,6 +223,7 @@ def main(argv=None):
         materialized_environment(
             value,
             value["manifest_sha256"],
+            hashlib.sha256(raw).hexdigest(),
             arguments.manifest_output,
             arguments.gateway_config_output,
         ),

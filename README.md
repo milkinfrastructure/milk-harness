@@ -30,7 +30,7 @@ Production reads it from two repository variables:
 
 ```text
 MILK_EVAL_CONFIG_JSON=<canonical milk.eval.v1 JSON>
-MILK_EVAL_ID=<sha256 of those exact bytes>
+MILK_EVAL_ID=<stable campaign/eval ID embedded in the manifest and gateway config>
 ```
 
 Credentials remain individual masked secrets. They are not embedded in the eval document or bundled into JSON secret blobs.
@@ -45,13 +45,13 @@ R2 records are the authority for leases, claims, budgets, results, and routes. G
 
 ## Limits and spend
 
-`teacher.max_decisions` is the lifetime teacher-decision limit for one tenant/project/environment/workload scope. Reusing that scope in another eval also reuses its prior claims; an independent eval requires a new workload ID. The gateway stops creating new teacher claims at the limit while allowing reconciliation and teardown to finish.
+`teacher.max_decisions` is the teacher-decision limit for one eval. Durable gateway keys include the eval ID before the tenant, project, environment, and workload IDs, so another eval cannot reuse its claims or limit. The gateway stops creating new teacher claims at the limit while allowing reconciliation and teardown to finish.
 
 Paid work has three gates:
 
 - an immutable price receipt for the exact provider;
 - a pessimistic reservation inside the campaign budget;
-- a confirmed manual dispatch whose hash matches the active eval.
+- a confirmed manual dispatch whose hash matches the active canonical eval document.
 
 The current campaign ceiling is `$1,000`. New paid work stops at `$850`, preserving `$150` for running work and teardown. Scheduled runs cannot authorize provider creates.
 
@@ -60,7 +60,7 @@ The current campaign ceiling is `$1,000`. New paid work stops at `$850`, preserv
 [`tools/exo`](tools/exo) adds one narrow `milk` tool to an existing Exo harness. Its input is only:
 
 ```json
-{"action":"status|reconcile|run_confirmed","eval_id":"<sha256>"}
+{"action":"status|reconcile|run_confirmed","eval_id":"<campaign ID>"}
 ```
 
 The host command accepts only an operator-admitted config under `/etc/milk/evals/<eval_id>.json`. Exo receives no provider token, arbitrary command, route key, or spending authority.

@@ -298,6 +298,7 @@ class WinnerPureContractTest(unittest.TestCase):
                 "project_id": "00000000-0000-0000-0000-000000000002",
                 "environment_id": "00000000-0000-0000-0000-000000000003",
                 "workload_id": "00000000-0000-0000-0000-000000000004",
+                "eval_id": acceptance()["campaign_id"],
             },
             "student_job_id": STUDENT,
             "claim_sha256": CLAIM,
@@ -310,6 +311,11 @@ class WinnerPureContractTest(unittest.TestCase):
         self.assertTrue(raw.endswith(b"\n"))
         self.assertLess(raw.index(b'"scope"'), raw.index(b'"student_job_id"'))
         self.assertEqual(json.loads(raw), result)
+
+        cross_eval = json.loads(raw)
+        cross_eval["scope"]["eval_id"] = "f" * 64
+        with self.assertRaisesRegex(ValueError, "eval differs"):
+            winner.result_bytes(cross_eval)
 
     def test_timestamp_requires_whole_second_utc(self):
         now = dt.datetime(2026, 8, 27, 20, 0, tzinfo=dt.timezone.utc)

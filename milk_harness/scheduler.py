@@ -483,12 +483,20 @@ def _require_distinct_student_image_digests(images):
         raise ValueError("student train and branch images must have distinct digests")
 
 
+SCOPE_UUID_FIELDS = ("tenant_id", "project_id", "environment_id", "workload_id")
+SCOPE_FIELDS = SCOPE_UUID_FIELDS + ("eval_id",)
+
+
 def _scope(prefix):
     parts = prefix.split("/") if isinstance(prefix, str) else []
-    if len(parts) != 6 or parts[:2] != ["dt", "v2"]:
+    if (
+        len(parts) != 7
+        or parts[:2] != ["dt", "v3"]
+        or HEX64.fullmatch(parts[2]) is None
+    ):
         raise ValueError("scope prefix is invalid")
     values = []
-    for item in parts[2:]:
+    for item in parts[3:]:
         try:
             parsed = uuid.UUID(item)
         except (AttributeError, ValueError) as error:
@@ -496,7 +504,7 @@ def _scope(prefix):
         if parsed.int == 0 or str(parsed) != item:
             raise ValueError("scope prefix is invalid")
         values.append(item)
-    return dict(zip(("tenant_id", "project_id", "environment_id", "workload_id"), values))
+    return {**dict(zip(SCOPE_UUID_FIELDS, values)), "eval_id": parts[2]}
 
 
 def _artifact_hashes(root):
@@ -1172,7 +1180,8 @@ def _validated_run_manifest(raw, confirmed_sha256, harness_source_commit, root):
         or manifest.get("harness_artifact_sha256s") != _artifact_hashes(root)
     ):
         raise ValueError("confirmed run config is invalid")
-    _scope(manifest["scope_prefix"])
+    if _scope(manifest["scope_prefix"])["eval_id"] != manifest["campaign_id"]:
+        raise ValueError("confirmed scope eval differs from its campaign")
     _gateway_deployment(manifest.get("gateway_deployment"))
     _provider_runtime(manifest.get("provider_runtime"))
     _provider_secret_names(manifest.get("provider_secret_names"))
@@ -1360,7 +1369,7 @@ def verify_gateway_run_config(
         or _scope(manifest["scope_prefix"])
         != {
             name: config.get(name)
-            for name in ("tenant_id", "project_id", "environment_id", "workload_id")
+            for name in SCOPE_FIELDS
         }
         or {
             name: store_identities[name]
@@ -1425,7 +1434,7 @@ def verify_gateway_ingest_run_config(
         or _scope(manifest["scope_prefix"])
         != {
             name: config.get(name)
-            for name in ("tenant_id", "project_id", "environment_id", "workload_id")
+            for name in SCOPE_FIELDS
         }
         or actual_identities
         != {

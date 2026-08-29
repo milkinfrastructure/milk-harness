@@ -6,8 +6,8 @@ This directory provides one `milk` model tool. Every call requires exactly:
 {"action":"status","eval_id":"<64 lowercase hex>"}
 ```
 
-`action` is `status`, `reconcile`, or `run_confirmed`. `eval_id` is the
-SHA-256 of one exact eval document admitted by an operator. The model cannot
+`action` is `status`, `reconcile`, or `run_confirmed`. `eval_id` is the stable
+campaign/eval ID of one exact document admitted by an operator. The model cannot
 provide a path, repository, workflow, branch, provider, or credential.
 
 ## Install
@@ -66,13 +66,14 @@ Run the non-dispatching config/control smoke in
 
 ## Admit one eval
 
-Hash the exact reviewed document, then install it under that hash. The
+Read the stable eval ID from the exact reviewed document, then install it under
+that ID. The
 directory and document remain root-owned; the Exo service group has read-only
 access.
 
 ```sh
 EVAL_DOCUMENT=/absolute/path/reviewed-eval.json
-EVAL_ID=$(sha256sum "$EVAL_DOCUMENT" | cut -d ' ' -f 1)
+EVAL_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["manifest"]["campaign_id"])' "$EVAL_DOCUMENT")
 EXO_SERVICE_USER=exo
 sudo install -o root -g "$(id -gn "$EXO_SERVICE_USER")" -m 0440 \
   "$EVAL_DOCUMENT" "/etc/milk/evals/$EVAL_ID.json"
@@ -80,7 +81,9 @@ sudo install -o root -g "$(id -gn "$EXO_SERVICE_USER")" -m 0440 \
 
 The host command accepts only `/etc/milk/evals/$EVAL_ID.json`. Before every
 action it rejects symbolic links, wrong ownership or modes, oversized files,
-and any document whose SHA-256 differs from `eval_id`.
+and any document whose manifest campaign ID or gateway eval ID differs from
+`eval_id`. At dispatch it computes the exact document SHA-256 and sends that as
+the workflow's manual confirmation.
 
 State, lock, and approval are isolated under
 `/var/lib/milk/evals/$EVAL_ID/`. The command creates that `0700` service-owned

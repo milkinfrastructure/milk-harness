@@ -78,6 +78,32 @@ def gpu_acceptance():
 
 
 class ProviderAcceptanceTest(unittest.TestCase):
+    def test_route_namespace_requires_the_eval_identifier_first(self):
+        scope = {
+            "tenant_id": "11111111-1111-4111-8111-111111111111",
+            "project_id": "22222222-2222-4222-8222-222222222222",
+            "environment_id": "33333333-3333-4333-8333-333333333333",
+            "workload_id": "44444444-4444-4444-8444-444444444444",
+            "eval_id": "a" * 64,
+        }
+        self.assertEqual(
+            provider_acceptance._route_scope_prefix(scope),
+            "dt/v3/"
+            + "/".join(
+                (
+                    scope["eval_id"],
+                    scope["tenant_id"],
+                    scope["project_id"],
+                    scope["environment_id"],
+                    scope["workload_id"],
+                )
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "scope"):
+            provider_acceptance._route_scope_prefix(
+                {key: value for key, value in scope.items() if key != "eval_id"}
+            )
+
     def test_frozen_gateway_baseten_wire_and_neutral_run_vector(self):
         acceptance = json.loads(FROZEN_GATEWAY_BASETEN_ACCEPTANCE)
 

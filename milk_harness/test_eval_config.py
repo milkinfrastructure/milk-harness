@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -20,6 +21,7 @@ SELF_HOST_EXAMPLE = ROOT / "examples/self-host/milk.eval.example.json"
 
 def eval_document():
     ids = [f"00000000-0000-4000-8000-0000000000{value:02d}" for value in range(10, 14)]
+    eval_id = "e" * 64
     images = {
         "gateway": "ghcr.io/milkinfrastructure/milk-gateway@sha256:" + "1" * 64,
         "jobs": "ghcr.io/milkinfrastructure/milk-jobs@sha256:" + "2" * 64,
@@ -32,6 +34,7 @@ def eval_document():
         "project_id": ids[1],
         "environment_id": ids[2],
         "workload_id": ids[3],
+        "eval_id": eval_id,
         "stores": {
             name: {
                 "type": "cloudflare_r2",
@@ -117,10 +120,10 @@ def eval_document():
         "schema_version": "milk.confirmed-production-run-config.v5",
         "provider_policy": {"primary": "baseten", "fallback": "modal"},
         "harness_source_commit": "d" * 40,
-        "campaign_id": "e" * 64,
+        "campaign_id": eval_id,
         "provider_project_id": "project_1",
         "provider_runtime": provider_runtime,
-        "scope_prefix": "dt/v2/" + "/".join(ids),
+        "scope_prefix": "dt/v3/" + "/".join((eval_id, *ids)),
         "images": images,
         "image_release_sha256": "f" * 64,
         "gateway_config_sha256": hashlib.sha256(canonical_json(gateway)).hexdigest(),
@@ -168,7 +171,7 @@ class EvalConfigTest(unittest.TestCase):
         value = json.loads(raw)
         validated, _, _ = validate_eval_document(
             raw,
-            hashlib.sha256(raw).hexdigest(),
+            value["manifest"]["campaign_id"],
             value["manifest"]["harness_source_commit"],
             ROOT,
         )
@@ -181,7 +184,8 @@ class EvalConfigTest(unittest.TestCase):
     def test_validates_and_materializes_the_single_eval_authority(self):
         value = eval_document()
         raw = canonical_json(value)
-        eval_id = hashlib.sha256(raw).hexdigest()
+        eval_id = value["manifest"]["campaign_id"]
+        self.assertNotEqual(eval_id, hashlib.sha256(raw).hexdigest())
         validated, manifest_raw, gateway_raw = validate_eval_document(
             raw, eval_id, "d" * 40, ROOT
         )
@@ -219,6 +223,9 @@ class EvalConfigTest(unittest.TestCase):
             )
             self.assertEqual(env["MILK_GATEWAY_IMAGE"], value["manifest"]["images"]["gateway"])
             self.assertEqual(env["MILK_GATEWAY_SOURCE_COMMIT"], "9" * 40)
+            self.assertEqual(
+                env["MILK_EVAL_CONFIG_SHA256"], hashlib.sha256(raw).hexdigest()
+            )
             self.assertEqual(env["MILK_CONTROL_R2_BUCKET"], "gateway-control")
             self.assertEqual(env["MILK_CREATE_AUTHORITY_READ_R2_BUCKET"], "create")
             self.assertEqual(env["MILK_CREATE_AUTHORITY_WRITE_R2_BUCKET"], "create")
@@ -235,25 +242,42 @@ class EvalConfigTest(unittest.TestCase):
             raw = canonical_json(changed)
             context = self.assertRaisesRegex(ValueError, message) if message else self.assertRaises(ValueError)
             with context:
-                validate_eval_document(raw, hashlib.sha256(raw).hexdigest(), "d" * 40, ROOT)
+                validate_eval_document(raw, value["manifest"]["campaign_id"], "d" * 40, ROOT)
 
         noncanonical = json.dumps(value, indent=2).encode()
         with self.assertRaisesRegex(ValueError, "canonical JSON"):
             validate_eval_document(
                 noncanonical,
-                hashlib.sha256(canonical_json(value)).hexdigest(),
+                value["manifest"]["campaign_id"],
                 "d" * 40,
                 ROOT,
             )
         with self.assertRaisesRegex(ValueError, "canonical JSON"):
             validate_eval_document(
                 canonical_json(value).removesuffix(b"\n"),
-                hashlib.sha256(canonical_json(value)).hexdigest(),
+                value["manifest"]["campaign_id"],
                 "d" * 40,
                 ROOT,
             )
         with self.assertRaisesRegex(ValueError, "eval ID"):
             validate_eval_document(canonical_json(value), "0" * 64, "d" * 40, ROOT)
+        cross_scope = copy.deepcopy(value)
+        cross_scope["manifest"]["scope_prefix"] = cross_scope["manifest"][
+            "scope_prefix"
+        ].replace(value["manifest"]["campaign_id"], "0" * 64, 1)
+        cross_scope["manifest_sha256"] = hashlib.sha256(
+            canonical_json(cross_scope["manifest"])
+        ).hexdigest()
+        rejected(cross_scope, "scope eval")
+        cross_gateway = copy.deepcopy(value)
+        cross_gateway["gateway_config"]["eval_id"] = "0" * 64
+        cross_gateway["manifest"]["gateway_config_sha256"] = hashlib.sha256(
+            canonical_json(cross_gateway["gateway_config"])
+        ).hexdigest()
+        cross_gateway["manifest_sha256"] = hashlib.sha256(
+            canonical_json(cross_gateway["manifest"])
+        ).hexdigest()
+        rejected(cross_gateway, "eval ID")
         rejected({**value, "manifest_sha256": "0" * 64}, "manifest SHA-256")
         drifted_gateway = {**value["gateway_config"], "tenant_id": "0" * 36}
         rejected({**value, "gateway_config": drifted_gateway}, "gateway config SHA-256")

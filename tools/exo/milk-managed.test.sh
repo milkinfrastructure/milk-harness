@@ -54,16 +54,21 @@ sha256_file() {
 
 admit_eval() {
   source_file=$1
-  eval_hash=$(sha256_file "$source_file")
-  mv -- "$source_file" "$test_root/evals/$eval_hash.json"
-  chmod 0440 "$test_root/evals/$eval_hash.json"
-  printf '%s\n' "$eval_hash"
+  admitted_eval_id=$2
+  mv -- "$source_file" "$test_root/evals/$admitted_eval_id.json"
+  chmod 0440 "$test_root/evals/$admitted_eval_id.json"
 }
 
-printf '{"schema_version":"milk.eval.test.v1","name":"primary"}\n' >"$test_root/primary.json"
-eval_id=$(admit_eval "$test_root/primary.json")
-printf '{"schema_version":"milk.eval.test.v1","name":"secondary"}\n' >"$test_root/secondary.json"
-second_eval_id=$(admit_eval "$test_root/secondary.json")
+eval_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+second_eval_id=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+printf '{"schema_version":"milk.eval.test.v1","manifest":{"campaign_id":"%s"},"gateway_config":{"eval_id":"%s"},"name":"primary"}\n' \
+  "$eval_id" "$eval_id" >"$test_root/primary.json"
+eval_confirmation_sha256=$(sha256_file "$test_root/primary.json")
+admit_eval "$test_root/primary.json" "$eval_id"
+printf '{"schema_version":"milk.eval.test.v1","manifest":{"campaign_id":"%s"},"gateway_config":{"eval_id":"%s"},"name":"secondary"}\n' \
+  "$second_eval_id" "$second_eval_id" >"$test_root/secondary.json"
+second_eval_confirmation_sha256=$(sha256_file "$test_root/secondary.json")
+admit_eval "$test_root/secondary.json" "$second_eval_id"
 
 dispatch_log=$test_root/dispatch.log
 list_log=$test_root/list.log
@@ -139,7 +144,7 @@ grep -Fxq 'production-loop.yml' "$dispatch_log"
 grep -Fxq 'github.com/milkinfrastructure/milk-harness' "$dispatch_log"
 grep -Fxq 'main' "$dispatch_log"
 grep -Fxq 'authorize_provider_creates=false' "$dispatch_log"
-grep -Fxq "confirmed_run_config_sha256=$eval_id" "$dispatch_log"
+grep -Fxq "confirmed_run_config_sha256=$eval_confirmation_sha256" "$dispatch_log"
 grep -Fxq "managed_request_id=$request_id" "$dispatch_log"
 grep -Fxq -- '--all' "$list_log"
 grep -Fxq -- '--branch' "$list_log"
@@ -155,6 +160,7 @@ rm -f "$dispatch_log" "$list_log" "$view_log"
 grep -Fxq 'github.com/example/milk-harness' "$dispatch_log"
 grep -Fxq 'self-host-loop.yml' "$dispatch_log"
 grep -Fxq 'stable' "$dispatch_log"
+grep -Fxq "confirmed_run_config_sha256=$second_eval_confirmation_sha256" "$dispatch_log"
 
 for invalid_target in \
   'MILK_MANAGED_REPOSITORY=example/milk-harness' \
@@ -207,7 +213,7 @@ chmod 0600 "$approval"
 request_id=$(sed -n '3p' "$state")
 [ "$(sed -n '4p' "$state")" = 202 ]
 grep -Fxq 'authorize_provider_creates=true' "$dispatch_log"
-grep -Fxq "confirmed_run_config_sha256=$eval_id" "$dispatch_log"
+grep -Fxq "confirmed_run_config_sha256=$eval_confirmation_sha256" "$dispatch_log"
 grep -Fxq "managed_request_id=$request_id" "$dispatch_log"
 
 rm -f "$dispatch_log"
@@ -249,8 +255,16 @@ missing_eval_id=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 [ "$(run status "$missing_eval_id")" = \
   "$(expected false "$missing_eval_id" blocked unknown false false)" ]
 
-printf '{"schema_version":"milk.eval.test.v1","name":"symlink"}\n' >"$test_root/symlink-source.json"
-symlink_eval_id=$(sha256_file "$test_root/symlink-source.json")
+wrong_binding_id=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+printf '{"schema_version":"milk.eval.test.v1","manifest":{"campaign_id":"%s"},"gateway_config":{"eval_id":"%s"}}\n' \
+  "$eval_id" "$wrong_binding_id" >"$test_root/evals/$wrong_binding_id.json"
+chmod 0440 "$test_root/evals/$wrong_binding_id.json"
+[ "$(run status "$wrong_binding_id")" = \
+  "$(expected false "$wrong_binding_id" blocked unknown false false)" ]
+
+symlink_eval_id=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+printf '{"schema_version":"milk.eval.test.v1","manifest":{"campaign_id":"%s"},"gateway_config":{"eval_id":"%s"},"name":"symlink"}\n' \
+  "$symlink_eval_id" "$symlink_eval_id" >"$test_root/symlink-source.json"
 ln -s "$test_root/symlink-source.json" "$test_root/evals/$symlink_eval_id.json"
 [ "$(run status "$symlink_eval_id")" = \
   "$(expected false "$symlink_eval_id" blocked unknown false false)" ]
