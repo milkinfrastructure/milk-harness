@@ -23,7 +23,7 @@ FROM scratch AS runtime-packages
 ADD --checksum=sha256:a693524543421b3a90f163ccb48d5ad0f5fd773b5c3b640acc461eace2cb01b6 https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/brotli-libs-1.1.0-r2.apk /packages/brotli-libs-1.1.0-r2.apk
 ADD --checksum=sha256:8fd45a340640da2a374e2238063a9b14c157c20ed033282cb71037e72972ea71 https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/bubblewrap-0.11.0-r1.apk /packages/bubblewrap-0.11.0-r1.apk
 ADD --checksum=sha256:1397ec9682ff6153e5d037965c76408e570ae6535ce479cc2af37436fdea52ce https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/c-ares-1.34.8-r0.apk /packages/c-ares-1.34.8-r0.apk
-ADD --checksum=sha256:d4cacca961a12fd1dfa9f8a36d9815b57bbf48281643203c155894427a580bb3 https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/expat-2.8.3-r0.apk /packages/expat-2.8.3-r0.apk
+ADD --checksum=sha256:128338718fadfaaf9f926fe349347edce7645c8ffd1ae2878ca3d807b23fa5c3 https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/libexpat-2.8.3-r0.apk /packages/libexpat-2.8.3-r0.apk
 ADD --checksum=sha256:42f4573799ffce0c7dd4954d2247eb882eb87360dc18637930624484ecfd1c90 https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/git-2.49.1-r0.apk /packages/git-2.49.1-r0.apk
 ADD --checksum=sha256:b8d9dc864aa8c68e93d1cc80d069d56f1ebbed9e8bd90a5fd9a6f2d183258fcc https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/git-init-template-2.49.1-r0.apk /packages/git-init-template-2.49.1-r0.apk
 ADD --checksum=sha256:9850759bbb16f1ff6d1a49dc99947ef1401e1c10e5ca24f8380e69ba19f077c9 https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/libcap2-2.78-r0.apk /packages/libcap2-2.78-r0.apk

@@ -667,6 +667,7 @@ class SchedulerTest(unittest.TestCase):
             "teacher_max_gpu_seconds": 3600,
             "teacher_max_calls": 10,
             "teacher_max_parallel_runs": 1,
+            "teacher_max_decisions": 4096,
             "student_train_runtime_image_reference": images["student_train"],
             "student_branch_runtime_image_reference": images["student_branch"],
             "student_recipe_sha256": "b" * 64,
@@ -705,6 +706,7 @@ class SchedulerTest(unittest.TestCase):
                 },
             },
             "teacher": {
+                "max_decisions": 4096,
                 "execution": {
                     "type": "gpu_job",
                     "runtime_image_reference": images["teacher"],
@@ -786,7 +788,7 @@ class SchedulerTest(unittest.TestCase):
             ),
         }
         manifest = {
-            "schema_version": "milk.confirmed-production-run-config.v3",
+            "schema_version": "milk.confirmed-production-run-config.v4",
             "provider_policy": {"primary": "baseten", "fallback": "modal"},
             "harness_source_commit": source_commit,
             "campaign_id": "e" * 64,
@@ -840,6 +842,67 @@ class SchedulerTest(unittest.TestCase):
             ),
             manifest,
         )
+        for invalid in (0, 4097, True):
+            invalid_contract = {
+                **contract,
+                "teacher_max_decisions": invalid,
+            }
+            invalid_manifest = {
+                **manifest,
+                "gateway_job_contract": invalid_contract,
+            }
+            invalid_raw = canonical_json(invalid_manifest)
+            with self.subTest(max_decisions=invalid), self.assertRaisesRegex(
+                ValueError, "confirmed gateway GPU job contract is invalid"
+            ):
+                verify_gateway_run_config(
+                    invalid_raw,
+                    hashlib.sha256(invalid_raw).hexdigest(),
+                    source_commit,
+                    root,
+                    gateway_raw,
+                    images["gateway"],
+                    "gateway-capture-access",
+                    "gateway-control-access",
+                )
+        missing_decisions = dict(contract)
+        del missing_decisions["teacher_max_decisions"]
+        missing_manifest = {**manifest, "gateway_job_contract": missing_decisions}
+        missing_raw = canonical_json(missing_manifest)
+        with self.assertRaisesRegex(
+            ValueError, "confirmed gateway GPU job contract is invalid"
+        ):
+            verify_gateway_run_config(
+                missing_raw,
+                hashlib.sha256(missing_raw).hexdigest(),
+                source_commit,
+                root,
+                gateway_raw,
+                images["gateway"],
+                "gateway-capture-access",
+                "gateway-control-access",
+            )
+        drifted_config = {
+            **gateway_config,
+            "teacher": {**gateway_config["teacher"], "max_decisions": 4095},
+        }
+        drifted_raw = canonical_json(drifted_config)
+        drifted_manifest = {
+            **manifest,
+            "gateway_config_sha256": hashlib.sha256(drifted_raw).hexdigest(),
+        }
+        drifted_manifest_raw = canonical_json(drifted_manifest)
+        with self.assertRaisesRegex(ValueError, "actual gateway config differs"):
+            verify_gateway_run_config(
+                drifted_manifest_raw,
+                hashlib.sha256(drifted_manifest_raw).hexdigest(),
+                source_commit,
+                root,
+                drifted_raw,
+                images["gateway"],
+                "gateway-capture-access",
+                "gateway-control-access",
+            )
         self.assertEqual(
             verify_gateway_ingest_run_config(
                 manifest_raw,
@@ -886,15 +949,15 @@ class SchedulerTest(unittest.TestCase):
                 images["gateway"],
                 changed_gateway_deployment,
             )
-        v2_manifest = {
+        v3_manifest = {
             **manifest,
-            "schema_version": "milk.confirmed-production-run-config.v2",
+            "schema_version": "milk.confirmed-production-run-config.v3",
         }
-        v2_raw = canonical_json(v2_manifest)
+        v3_raw = canonical_json(v3_manifest)
         with self.assertRaisesRegex(ValueError, "confirmed run config is invalid"):
             verify_gateway_run_config(
-                v2_raw,
-                hashlib.sha256(v2_raw).hexdigest(),
+                v3_raw,
+                hashlib.sha256(v3_raw).hexdigest(),
                 source_commit,
                 root,
                 gateway_raw,

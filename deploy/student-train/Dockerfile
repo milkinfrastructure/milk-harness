@@ -53,6 +53,7 @@ COPY deploy/models/qwen3-4b-instruct-2507/profile.json \
      deploy/models/qwen3-4b-instruct-2507/model.manifest.sha256 \
      deploy/models/qwen3-4b-instruct-2507/verify.py \
      ./models/qwen3-4b-instruct-2507/
+USER 0:0
 RUN test -x /usr/bin/setpriv && \
     printf '%s\n' student-train > /usr/share/milk/student-artifact-role && \
     chmod 0444 /usr/share/milk/student-artifact-role && \
@@ -63,5 +64,4 @@ RUN test -x /usr/bin/setpriv && \
 
 ENV PYTHONDONTWRITEBYTECODE=1
 LABEL org.opencontainers.image.licenses="MIT AND Apache-2.0"
-USER 0:0
 ENTRYPOINT ["/opt/dragontales/deploy/student-job.sh"]

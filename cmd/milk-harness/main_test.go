@@ -340,7 +340,7 @@ func TestDockerfilePinsCodexAndContainsNoProviderSurface(t *testing.T) {
 		"brotli-libs-1.1.0-r2.apk":        "a693524543421b3a90f163ccb48d5ad0f5fd773b5c3b640acc461eace2cb01b6",
 		"bubblewrap-0.11.0-r1.apk":        "8fd45a340640da2a374e2238063a9b14c157c20ed033282cb71037e72972ea71",
 		"c-ares-1.34.8-r0.apk":            "1397ec9682ff6153e5d037965c76408e570ae6535ce479cc2af37436fdea52ce",
-		"expat-2.8.3-r0.apk":              "d4cacca961a12fd1dfa9f8a36d9815b57bbf48281643203c155894427a580bb3",
+		"libexpat-2.8.3-r0.apk":           "128338718fadfaaf9f926fe349347edce7645c8ffd1ae2878ca3d807b23fa5c3",
 		"git-2.49.1-r0.apk":               "42f4573799ffce0c7dd4954d2247eb882eb87360dc18637930624484ecfd1c90",
 		"git-init-template-2.49.1-r0.apk": "b8d9dc864aa8c68e93d1cc80d069d56f1ebbed9e8bd90a5fd9a6f2d183258fcc",
 		"libcap2-2.78-r0.apk":             "9850759bbb16f1ff6d1a49dc99947ef1401e1c10e5ca24f8380e69ba19f077c9",

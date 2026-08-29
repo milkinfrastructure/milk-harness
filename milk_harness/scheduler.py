@@ -129,6 +129,7 @@ PROVIDER_LEASE_TTL_SECONDS = 15 * 60
 PROVIDER_LEASE_MAX_CLOCK_SKEW_SECONDS = 30
 PROVIDER_LEASE_ATTEMPTS = 8
 MAX_GATEWAY_INGEST_REFERENCES = 18
+MAX_TEACHER_DECISIONS = 4_096
 SUMMARY_KEYS = {
     "schema_version",
     "source",
@@ -1099,6 +1100,8 @@ def _gateway_job_contract(config):
             type(execution.get(name)) is not int or execution[name] <= 0
             for name in ("max_gpu_seconds", "max_calls", "max_parallel_runs")
         )
+        or type(teacher.get("max_decisions")) is not int
+        or not 1 <= teacher["max_decisions"] <= MAX_TEACHER_DECISIONS
         or not isinstance(teacher.get("student_recipe_sha256"), str)
         or HEX64.fullmatch(teacher["student_recipe_sha256"]) is None
     ):
@@ -1108,6 +1111,7 @@ def _gateway_job_contract(config):
         "teacher_max_gpu_seconds": execution["max_gpu_seconds"],
         "teacher_max_calls": execution["max_calls"],
         "teacher_max_parallel_runs": execution["max_parallel_runs"],
+        "teacher_max_decisions": teacher["max_decisions"],
         "student_train_runtime_image_reference": teacher.get(
             "student_train_runtime_image_reference"
         ),
@@ -1150,7 +1154,7 @@ def _validated_run_manifest(raw, confirmed_sha256, harness_source_commit, root):
     }
     if (
         set(manifest) != expected_keys
-        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v3"
+        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v4"
         or manifest.get("provider_policy")
         != {"primary": "baseten", "fallback": "modal"}
         or not isinstance(harness_source_commit, str)
@@ -1190,6 +1194,7 @@ def _validated_run_manifest(raw, confirmed_sha256, harness_source_commit, root):
             "teacher_max_gpu_seconds",
             "teacher_max_calls",
             "teacher_max_parallel_runs",
+            "teacher_max_decisions",
             "student_train_runtime_image_reference",
             "student_branch_runtime_image_reference",
             "student_recipe_sha256",
@@ -1208,6 +1213,10 @@ def _validated_run_manifest(raw, confirmed_sha256, harness_source_commit, root):
                 "teacher_max_calls",
                 "teacher_max_parallel_runs",
             )
+        )
+        or type(contract.get("teacher_max_decisions")) is not int
+        or not (
+            1 <= contract["teacher_max_decisions"] <= MAX_TEACHER_DECISIONS
         )
         or any(
             HEX64.fullmatch(contract.get(name) or "") is None
@@ -1337,7 +1346,7 @@ def verify_gateway_ingest_run_config(
         manifest_raw not in {canonical_manifest, canonical_manifest.removesuffix(b"\n")}
         or not isinstance(confirmed_sha256, str)
         or hashlib.sha256(canonical_manifest).hexdigest() != confirmed_sha256
-        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v3"
+        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v4"
         or manifest.get("provider_policy")
         != {"primary": "baseten", "fallback": "modal"}
         or not isinstance(manifest.get("images"), dict)

@@ -21,7 +21,7 @@ RUNTIME_PATH = Path(__file__).resolve().with_name("runtime.py")
 SPEC = importlib.util.spec_from_file_location("student_runtime", RUNTIME_PATH)
 runtime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runtime)
-PRODUCTION_RECIPE_SHA256 = "37334cf9060d960aa111be3d6825b6e38a5babc88e9bf7cfa49a198d2f43bc2e"
+PRODUCTION_RECIPE_SHA256 = "57d387f89549c49659638e3fcdf0e33fd99e3a82918cfbce0ffe3dbcd224251e"
 FIXTURE_TRAIN_IMAGE = "fixture/dragontales-student-train@sha256:" + "1" * 64
 FIXTURE_BRANCH_IMAGE = "fixture/dragontales-student-branch@sha256:" + "2" * 64
 
@@ -841,6 +841,10 @@ class StudentRuntimeTest(unittest.TestCase):
 
         self.assertIn("ghcr.io/primeintellect-ai/prime-rl@sha256:", train_dockerfile)
         self.assertNotIn("vllm/vllm-openai@sha256:", train_dockerfile)
+        self.assertLess(
+            train_dockerfile.index("USER 0:0"),
+            train_dockerfile.index("RUN test -x /usr/bin/setpriv"),
+        )
         self.assertIn('assert version("prime-rl") == "0.9.0"', train_dockerfile)
         self.assertIn('assert torch.version.cuda == "12.8"', train_dockerfile)
         self.assertNotIn("llmcompressor", train_dockerfile)
@@ -873,7 +877,7 @@ class StudentRuntimeTest(unittest.TestCase):
         )
         self.assertEqual(
             hashlib.sha256(branch_provenance_raw).hexdigest(),
-            "f7c4ddfcfb180a86743f7a97d184ede0e98d660af9d91f7aefa294f4cf7985c8",
+            "86a0d1814d3dc46d1750fb392c64464433aaf11ede6e63aa9db30b82e5bd2643",
         )
         self.assertEqual(
             train_provenance["schema_version"],

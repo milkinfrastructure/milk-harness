@@ -15,6 +15,9 @@ ADD --chmod=0444 --checksum=sha256:4265c11d33a6f688c211bfed87e4698b685473efe1d6f
 ADD --chmod=0444 --checksum=sha256:9fbf73688f8c18f7529b4fe592abd04015f81d1e58001e4bac73ffb2b39d7cc4 \
     https://files.pythonhosted.org/packages/44/0b/98fc6eb83333508ca5f44c52b3e287ea8137a0ad582714e2cbc67a02154b/datasets-5.0.1-py3-none-any.whl \
     /wheels/datasets-5.0.1-py3-none-any.whl
+ADD --chmod=0444 --checksum=sha256:1e1ce33e978ae97fcfcff5638477032b801c46c7c65cf717f95fbc2248f79a9d \
+    https://files.pythonhosted.org/packages/1e/77/dc8c558f7593132cf8fefec57c4f60c83b16941c574ac5f619abb3ae7933/dill-0.4.1-py3-none-any.whl \
+    /wheels/dill-0.4.1-py3-none-any.whl
 ADD --chmod=0444 --checksum=sha256:ecd0a012051abc20c1aa87328841efa8cade3ced65803046e38c2f03c0891fea \
     https://files.pythonhosted.org/packages/31/1e/9e366f36efc550f07d6737f199e3f6bffafdf28795d007f10a77dd274f5c/nvidia_nccl_cu12-2.29.7-py3-none-manylinux_2_18_x86_64.whl \
     /wheels/nvidia_nccl_cu12-2.29.7-py3-none-manylinux_2_18_x86_64.whl
@@ -92,6 +95,7 @@ RUN --mount=type=bind,from=wheels,source=/wheels,target=/wheels \
       /wheels/llmcompressor-0.13.0-py3-none-any.whl \
       /wheels/auto_round-0.14.2-py3-none-any.whl \
       /wheels/datasets-5.0.1-py3-none-any.whl \
+      /wheels/dill-0.4.1-py3-none-any.whl \
       /wheels/nvidia_nccl_cu12-2.29.7-py3-none-manylinux_2_18_x86_64.whl \
       /wheels/transformers-5.14.1-py3-none-any.whl \
       /wheels/fsspec-2026.6.0-py3-none-any.whl \
@@ -112,6 +116,7 @@ import torch
 assert version("llmcompressor") == "0.13.0"
 assert version("auto-round") == "0.14.2"
 assert version("datasets") == "5.0.1"
+assert version("dill") == "0.4.1"
 assert version("compressed-tensors") == "0.18.0"
 assert version("transformers") == "5.14.1"
 assert version("nvidia-nccl-cu12") == "2.29.7"

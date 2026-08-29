@@ -43,6 +43,12 @@
       "sha256": "9fbf73688f8c18f7529b4fe592abd04015f81d1e58001e4bac73ffb2b39d7cc4"
     },
     {
+      "name": "dill",
+      "version": "0.4.1",
+      "artifact": "dill-0.4.1-py3-none-any.whl",
+      "sha256": "1e1ce33e978ae97fcfcff5638477032b801c46c7c65cf717f95fbc2248f79a9d"
+    },
+    {
       "name": "nvidia-nccl-cu12",
       "version": "2.29.7",
       "artifact": "nvidia_nccl_cu12-2.29.7-py3-none-manylinux_2_18_x86_64.whl",
