@@ -15,7 +15,8 @@ MECHANICS_CONFIG = ROOT / "deploy/run-once.mechanics.json"
 class ProductionWorkflowTest(unittest.TestCase):
     def test_single_flight_workflow_runs_only_run_once(self):
         text = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn('cron: "17 * * * *"', text)
+        self.assertNotIn("schedule:", text)
+        self.assertNotIn("cron:", text)
         self.assertIn("workflow_dispatch:", text)
         self.assertIn("group: milk-harness-run-once-production", text)
         self.assertIn("cancel-in-progress: false", text)
@@ -38,15 +39,23 @@ class ProductionWorkflowTest(unittest.TestCase):
             set(re.findall(r"secrets\.([A-Z0-9_]+)", text)),
             {
                 "BASETEN_API_KEY",
+                "MILK_CONTROL_R2_ACCOUNT_ID",
                 "MILK_CONTROL_R2_ACCESS_KEY_ID",
+                "MILK_CONTROL_R2_BUCKET",
                 "MILK_CONTROL_R2_SECRET_ACCESS_KEY",
                 "MILK_CONTROL_R2_SESSION_TOKEN",
             },
         )
         self.assertEqual(set(re.findall(r"vars\.([A-Z0-9_]+)", text)), set())
         self.assertIn("environment: milk-provider-jobs-prod", text)
-        self.assertIn("MILK_CONTROL_R2_ACCOUNT_ID: d8a5175f959d3dbd4084db9fcab1c44c", text)
-        self.assertIn("MILK_CONTROL_R2_BUCKET: milk-prod-control", text)
+        self.assertIn(
+            "MILK_CONTROL_R2_ACCOUNT_ID: ${{ secrets.MILK_CONTROL_R2_ACCOUNT_ID }}",
+            text,
+        )
+        self.assertIn(
+            "MILK_CONTROL_R2_BUCKET: ${{ secrets.MILK_CONTROL_R2_BUCKET }}",
+            text,
+        )
 
     def test_example_is_the_exact_public_run_config(self):
         raw = CONFIG.read_bytes()

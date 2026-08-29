@@ -59,7 +59,7 @@ also fixes both classification sample fields at 750, and readiness requires 750
 classified independent sessions.
 Set `candidate_basis_points` to `0` when the desired proposal is baseline-only.
 
-The scheduled deployment uses these environment values:
+The fixed reconciliation function uses these environment values:
 
 ```text
 MILK_CONTROL_R2_ACCOUNT_ID
@@ -77,25 +77,23 @@ two calls per pass, stops new calls at $20 cumulative accounted spend, and has
 an absolute $25 ceiling. Token rates must be set to current conservative rates
 for those limits to be meaningful.
 
-## Scheduled operation
+## Invocation boundary
 
-[`production-loop.yml`](.github/workflows/production-loop.yml) runs one pass
-hourly or on manual dispatch. Its fixed concurrency group allows only one pass
-at a time. The current deployment reuses the existing
-`milk-provider-jobs-prod` environment secrets `BASETEN_API_KEY`,
-`MILK_CONTROL_R2_ACCESS_KEY_ID`, `MILK_CONTROL_R2_SECRET_ACCESS_KEY`, and the
-optional `MILK_CONTROL_R2_SESSION_TOKEN`. The non-secret account, bucket,
-scope, model, and budget are checked in, so the workflow has no mutable config
-variable.
+Milk Man owns scheduled invocation. [`production-loop.yml`](.github/workflows/production-loop.yml)
+is a manual bridge for verification and rollback only. Its fixed concurrency
+group allows only one pass at a time. All object-store and provider credentials,
+including account and bucket, come from the selected GitHub environment. The
+checked-in run config fixes scope, model, sample limits, call limits, and spend
+limits.
 
-Scheduled and manual runs execute the same deterministic command. An LLM may
+Milk Man and the manual bridge call the same deterministic function. An LLM may
 propose a later config, but changing the active config remains an operator
 action.
 
 Manual dispatch may select the checked-in `mechanics` profile. It uses a
 different scope UUID, requires 100 independent sessions, and may emit a 5%
 unsigned candidate proposal. It cannot contribute to production readiness or
-activate that proposal. Scheduled runs always select `production`.
+activate that proposal. Production remains the default manual profile.
 
 ## Development
 
