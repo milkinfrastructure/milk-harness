@@ -182,6 +182,8 @@ def settings(
     model_alias,
     registry_secret,
     config_secret,
+    control_store_account_id,
+    control_store_identity_sha256,
     control_store_access_key_secret,
     control_store_secret_key_secret,
     control_store_session_token_secret=None,
@@ -192,6 +194,11 @@ def settings(
         raise ValueError("model alias is invalid")
     if registry_secret != "DOCKER_REGISTRY_ghcr.io":
         raise ValueError("GHCR registry secret must be named DOCKER_REGISTRY_ghcr.io")
+    control_store_account_id = shared.identifier(
+        control_store_account_id, "control-store account ID"
+    )
+    if not _matches(HEX64, control_store_identity_sha256):
+        raise ValueError("control-store identity hash is invalid")
     names = {
         "registry_secret": registry_secret,
         "config_secret": shared.identifier(config_secret, "config secret name"),
@@ -213,6 +220,8 @@ def settings(
         "student_branch_image": shared.immutable_ghcr_image(student_branch_image),
         "student_job_id": student_job_id,
         "model_alias": model_alias,
+        "control_store_account_id": control_store_account_id,
+        "control_store_identity_sha256": control_store_identity_sha256,
         **names,
     }
 
@@ -272,6 +281,17 @@ def truss_config(values, run_id):
         f"{session_read}"
         "export MILK_CONTROL_STORE_ACCESS_KEY_ID "
         f"MILK_CONTROL_STORE_SECRET_ACCESS_KEY{session_export}\n"
+        "python3 -c '\n"
+        "import hashlib, json, os, re\n"
+        "account = os.environ.get(\"MILK_CONTROL_STORE_ACCOUNT_ID\")\n"
+        "access = os.environ.get(\"MILK_CONTROL_STORE_ACCESS_KEY_ID\")\n"
+        "expected = os.environ.get(\"MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256\")\n"
+        "values = (account, access)\n"
+        "valid = all(value and not any(character.isspace() for character in value) for value in values)\n"
+        "raw = (json.dumps({\"account_id\": account, \"access_key_id\": access}, ensure_ascii=False, separators=(\",\", \":\"), sort_keys=True) + \"\\n\").encode()\n"
+        "if not valid or re.fullmatch(\"[0-9a-f]{64}\", expected or \"\") is None or hashlib.sha256(raw).hexdigest() != expected:\n"
+        "    raise SystemExit(64)\n"
+        "'\n"
         "/usr/local/bin/dragontales-gateway "
         "--config /tmp/dragontales/gateway.json materialize-student-winner "
         '--student-job-id "$DRAGONTALES_STUDENT_JOB_ID" '
@@ -279,6 +299,8 @@ def truss_config(values, run_id):
         "> /tmp/dragontales/materialize.stdout\n"
         "unset MILK_CONTROL_STORE_ACCESS_KEY_ID "
         "MILK_CONTROL_STORE_SECRET_ACCESS_KEY MILK_CONTROL_STORE_SESSION_TOKEN\n"
+        "unset MILK_CONTROL_STORE_ACCOUNT_ID "
+        "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256\n"
         f"{isolation}\n"
         "cat /tmp/dragontales/materialize.stdout\n"
         "exec /opt/dragontales/deploy/student-job.sh serve "
@@ -317,6 +339,9 @@ def truss_config(values, run_id):
         "environment_variables:\n"
         f"  DRAGONTALES_STUDENT_JOB_ID: {json.dumps(values['student_job_id'])}\n"
         f"  DRAGONTALES_MODEL_ALIAS: {json.dumps(values['model_alias'])}\n"
+        f"  MILK_CONTROL_STORE_ACCOUNT_ID: {json.dumps(values['control_store_account_id'])}\n"
+        "  MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256: "
+        f"{json.dumps(values['control_store_identity_sha256'])}\n"
         "resources:\n"
         "  accelerator: H100\n"
         "secrets:\n"

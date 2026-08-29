@@ -1,8 +1,14 @@
 # Milk Harness
 
-Milk Harness is the operator-side control loop for [`milk-gateway`](https://github.com/milkinfrastructure/milk-gateway). Each pass validates one operator-admitted eval document, runs `gateway tick --once` over completed traffic and durable per-eval counts in R2, reconciles disposable provider jobs and route state, then exits. The fixed [production workflow](.github/workflows/production-loop.yml) is the only clock. There is no resident manager, database, queue, or third service.
+Milk Harness is the operator-side control loop for [`milk-gateway`](https://github.com/milkinfrastructure/milk-gateway). Every five-minute pass reloads and validates the exact `MILK_EVAL_CONFIG_JSON`, runs `gateway tick --once` over completed traffic and durable per-eval counts in R2, reconciles disposable provider jobs and route state, then exits. The fixed [production workflow](.github/workflows/production-loop.yml) is the only clock. There is no resident manager, database, queue, or third service.
 
 The current hosted pilot is Stripe-like at the SDK boundary but single-tenant: one gateway deployment owns one tenant, project, environment, and workload scope. It is not a shared multi-customer endpoint.
+
+| User | Managed surface | Current support |
+| --- | --- | --- |
+| Hosted customer | Official SDK base URL and one `dt_live_...` key | Pilot, after the live qualification gate passes |
+| Milk operator | Gateway, eval, R2, providers, routes, and release evidence | Complete maintained production path |
+| External self-hoster | Gateway plus the local config/control smoke | Provider images and custom domains are not turnkey yet |
 
 The customer path is three steps:
 
@@ -16,7 +22,7 @@ For the shortest no-cloud start, run the bounded config/control smoke in [`examp
 
 No local Mac GPU is used. The gateway and scheduler are CPU-only; only an explicitly confirmed provider job can start a cloud GPU.
 
-The MIT-licensed gateway and harness source repositories are public. Runtime OCI images remain private during production qualification. Source publication does not imply a production-qualified hosted release; the complete cloud proof below is still incomplete.
+The MIT-licensed gateway and harness source repositories are public. Runtime OCI images remain private during production qualification. The complete cloud proof has not run, so the hosted release remains unqualified.
 
 ## Product contract
 
@@ -25,7 +31,7 @@ One canonical `milk.eval.v1` document contains every non-secret setting for one 
 - tenant, project, environment, and workload scope;
 - hard call and decision limits;
 - gateway stores and immutable release identities;
-- Baseten-primary/Modal-fallback provider policy and exact provider resources;
+- stage-specific Baseten and Modal policy plus exact provider resources;
 - teacher, student, route, and budget policy.
 
 Production admits the exact document through two repository variables:
@@ -40,7 +46,7 @@ MILK_EVAL_ID=<stable campaign/eval ID embedded in the manifest and gateway confi
 The workflow does not discover arbitrary configs from object storage. Each pass revalidates those admitted bytes, then reads completed traces and per-eval control state from R2. This keeps configuration explicit while R2 remains the authority for counts, claims, budgets, results, and routes.
 
 Every manual dispatch also carries that stable identity as `managed_eval_id`.
-All three production jobs run only when it equals the active repository
+Every production job runs only when it equals the active repository
 `MILK_EVAL_ID`; a missing or stale manual identity runs nothing. Scheduled runs
 use the active repository identity directly.
 
@@ -64,9 +70,11 @@ Paid work has three gates:
 - a pessimistic reservation inside the campaign budget;
 - a confirmed manual dispatch whose hash matches the exact admitted outer eval document.
 
-The current campaign ceiling is `$1,000`. New paid work stops at `$850`, preserving `$150` for running work and teardown. Scheduled runs cannot authorize provider creates.
+The provider ledger has a `$1,000` GPU-authorization ceiling. New GPU work stops at `$850`, preserving `$150` for running work and teardown. It is not an invoice cap for Cloudflare, OpenAI, or another billing surface. The first cloud proof separately reserves at most `$15` for its fixed and non-GPU work, so its exact authorization envelope is `$175`: `$160` GPU plus `$15` external. Scheduled runs cannot authorize provider creates.
 
 The cloud-mechanics eval starts with one 20-call teacher job. No later provider create is authorized until a Baseten-selected job proves the exact private image and profile, all 20 calls ready within the live latency target, `logs_source_complete=true`, `oom_source_complete=true`, `oom_matched_record_count=0`, and zero compute after termination. A Modal-selected job can produce mechanics results but cannot pass this Baseten gate.
+
+After teacher admission, disposable jobs may use Modal fallback. Winner serving is currently Modal-only; Baseten winner deployment remains disabled until its non-root, secret-free runtime contract is qualified.
 
 ## Exo integration
 
@@ -88,7 +96,13 @@ Production uses three GitHub environments:
 - `milk-provider-jobs-prod`
 - `milk-route-control-prod`
 
+Those environments bind fourteen distinct least-privilege R2 access-key pairs across seven buckets. A credential identity is the canonical pair `account_id + access_key_id`; the bucket and required capabilities are validated separately. Reusing one credential across buckets therefore fails even if the bucket names differ. Two identities are provider-workload roles: capture read-only and control read-write. Only their access-key IDs reach the scheduler host for identity verification. Provider requests bind the expected identity hashes and secret-object names; Baseten or Modal injects the values, and the provider launch wrapper verifies the injected access-key ID before the unchanged GPU image entrypoint can do storage or model work.
+
 The production workflow is [`production-loop.yml`](.github/workflows/production-loop.yml). Keep only that production workflow disabled until all three environments, the two eval variables, provider resources, and object-store credentials are complete. Offline CI in [`offline-gates.yml`](.github/workflows/offline-gates.yml) can run without production credentials or paid work. Enabling the production workflow starts the five-minute reconciliation clock; it does not by itself authorize paid work.
+
+Follow the ordered [`production runbook`](docs/reference/production-runbook.md) for release, gateway deployment, workflow activation, one-use proof dispatches, and final evidence checks.
+
+The mechanics proof uses the existing typed GPT-OSS teacher profile. Hosted GLM is the next explicit typed teacher profile after mechanics reaches the production gate; it uses the same eval and scheduler contract rather than a generic provider framework.
 
 The current release-candidate admission records these compressed `linux/amd64` sizes:
 
@@ -127,7 +141,19 @@ Current qualification evidence and remaining gates are recorded in [`docs/refere
 
 Offline tests, the self-host smoke, public source, published images, and generated mechanics traffic do not prove a production deployment. One passing 20-call teacher job is only the first provider gate.
 
-A synthetic cloud-mechanics eval uses ID `959caacb397004bf3e60f13613da50f4ed3160a65d18b178c3d996398e29b5a0`, 320 decisions partitioned as 63 TRAIN, 91 DEV, and 166 CALIBRATION, `max_calls=20`, `max_gpu_seconds=3600`, and `max_parallel_runs=1`. Its first Baseten-selected job is the teacher admission gate above. With a 3,600-second winner bound, its pessimistic GPU reservation is `$160`: `$130` for 16 teacher jobs, `$5.625` for train/merge, `$16.875` for three branches, and `$7.50` for the winner. It tests the cloud chain only; none of its generated traffic or results satisfy the real-traffic production gates below. The run remains inside the `$1,000` ceiling and `$850` new-work cutoff.
+A synthetic cloud-mechanics eval uses ID `959caacb397004bf3e60f13613da50f4ed3160a65d18b178c3d996398e29b5a0`, 320 decisions partitioned as 63 TRAIN, 91 DEV, and 166 CALIBRATION, `max_calls=20`, `max_gpu_seconds=3600`, and `max_parallel_runs=1`. Its first Baseten-selected job is the teacher admission gate above. The eval validator requires those exact limits plus a 3,600-second, `$7.50` winner bound. At the conservative `$0.125` per GPU-minute reservation rate, the maximum admitted workload is `$142.50`: `$120` for 16 teacher jobs, `$3.75` for train/merge, `$11.25` for three branches, and `$7.50` for the winner. The `$160` GPU ceiling therefore includes `$17.50` of headroom; the separately approved external reserve is `$15`, producing a `$175` all-in authorization envelope. It tests the cloud chain only; none of its generated traffic or results satisfy the real-traffic production gates below.
+
+Its official-SDK proof is one fixed `gpt-5.4` contract with SHA-256 `cf9e41c3220544bc163a6dfb82721154a8e078c9db3c9fa86a148a84ea275263`:
+
+| Step | SDK calls | Baseline | Candidate | Completion-token cap |
+| --- | ---: | ---: | ---: | ---: |
+| Deployment baseline | 1 | 1 | 0 | 128 |
+| Generated mechanics | 320 | 320 | 0 | 128 |
+| Candidate | 1 | 0 | 1 | 128 |
+| Saturation fallback | 2 | 1 | 1 | 3,840 |
+| **Total** | **324** | **322** | **2** |  |
+
+The 320-call mechanics step is one-shot. Before network traffic, the operator writes a create-only intent to route-evidence R2. The intent binds the exact outer eval digest, inner v6 manifest, gateway source and tool digests, gateway config, store credential identity, and proof contract. A valid content-free, create-only receipt makes a retry a no-op; an intent without a receipt is ambiguous and is never replayed.
 
 Production qualification requires one complete live chain:
 

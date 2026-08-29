@@ -17,6 +17,59 @@ from milk_harness.scheduler import (
 ROOT = Path(__file__).parents[1]
 WORKFLOW = ROOT / ".github/workflows/production-loop.yml"
 OFFLINE_WORKFLOW = ROOT / ".github/workflows/offline-gates.yml"
+EXPECTED_WORKFLOW_SECRETS = {
+    "BASETEN_API_KEY",
+    "CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN",
+    "MILK_CAPTURE_STORE_ACCESS_KEY_ID",
+    "MILK_CAPTURE_STORE_SECRET_ACCESS_KEY",
+    "MILK_CAPTURE_STORE_SESSION_TOKEN",
+    "MILK_CONTROL_R2_ACCESS_KEY_ID",
+    "MILK_CONTROL_R2_SECRET_ACCESS_KEY",
+    "MILK_CONTROL_R2_SESSION_TOKEN",
+    "MILK_CONTROL_STORE_ACCESS_KEY_ID",
+    "MILK_CONTROL_STORE_SECRET_ACCESS_KEY",
+    "MILK_CONTROL_STORE_SESSION_TOKEN",
+    "MILK_CREATE_AUTHORITY_READ_R2_ACCESS_KEY_ID",
+    "MILK_CREATE_AUTHORITY_READ_R2_SECRET_ACCESS_KEY",
+    "MILK_CREATE_AUTHORITY_READ_R2_SESSION_TOKEN",
+    "MILK_CREATE_AUTHORITY_WRITE_R2_ACCESS_KEY_ID",
+    "MILK_CREATE_AUTHORITY_WRITE_R2_SECRET_ACCESS_KEY",
+    "MILK_CREATE_AUTHORITY_WRITE_R2_SESSION_TOKEN",
+    "MILK_EVIDENCE_R2_ACCESS_KEY_ID",
+    "MILK_EVIDENCE_R2_SECRET_ACCESS_KEY",
+    "MILK_EVIDENCE_R2_SESSION_TOKEN",
+    "MILK_GATEWAY_CONTAINER_ADMIN_KEY",
+    "MILK_GATEWAY_INGEST_CONTROL_R2_ACCESS_KEY_ID",
+    "MILK_GATEWAY_INGEST_CONTROL_R2_SECRET_ACCESS_KEY",
+    "MILK_GATEWAY_INGEST_CONTROL_R2_SESSION_TOKEN",
+    "MILK_GATEWAY_INGEST_ROUTE_R2_ACCESS_KEY_ID",
+    "MILK_GATEWAY_INGEST_ROUTE_R2_SECRET_ACCESS_KEY",
+    "MILK_GATEWAY_INGEST_ROUTE_R2_SESSION_TOKEN",
+    "MILK_GATEWAY_SOURCE_READ_TOKEN",
+    "MILK_GHCR_PULL_TOKEN",
+    "MILK_GHCR_PULL_USERNAME",
+    "MILK_MECHANICS_CREDENTIAL_JSON",
+    "MILK_MODAL_CANDIDATE_API_KEY",
+    "MILK_OPS_LOG_R2_ACCESS_KEY_ID",
+    "MILK_OPS_LOG_R2_SECRET_ACCESS_KEY",
+    "MILK_OPS_LOG_R2_SESSION_TOKEN",
+    "MILK_PROVIDER_GPU_CAPTURE_R2_ACCESS_KEY_ID",
+    "MILK_PROVIDER_GPU_CONTROL_R2_ACCESS_KEY_ID",
+    "MILK_ROUTE_CONTROL_R2_ACCESS_KEY_ID",
+    "MILK_ROUTE_CONTROL_R2_SECRET_ACCESS_KEY",
+    "MILK_ROUTE_CONTROL_R2_SESSION_TOKEN",
+    "MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID",
+    "MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY",
+    "MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN",
+    "MILK_ROUTE_ROUTE_R2_ACCESS_KEY_ID",
+    "MILK_ROUTE_ROUTE_R2_SECRET_ACCESS_KEY",
+    "MILK_ROUTE_ROUTE_R2_SESSION_TOKEN",
+    "MILK_ROUTE_SECRET_HEX",
+    "MILK_ROUTE_SIGNING_KEY_PEM",
+    "MILK_ROUTE_SMOKE_CREDENTIAL_JSON",
+    "MODAL_TOKEN_ID",
+    "MODAL_TOKEN_SECRET",
+}
 
 
 class SchedulerWorkflowTest(unittest.TestCase):
@@ -24,10 +77,14 @@ class SchedulerWorkflowTest(unittest.TestCase):
     def setUpClass(cls):
         cls.text = WORKFLOW.read_text(encoding="utf-8")
         cls.gateway, remainder = cls.text.split("\n  provider-jobs:", 1)
-        cls.provider, cls.route = remainder.split("\n  route-control:", 1)
+        cls.provider, remainder = remainder.split("\n  route-control:", 1)
+        cls.route, cls.mechanics = remainder.split("\n  mechanics-traffic:", 1)
         run_start = cls.provider.index("started_at=$(date")
         run_end = cls.provider.index("          status=$?", run_start)
         cls.provider_container = cls.provider[run_start:run_end]
+        store_env_start = cls.provider.index("          provider_store_env=(")
+        store_env_end = cls.provider.index("\n          )", store_env_start)
+        cls.provider_store_env = cls.provider[store_env_start:store_env_end]
         ingest_start = cls.provider.index('if [ "$status" -eq 0 ]; then', run_end)
         ingest_end = cls.provider.index("completed_at=$(date", ingest_start)
         cls.gateway_ingest = cls.provider[ingest_start:ingest_end]
@@ -48,7 +105,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
                 self.text.split("\njobs:\n", 1)[1],
                 flags=re.MULTILINE,
             ),
-            ["gateway-tick", "provider-jobs", "route-control"],
+            ["gateway-tick", "provider-jobs", "route-control", "mechanics-traffic"],
         )
 
     def test_cron_and_manual_false_reconcile_while_manual_create_is_confirmed(self):
@@ -188,6 +245,13 @@ class SchedulerWorkflowTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, self.gateway)
         self.assertIn("environment: milk-provider-jobs-prod", self.provider)
+        for identity in (
+            "MILK_PROVIDER_GPU_CAPTURE_R2_ACCESS_KEY_ID",
+            "MILK_PROVIDER_GPU_CONTROL_R2_ACCESS_KEY_ID",
+        ):
+            self.assertIn(identity, self.provider)
+            self.assertNotIn(identity, self.provider_container)
+            self.assertNotIn(identity, self.provider_store_env)
         for forbidden in ("MILK_CAPTURE_STORE_", "SIGNING"):
             self.assertNotIn(forbidden, self.provider)
         for forbidden in (
@@ -205,6 +269,137 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertNotIn("write", self.text.split("concurrency:", 1)[0])
         self.assertIn("persist-credentials: false", self.gateway)
         self.assertIn("persist-credentials: false", self.provider)
+
+    def test_mechanics_traffic_is_one_manual_confirmed_independent_job(self):
+        workflow_header = self.text.split("\njobs:\n", 1)[0]
+        mechanics_input = workflow_header.split(
+            "authorize_mechanics_traffic:", 1
+        )[1].split("confirmed_run_config_sha256:", 1)[0]
+        self.assertIn("required: true", mechanics_input)
+        self.assertIn("default: false", mechanics_input)
+        self.assertIn("type: boolean", mechanics_input)
+
+        job_header = self.mechanics.split("\n    steps:", 1)[0]
+        self.assertNotIn("needs:", job_header)
+        self.assertNotIn("github.event_name == 'schedule'", job_header)
+        self.assertIn("github.event_name == 'workflow_dispatch'", job_header)
+        self.assertIn("inputs.authorize_mechanics_traffic == true", job_header)
+        self.assertIn(
+            "vars.MILK_EVAL_ID == "
+            "'959caacb397004bf3e60f13613da50f4ed3160a65d18b178c3d996398e29b5a0'",
+            job_header,
+        )
+        self.assertIn("inputs.managed_eval_id == vars.MILK_EVAL_ID", job_header)
+        self.assertIn("timeout-minutes: 60", job_header)
+        self.assertIn("environment: milk-route-control-prod", job_header)
+        self.assertIn("Materialize exact active eval", self.mechanics)
+        self.assertIn("repository: milkinfrastructure/milk-gateway", self.mechanics)
+        self.assertIn(
+            "ref: ${{ steps.eval.outputs.gateway_source_commit }}", self.mechanics
+        )
+        self.assertGreaterEqual(self.mechanics.count("persist-credentials: false"), 2)
+        self.assertIn(
+            '[ "$(git -C "$gateway_source" rev-parse --verify HEAD)" = '
+            '"$MILK_GATEWAY_SOURCE_COMMIT" ]',
+            self.mechanics,
+        )
+        self.assertIn(
+            '--provided-sha256 "$MILK_MECHANICS_CONFIRMATION"', self.mechanics
+        )
+        self.assertIn('--expected-sha256 "$MILK_EVAL_CONFIG_SHA256"', self.mechanics)
+        self.assertIn(
+            "npm ci --ignore-scripts --no-audit --no-fund --prefix \"$gateway_source\"",
+            self.mechanics,
+        )
+        self.assertLess(
+            self.mechanics.index("npm ci --ignore-scripts"),
+            self.mechanics.index("credential=$scratch/mechanics-credential.json"),
+        )
+        self.assertIn("python3 -m milk_harness.mechanics_operator", self.mechanics)
+        for argument in (
+            "--manifest",
+            "--confirm-manifest-sha256",
+            "--confirm-eval-sha256",
+            "--gateway-source-root",
+            "--gateway-source-commit",
+            "--gateway-config",
+            "--gateway-config-sha256",
+            "--gateway-credential",
+            "--node",
+        ):
+            self.assertIn(argument, self.mechanics)
+        self.assertIn(
+            '--confirm-manifest-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256"',
+            self.mechanics,
+        )
+        self.assertIn(
+            '--confirm-eval-sha256 "$MILK_EVAL_CONFIG_SHA256"', self.mechanics
+        )
+        self.assertIn('--gateway-config "$MILK_GATEWAY_CONFIG_PATH"', self.mechanics)
+        self.assertIn("credential_json=${credential_json%$'\\n'}", self.mechanics)
+        self.assertIn("printf '%s\\n' \"$credential_json\"", self.mechanics)
+        self.assertIn("umask 077", self.mechanics)
+        self.assertIn("env -i", self.mechanics)
+        self.assertIn("durable receipt verified", self.mechanics)
+
+    def test_mechanics_operator_receives_only_its_exact_credentials(self):
+        mechanics_secrets = set(
+            re.findall(r"secrets\.([A-Z0-9_]+)", self.mechanics)
+        )
+        self.assertEqual(
+            mechanics_secrets,
+            {
+                "MILK_MECHANICS_CREDENTIAL_JSON",
+                "MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID",
+                "MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY",
+                "MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN",
+            },
+        )
+        self.assertEqual(
+            self.text.count("secrets.MILK_MECHANICS_CREDENTIAL_JSON"), 1
+        )
+        self.assertNotIn(
+            "MILK_MECHANICS_CREDENTIAL_JSON",
+            self.text.split("\n  mechanics-traffic:", 1)[0],
+        )
+
+        operator_environment = self.mechanics.split("operator_env=(", 1)[1].split(
+            "\n          )", 1
+        )[0]
+        names = set(
+            re.findall(r"^\s+([A-Z][A-Z0-9_]*)=", operator_environment, re.MULTILINE)
+        )
+        self.assertEqual(
+            names,
+            {
+                "HOME",
+                "LANG",
+                "PATH",
+                "PYTHONPATH",
+                "MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID",
+                "MILK_ROUTE_EVIDENCE_R2_BUCKET",
+                "MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID",
+                "MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY",
+            },
+        )
+        self.assertIn("env -i", operator_environment)
+        self.assertIn(
+            "operator_env+=(MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN=",
+            self.mechanics,
+        )
+        for forbidden in (
+            "BASETEN_",
+            "CLOUDFLARE_",
+            "MODAL_",
+            "MILK_CAPTURE_",
+            "MILK_CONTROL_",
+            "MILK_CREATE_AUTHORITY_",
+            "MILK_GATEWAY_",
+            "MILK_GHCR_",
+            "MILK_MECHANICS_CREDENTIAL_JSON",
+            "MILK_PROVIDER_",
+        ):
+            self.assertNotIn(forbidden, operator_environment)
 
     def test_generation_completion_uses_typed_gateway_status_and_job_name(self):
         tick = self.gateway.index('"${gateway_command[@]}" tick --once')
@@ -471,11 +666,43 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertIn('deploy/cloudflare/node_modules/.bin', self.route)
         self.assertIn("openai-production-smoke.mjs", self.route)
         self.assertIn("https://api.dragontales.milkinfrastructure.com/v1", self.route)
-        self.assertIn("milk.official-openai-sdk-route-smoke.v1", self.route)
-        self.assertIn("milk.official-openai-sdk-route-smoke-intent.v1", self.route)
-        self.assertIn("milk.official-openai-sdk-saturation-fallback-smoke.v1", self.route)
+        self.assertIn("milk.official-openai-sdk-route-smoke.v2", self.route)
+        self.assertIn("milk.official-openai-sdk-route-smoke-intent.v2", self.route)
+        self.assertIn("milk.official-openai-sdk-saturation-fallback-smoke.v2", self.route)
         self.assertIn(
+            "milk.official-openai-sdk-saturation-fallback-smoke-intent.v2",
+            self.route,
+        )
+        for stale in (
+            "milk.official-openai-sdk-route-smoke.v1",
+            "milk.official-openai-sdk-route-smoke-intent.v1",
+            "milk.official-openai-sdk-saturation-fallback-smoke.v1",
             "milk.official-openai-sdk-saturation-fallback-smoke-intent.v1",
+        ):
+            self.assertNotIn(stale, self.route)
+        self.assertIn(
+            '"proof_contract_sha256": '
+            '"cf9e41c3220544bc163a6dfb82721154a8e078c9db3c9fa86a148a84ea275263"',
+            self.route,
+        )
+        self.assertIn('credential.get("model") != "gpt-5.4"', self.route)
+        self.assertIn('value.get("proof_step") == "candidate"', self.route)
+        self.assertIn(
+            'value.get("proof_step") == "saturation_fallback"', self.route
+        )
+        self.assertIn('value.get("sdk_request_count") == 1', self.route)
+        self.assertIn('value.get("sdk_request_count") == 2', self.route)
+        self.assertIn('value.get("baseline_request_count") == 0', self.route)
+        self.assertIn('value.get("baseline_request_count") == 1', self.route)
+        self.assertGreaterEqual(
+            self.route.count('value.get("candidate_request_count") == 1'), 2
+        )
+        self.assertIn('value.get("max_completion_tokens") == 128', self.route)
+        self.assertIn('value.get("max_completion_tokens") == 3840', self.route)
+        self.assertIn('"max_completion_tokens": 128', self.route)
+        self.assertIn('"max_completion_tokens": 3840', self.route)
+        self.assertIn(
+            '"proof_contract_sha256": expected["proof_contract_sha256"]',
             self.route,
         )
         self.assertIn("--saturation-fallback", self.route)
@@ -566,11 +793,20 @@ class SchedulerWorkflowTest(unittest.TestCase):
             "application_version": "--gateway-container-application-version",
             "container_image": "--gateway-container-image",
             "worker_version_id": "--gateway-worker-version-id",
+            "official_openai_sdk_baseline_receipt_sha256": (
+                "--gateway-official-openai-sdk-baseline-receipt-sha256"
+            ),
         }
         self.assertEqual(set(arguments), set(GATEWAY_DEPLOYMENT_FIELDS))
         for argument in arguments.values():
             self.assertIn(argument, self.provider)
             self.assertIn(argument, self.route)
+        self.assertEqual(
+            self.text.count(
+                "--gateway-official-openai-sdk-baseline-receipt-sha256"
+            ),
+            3,
+        )
         provider_validate = self.provider.index("--phase gateway_anchor")
         self.assertLess(provider_validate, self.provider.index("serve-baseten"))
         provider_base_validate = self.provider.index("--phase provider_base")
@@ -717,7 +953,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
         variables = set(re.findall(r"vars\.([A-Z0-9_]+)", self.text))
         secrets = set(re.findall(r"secrets\.([A-Z0-9_]+)", self.text))
         self.assertEqual(variables, {"MILK_EVAL_ID", "MILK_EVAL_CONFIG_JSON"})
-        self.assertEqual(len(secrets), 48)
+        self.assertEqual(secrets, EXPECTED_WORKFLOW_SECRETS)
         for removed in (
             "MILK_GATEWAY_TICK_CONFIG_JSON",
             "MILK_GATEWAY_INGEST_CONFIG_JSON",
@@ -729,7 +965,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
             self.text,
             r"secrets\.MILK_[A-Z0-9_]+_R2_(?:ACCOUNT_ID|BUCKET)",
         )
-        self.assertEqual(self.text.count("python3 -m milk_harness.eval_config"), 3)
+        self.assertEqual(self.text.count("python3 -m milk_harness.eval_config"), 4)
         self.assertIn("group: milk-production-loop-v1-${{ vars.MILK_EVAL_ID }}", self.text)
         self.assertIn(
             '--confirmed-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256"',
@@ -753,7 +989,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
                     break
                 body.append(candidate)
             scripts.append(textwrap.dedent("\n".join(body)))
-        self.assertEqual(len(scripts), 7)
+        self.assertEqual(len(scripts), 9)
         for script in scripts:
             result = subprocess.run(
                 ["bash", "-n"], input=script, text=True, capture_output=True, check=False

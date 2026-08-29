@@ -6,9 +6,16 @@ import stat
 import tempfile
 import unittest
 
-from milk_harness.eval_config import MAX_EVAL_BYTES, main, validate_eval_document
+from milk_harness.eval_config import (
+    MAX_EVAL_BYTES,
+    MECHANICS_PROOF_EVAL_ID,
+    _validate_mechanics_proof_budget,
+    main,
+    validate_eval_document,
+)
 from milk_harness.evidence import canonical_json
 from milk_harness.scheduler import (
+    PRODUCTION_PROOF_BUDGET_FIXED,
     RUN_ARTIFACTS,
     RUN_LIMITS,
     store_identity_sha256,
@@ -61,7 +68,7 @@ def eval_document():
     }
     provider_runtime = {
         "baseten_team_name": "milk-production",
-        "winner_model_alias": "milk-student",
+        "winner_model_alias": "gpt-5.4",
         "modal_workspace_id": "ws-1",
         "modal_workspace_name": "milk-workspace",
         "modal_environment_id": "en-1",
@@ -97,6 +104,16 @@ def eval_document():
         "gateway_capture": ("gateway-account", "gateway-capture", "capture-reader"),
         "gateway_control": ("gateway-account", "gateway-control", "control-reader"),
         "provider_control": ("gateway-account", "gateway-control", "provider-reader"),
+        "provider_gpu_capture": (
+            "gateway-account",
+            "gateway-capture",
+            "provider-gpu-capture",
+        ),
+        "provider_gpu_control": (
+            "gateway-account",
+            "gateway-control",
+            "provider-gpu-control",
+        ),
         "evidence": ("evidence-account", "evidence", "evidence-writer"),
         "ops_log": ("ops-account", "ops", "ops-writer"),
         "create_authority_write": ("create-account", "create", "create-writer"),
@@ -111,13 +128,14 @@ def eval_document():
         "source_commit": "9" * 40,
         "image_admission_sha256": "a" * 64,
         "release_sha256": "b" * 64,
+        "official_openai_sdk_baseline_receipt_sha256": "d" * 64,
         "application_id": "00000000-0000-4000-8000-000000000020",
         "application_version": 7,
         "container_image": "registry.cloudflare.com/milk-gateway@sha256:" + "c" * 64,
         "worker_version_id": "00000000-0000-4000-8000-000000000021",
     }
     manifest = {
-        "schema_version": "milk.confirmed-production-run-config.v5",
+        "schema_version": "milk.confirmed-production-run-config.v6",
         "provider_policy": {"primary": "baseten", "fallback": "modal"},
         "harness_source_commit": "d" * 40,
         "campaign_id": eval_id,
@@ -149,6 +167,10 @@ def eval_document():
             for relative in RUN_ARTIFACTS
         },
         "limits": RUN_LIMITS,
+        "proof_budget": {
+            **PRODUCTION_PROOF_BUDGET_FIXED,
+            "gateway_tool_sha256": "1" * 64,
+        },
     }
     return {
         "schema_version": "milk.eval.v1",
@@ -165,7 +187,112 @@ def eval_document():
     }
 
 
+def mechanics_proof_document():
+    value = eval_document()
+    old_eval_id = value["manifest"]["campaign_id"]
+    gateway = value["gateway_config"]
+    gateway["eval_id"] = MECHANICS_PROOF_EVAL_ID
+    gateway["teacher"]["max_decisions"] = 320
+    gateway["teacher"]["execution"].update(
+        {
+            "max_calls": 20,
+            "max_gpu_seconds": 3_600,
+            "max_parallel_runs": 1,
+        }
+    )
+    gateway["route"] = {
+        "winner_max_wall_seconds": 3_600,
+        "winner_max_cost_microusd": 7_500_000,
+    }
+    manifest = value["manifest"]
+    manifest["campaign_id"] = MECHANICS_PROOF_EVAL_ID
+    manifest["scope_prefix"] = manifest["scope_prefix"].replace(
+        old_eval_id, MECHANICS_PROOF_EVAL_ID, 1
+    )
+    manifest["gateway_job_contract"].update(
+        {
+            "teacher_max_calls": 20,
+            "teacher_max_decisions": 320,
+            "teacher_max_gpu_seconds": 3_600,
+            "teacher_max_parallel_runs": 1,
+        }
+    )
+    manifest["gateway_config_sha256"] = hashlib.sha256(
+        canonical_json(gateway)
+    ).hexdigest()
+    value["manifest_sha256"] = hashlib.sha256(canonical_json(manifest)).hexdigest()
+    return value
+
+
 class EvalConfigTest(unittest.TestCase):
+    def test_mechanics_proof_gpu_limits_fit_the_fixed_reservation(self):
+        value = mechanics_proof_document()
+        raw = canonical_json(value)
+        validated, _, _ = validate_eval_document(
+            raw,
+            MECHANICS_PROOF_EVAL_ID,
+            "d" * 40,
+            ROOT,
+        )
+        self.assertEqual(validated, value)
+        self.assertEqual(
+            _validate_mechanics_proof_budget(
+                value["gateway_config"], value["manifest"]
+            ),
+            142_500_000,
+        )
+
+        below_reservation = copy.deepcopy(value["manifest"])
+        below_reservation["proof_budget"]["gpu_reservation_microusd"] = 142_499_999
+        with self.assertRaisesRegex(ValueError, "exceeds its budget"):
+            _validate_mechanics_proof_budget(
+                value["gateway_config"], below_reservation
+            )
+
+    def test_mechanics_proof_rejects_any_gateway_gpu_limit_drift(self):
+        cases = (
+            (("teacher", "max_decisions"), 319),
+            (("teacher", "execution", "max_calls"), 19),
+            (("teacher", "execution", "max_gpu_seconds"), 3_599),
+            (("teacher", "execution", "max_parallel_runs"), 2),
+            (("route", "winner_max_wall_seconds"), 3_599),
+            (("route", "winner_max_cost_microusd"), 7_499_999),
+        )
+        for path, replacement in cases:
+            value = mechanics_proof_document()
+            target = value["gateway_config"]
+            for name in path[:-1]:
+                target = target[name]
+            target[path[-1]] = replacement
+            value["manifest"]["gateway_config_sha256"] = hashlib.sha256(
+                canonical_json(value["gateway_config"])
+            ).hexdigest()
+            value["manifest_sha256"] = hashlib.sha256(
+                canonical_json(value["manifest"])
+            ).hexdigest()
+            with self.subTest(path=path), self.assertRaisesRegex(
+                ValueError, "mechanics proof gateway GPU limits"
+            ):
+                validate_eval_document(
+                    canonical_json(value),
+                    MECHANICS_PROOF_EVAL_ID,
+                    "d" * 40,
+                    ROOT,
+                )
+
+        value = mechanics_proof_document()
+        value["manifest"]["gateway_job_contract"]["teacher_max_calls"] = 19
+        value["manifest_sha256"] = hashlib.sha256(
+            canonical_json(value["manifest"])
+        ).hexdigest()
+        with self.assertRaisesRegex(ValueError, "mechanics proof gateway GPU limits"):
+            validate_eval_document(
+                canonical_json(value),
+                MECHANICS_PROOF_EVAL_ID,
+                "d" * 40,
+                ROOT,
+            )
+
     def test_bundled_self_host_example_is_a_bounded_nonsecret_config_smoke(self):
         raw = SELF_HOST_EXAMPLE.read_bytes()
         value = json.loads(raw)
@@ -227,6 +354,26 @@ class EvalConfigTest(unittest.TestCase):
                 env["MILK_EVAL_CONFIG_SHA256"], hashlib.sha256(raw).hexdigest()
             )
             self.assertEqual(env["MILK_CONTROL_R2_BUCKET"], "gateway-control")
+            self.assertEqual(
+                env["MILK_PROVIDER_GPU_CAPTURE_R2_BUCKET"], "gateway-capture"
+            )
+            self.assertEqual(
+                env["MILK_PROVIDER_GPU_CAPTURE_R2_ACCOUNT_ID"], "gateway-account"
+            )
+            self.assertEqual(
+                env["MILK_PROVIDER_GPU_CONTROL_R2_BUCKET"], "gateway-control"
+            )
+            self.assertEqual(
+                env["MILK_PROVIDER_GPU_CONTROL_R2_ACCOUNT_ID"], "gateway-account"
+            )
+            self.assertEqual(
+                env["MILK_PROVIDER_GPU_CAPTURE_IDENTITY_SHA256"],
+                value["manifest"]["store_identity_sha256s"]["provider_gpu_capture"],
+            )
+            self.assertEqual(
+                env["MILK_PROVIDER_GPU_CONTROL_IDENTITY_SHA256"],
+                value["manifest"]["store_identity_sha256s"]["provider_gpu_control"],
+            )
             self.assertEqual(env["MILK_CREATE_AUTHORITY_READ_R2_BUCKET"], "create")
             self.assertEqual(env["MILK_CREATE_AUTHORITY_WRITE_R2_BUCKET"], "create")
             self.assertEqual(env["CLOUDFLARE_ACCOUNT_ID"], "cloudflare-production-account")

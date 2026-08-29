@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import subprocess
 import tempfile
 import threading
 import types
@@ -918,14 +919,35 @@ def provider_arguments(release_sha256):
         ),
         registry_secret="milk-registry",
         config_secret="milk-config",
+        capture_store_account_id="gateway-account",
+        capture_store_identity_sha256="5" * 64,
         capture_store_access_key_secret="capture-access",
         capture_store_secret_key_secret="capture-secret",
         capture_store_session_token_secret=None,
+        control_store_account_id="gateway-account",
+        control_store_identity_sha256="6" * 64,
         control_store_access_key_secret="control-access",
         control_store_secret_key_secret="control-secret",
         control_store_session_token_secret=None,
         image_release_sha256=release_sha256,
     )
+
+
+PREFLIGHT_SECRET_NAMES = ("registry-secret", "config-secret")
+
+
+def preflight_secrets(team="milk", names=PREFLIGHT_SECRET_NAMES):
+    return {
+        "secrets": [
+            {
+                "id": f"secret-{index}",
+                "created_at": "2026-08-27T20:00:00Z",
+                "name": name,
+                "team_name": team,
+            }
+            for index, name in enumerate(names)
+        ]
+    }
 
 
 class BasetenJobsTests(unittest.TestCase):
@@ -977,12 +999,17 @@ class BasetenJobsTests(unittest.TestCase):
 
         def handler(method, path, body, query):
             self.assertEqual((method, body, query), ("GET", None, None))
-            return project if path.endswith(PROJECT) else capacity
+            if path.endswith(PROJECT):
+                return project
+            return preflight_secrets() if path == "/secrets" else capacity
 
         with tempfile.TemporaryDirectory() as root:
             jobs = self.jobs(root, FakeTransport(handler))
-            receipt = jobs.preflight("milk")
+            receipt = jobs.preflight("milk", PREFLIGHT_SECRET_NAMES)
         project_raw = (json.dumps(project, separators=(",", ":")) + "\n").encode()
+        secrets_raw = (
+            json.dumps(preflight_secrets(), separators=(",", ":")) + "\n"
+        ).encode()
         capacity_raw = (json.dumps(capacity, separators=(",", ":")) + "\n").encode()
         self.assertEqual(receipt["outcome"], "ready")
         self.assertEqual(
@@ -991,9 +1018,40 @@ class BasetenJobsTests(unittest.TestCase):
                 b"milk.baseten-training-preflight.v1\0"
                 + project_raw
                 + b"\0"
+                + secrets_raw
+                + b"\0"
                 + capacity_raw
             ).hexdigest(),
         )
+
+    def test_baseten_preflight_rejects_missing_or_wrong_team_secret_metadata(self):
+        project = {
+            "training_project": {
+                "id": PROJECT,
+                "name": "milk-production",
+                "created_at": "2026-08-27T20:00:00Z",
+                "updated_at": "2026-08-27T20:00:00Z",
+                "latest_job": None,
+                "team_name": "milk",
+            }
+        }
+        for label, secrets in (
+            ("missing", preflight_secrets(names=(PREFLIGHT_SECRET_NAMES[0],))),
+            ("wrong-team", preflight_secrets(team="other-team")),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as root:
+                def handler(_method, path, _body, _query):
+                    if path.endswith(PROJECT):
+                        return project
+                    if path == "/secrets":
+                        return secrets
+                    self.fail("capacity checked after invalid secret metadata")
+
+                jobs = self.jobs(root, FakeTransport(handler))
+                with self.assertRaisesRegex(
+                    ValueError, "secret metadata is absent or ambiguous"
+                ):
+                    jobs.preflight("milk", PREFLIGHT_SECRET_NAMES)
 
     def test_baseten_preflight_falls_back_before_create_without_h100_capacity(self):
         project = {
@@ -1019,11 +1077,13 @@ class BasetenJobsTests(unittest.TestCase):
         }
 
         def handler(_method, path, _body, _query):
-            return project if path.endswith(PROJECT) else capacity
+            if path.endswith(PROJECT):
+                return project
+            return preflight_secrets() if path == "/secrets" else capacity
 
         with tempfile.TemporaryDirectory() as root:
             jobs = self.jobs(root, FakeTransport(handler))
-            receipt = jobs.preflight("milk")
+            receipt = jobs.preflight("milk", PREFLIGHT_SECRET_NAMES)
         self.assertEqual(
             (receipt["outcome"], receipt["reason"], receipt["status"]),
             ("retryable_unavailable", "capability_unavailable", None),
@@ -1048,11 +1108,13 @@ class BasetenJobsTests(unittest.TestCase):
         def handler(_method, path, _body, _query):
             if path.endswith(PROJECT):
                 return project
+            if path == "/secrets":
+                return preflight_secrets()
             return urllib.error.HTTPError(path, 404, "missing", None, None)
 
         with tempfile.TemporaryDirectory() as root:
             jobs = self.jobs(root, FakeTransport(handler))
-            receipt = jobs.preflight("milk")
+            receipt = jobs.preflight("milk", PREFLIGHT_SECRET_NAMES)
         self.assertEqual(
             (receipt["outcome"], receipt["reason"], receipt["status"]),
             ("retryable_unavailable", "capability_unavailable", None),
@@ -1073,10 +1135,14 @@ class BasetenJobsTests(unittest.TestCase):
         def handler(_method, path, _body, _query):
             if path.endswith(PROJECT):
                 return project
+            if path == "/secrets":
+                return preflight_secrets()
             return urllib.error.HTTPError(path, 429, "limited", None, None)
 
         with tempfile.TemporaryDirectory() as root:
-            receipt = self.jobs(root, FakeTransport(handler)).preflight("milk")
+            receipt = self.jobs(root, FakeTransport(handler)).preflight(
+                "milk", PREFLIGHT_SECRET_NAMES
+            )
         self.assertEqual(
             (receipt["outcome"], receipt["reason"], receipt["status"]),
             ("retryable_unavailable", "rate_limited", 429),
@@ -1097,10 +1163,14 @@ class BasetenJobsTests(unittest.TestCase):
         def handler(_method, path, _body, _query):
             if path.endswith(PROJECT):
                 return project
+            if path == "/secrets":
+                return preflight_secrets()
             return TimeoutError("capacity timed out")
 
         with tempfile.TemporaryDirectory() as root:
-            receipt = self.jobs(root, FakeTransport(handler)).preflight("milk")
+            receipt = self.jobs(root, FakeTransport(handler)).preflight(
+                "milk", PREFLIGHT_SECRET_NAMES
+            )
         self.assertEqual(
             (receipt["outcome"], receipt["reason"], receipt["status"]),
             ("retryable_unavailable", "timeout", None),
@@ -1264,6 +1334,7 @@ class BasetenJobsTests(unittest.TestCase):
             source.rindex("if provider_creates_authorized:"),
         )
         self.assertIn('"--candidate-key-socket", required=True', source)
+        self.assertIn('"--winner-model-alias", required=True', source)
         self.assertNotIn("candidate-key-output-fifo", source)
 
     def test_candidate_key_delivery_requires_owner_only_socket_ack(self):
@@ -1438,6 +1509,8 @@ class BasetenJobsTests(unittest.TestCase):
                     SCOPE_PREFIX,
                     "--lease-token",
                     str(token_path),
+                    "--winner-model-alias",
+                    "gpt-5.4",
                 ]
                 with (
                     self.subTest(alias=alias),
@@ -1503,6 +1576,8 @@ class BasetenJobsTests(unittest.TestCase):
                 "control-secret",
                 "--image-release-sha256",
                 "f" * 64,
+                "--winner-model-alias",
+                "gpt-5.4",
             ]
             with (
                 mock.patch.dict(
@@ -1641,6 +1716,8 @@ class BasetenJobsTests(unittest.TestCase):
                 SCOPE_PREFIX,
                 "--lease-token",
                 str(token_path),
+                "--winner-model-alias",
+                "gpt-5.4",
             ]
             with (
                 mock.patch.dict(
@@ -1718,6 +1795,8 @@ class BasetenJobsTests(unittest.TestCase):
             jobs_module.CANDIDATE_KEY_SOCKET,
             "--scope-prefix",
             SCOPE_PREFIX,
+            "--winner-model-alias",
+            "gpt-5.4",
         ]
         with tempfile.TemporaryDirectory() as root:
             current = dt.datetime.now(UTC).replace(microsecond=0)
@@ -1884,6 +1963,115 @@ class BasetenJobsTests(unittest.TestCase):
             arguments.control_store_access_key_secret = "capture-access"
             with self.assertRaisesRegex(ValueError, "pairwise distinct"):
                 settings_from_arguments(arguments, store)
+            arguments = provider_arguments(release["release_sha256"])
+            arguments.control_store_identity_sha256 = (
+                arguments.capture_store_identity_sha256
+            )
+            with self.assertRaisesRegex(ValueError, "store identities"):
+                settings_from_arguments(arguments, store)
+
+    def test_modal_commands_bind_expected_provider_store_identities(self):
+        settings = {
+            "capture_store_account_id": "capture-account",
+            "capture_store_identity_sha256": "5" * 64,
+            "control_store_account_id": "control-account",
+            "control_store_identity_sha256": "6" * 64,
+        }
+        teacher_command, teacher_environment = jobs_module._modal_execution_command(
+            {"kind": "teacher_run", "teacher_run_id": "7" * 64},
+            settings,
+        )
+        self.assertEqual(
+            teacher_environment,
+            {
+                "DRAGONTALES_TEACHER_RUN_ID": "7" * 64,
+                "MILK_CAPTURE_STORE_ACCOUNT_ID": "capture-account",
+                "MILK_EXPECTED_CAPTURE_STORE_IDENTITY_SHA256": "5" * 64,
+                "MILK_CONTROL_STORE_ACCOUNT_ID": "control-account",
+                "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": "6" * 64,
+            },
+        )
+        self.assertLess(
+            teacher_command[2].index("hashlib.sha256(raw).hexdigest()"),
+            teacher_command[2].index("/opt/dragontales/job.sh"),
+        )
+        student_command, student_environment = jobs_module._modal_execution_command(
+            {"kind": "student_train_merge", "student_job_id": "8" * 64},
+            settings,
+        )
+        self.assertEqual(
+            student_environment,
+            {
+                "DRAGONTALES_STUDENT_JOB_ID": "8" * 64,
+                "MILK_CONTROL_STORE_ACCOUNT_ID": "control-account",
+                "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": "6" * 64,
+            },
+        )
+        self.assertLess(
+            student_command[2].index("hashlib.sha256(raw).hexdigest()"),
+            student_command[2].index("/opt/dragontales/deploy/student-job.sh"),
+        )
+        winner_command, winner_environment = jobs_module._modal_winner_command(
+            "8" * 64,
+            "milk-student",
+            settings,
+        )
+        self.assertEqual(
+            winner_environment,
+            {
+                "DRAGONTALES_MODEL_ALIAS": "milk-student",
+                "DRAGONTALES_STUDENT_JOB_ID": "8" * 64,
+                "MILK_CONTROL_STORE_ACCOUNT_ID": "control-account",
+                "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": "6" * 64,
+            },
+        )
+        self.assertLess(
+            winner_command[2].index("hashlib.sha256(raw).hexdigest()"),
+            winner_command[2].index("materialize-student-winner"),
+        )
+        self.assertLess(
+            winner_command[2].index(
+                "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256; cat"
+            ),
+            winner_command[2].index("student-job.sh serve"),
+        )
+
+    def test_modal_winner_rejects_wrong_control_identity_before_storage(self):
+        settings = {
+            "control_store_account_id": "control-account",
+            "control_store_identity_sha256": "0" * 64,
+        }
+        command, environment = jobs_module._modal_winner_command(
+            "8" * 64,
+            "milk-student",
+            settings,
+        )
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            marker = root / "gateway-called"
+            gateway = root / "gateway"
+            gateway.write_text(
+                f"#!/bin/sh\n: > {marker}\nexit 0\n",
+                encoding="utf-8",
+            )
+            gateway.chmod(0o700)
+            shell = command[2].replace(
+                "/usr/local/bin/dragontales-gateway", str(gateway)
+            ).replace("/tmp/dragontales", str(root / "dragontales"))
+            result = subprocess.run(
+                ["/bin/sh", "-c", shell],
+                env={
+                    **environment,
+                    "DRAGONTALES_CONFIG_JSON": "{}",
+                    "DRAGONTALES_CANDIDATE_API_KEY": "candidate-key",
+                    "MILK_CONTROL_STORE_ACCESS_KEY_ID": "control-access",
+                    "MILK_CONTROL_STORE_SECRET_ACCESS_KEY": "control-secret",
+                },
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 64)
+            self.assertFalse(marker.exists())
 
     def test_provider_images_are_exact_private_milk_repositories(self):
         with tempfile.TemporaryDirectory() as root:
@@ -2182,7 +2370,8 @@ class BasetenJobsTests(unittest.TestCase):
             "--gateway-bin",
             "--tick-timeout-seconds",
             "--max-dispatches",
-            "MILK_CAPTURE_STORE_",
+            'from_environment(prefix="MILK_CAPTURE_STORE_")',
+            'os.environ.get("MILK_CAPTURE_STORE_',
             "dragontales-gateway",
             "--allow-provider-creates",
         ):

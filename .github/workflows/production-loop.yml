@@ -14,6 +14,11 @@ on:
         required: true
         default: false
         type: boolean
+      authorize_mechanics_traffic:
+        description: Confirm this run may send the fixed 320-request mechanics proof
+        required: true
+        default: false
+        type: boolean
       confirmed_run_config_sha256:
         description: SHA-256 of the exact canonical outer eval document
         required: false
@@ -221,6 +226,8 @@ jobs:
       MILK_CONTROL_R2_ACCESS_KEY_ID: ${{ secrets.MILK_CONTROL_R2_ACCESS_KEY_ID }}
       MILK_CONTROL_R2_SECRET_ACCESS_KEY: ${{ secrets.MILK_CONTROL_R2_SECRET_ACCESS_KEY }}
       MILK_CONTROL_R2_SESSION_TOKEN: ${{ secrets.MILK_CONTROL_R2_SESSION_TOKEN }}
+      MILK_PROVIDER_GPU_CAPTURE_R2_ACCESS_KEY_ID: ${{ secrets.MILK_PROVIDER_GPU_CAPTURE_R2_ACCESS_KEY_ID }}
+      MILK_PROVIDER_GPU_CONTROL_R2_ACCESS_KEY_ID: ${{ secrets.MILK_PROVIDER_GPU_CONTROL_R2_ACCESS_KEY_ID }}
       MILK_EVIDENCE_R2_ACCESS_KEY_ID: ${{ secrets.MILK_EVIDENCE_R2_ACCESS_KEY_ID }}
       MILK_EVIDENCE_R2_SECRET_ACCESS_KEY: ${{ secrets.MILK_EVIDENCE_R2_SECRET_ACCESS_KEY }}
       MILK_EVIDENCE_R2_SESSION_TOKEN: ${{ secrets.MILK_EVIDENCE_R2_SESSION_TOKEN }}
@@ -330,7 +337,8 @@ jobs:
               /tmp/milk-candidate-runtime.*) sudo rm -rf -- "$candidate_socket_dir" ;;
             esac
           }
-          trap cleanup EXIT HUP INT TERM
+          trap cleanup EXIT
+          trap 'exit 130' HUP INT TERM
           docker_config=$scratch/docker
           stdout=$scratch/stdout
           stderr=$scratch/stderr
@@ -379,7 +387,8 @@ jobs:
               --gateway-container-application-id "$MILK_GATEWAY_CONTAINER_APPLICATION_ID" \
               --gateway-container-application-version "$MILK_GATEWAY_CONTAINER_APPLICATION_VERSION" \
               --gateway-container-image "$MILK_GATEWAY_CONTAINER_IMAGE" \
-              --gateway-worker-version-id "$MILK_GATEWAY_WORKER_VERSION_ID"
+              --gateway-worker-version-id "$MILK_GATEWAY_WORKER_VERSION_ID" \
+              --gateway-official-openai-sdk-baseline-receipt-sha256 "$MILK_GATEWAY_OFFICIAL_OPENAI_SDK_BASELINE_RECEIPT_SHA256"
           python3 -m milk_harness.scheduler validate-run-config \
             --phase gateway_ingest \
             --manifest "$provider_gateway_run_config" \
@@ -444,8 +453,12 @@ jobs:
             --image-release-sha256 "$MILK_IMAGE_RELEASE_SHA256"
             --registry-secret "$MILK_BASETEN_REGISTRY_SECRET"
             --config-secret "$MILK_BASETEN_CONFIG_SECRET"
+            --capture-store-account-id "$MILK_PROVIDER_GPU_CAPTURE_R2_ACCOUNT_ID"
+            --capture-store-identity-sha256 "$MILK_PROVIDER_GPU_CAPTURE_IDENTITY_SHA256"
             --capture-store-access-key-secret "$MILK_BASETEN_CAPTURE_ACCESS_SECRET"
             --capture-store-secret-key-secret "$MILK_BASETEN_CAPTURE_SECRET_SECRET"
+            --control-store-account-id "$MILK_PROVIDER_GPU_CONTROL_R2_ACCOUNT_ID"
+            --control-store-identity-sha256 "$MILK_PROVIDER_GPU_CONTROL_IDENTITY_SHA256"
             --control-store-access-key-secret "$MILK_BASETEN_CONTROL_ACCESS_SECRET"
             --control-store-secret-key-secret "$MILK_BASETEN_CONTROL_SECRET_SECRET"
             --modal-workspace-id "$MILK_MODAL_WORKSPACE_ID"
@@ -512,6 +525,7 @@ jobs:
               --gateway-container-application-version "$MILK_GATEWAY_CONTAINER_APPLICATION_VERSION" \
               --gateway-container-image "$MILK_GATEWAY_CONTAINER_IMAGE" \
               --gateway-worker-version-id "$MILK_GATEWAY_WORKER_VERSION_ID" \
+              --gateway-official-openai-sdk-baseline-receipt-sha256 "$MILK_GATEWAY_OFFICIAL_OPENAI_SDK_BASELINE_RECEIPT_SHA256" \
               --registry-secret "$MILK_BASETEN_REGISTRY_SECRET" \
               --config-secret "$MILK_BASETEN_CONFIG_SECRET" \
               --capture-access-secret "$MILK_BASETEN_CAPTURE_ACCESS_SECRET" \
@@ -1052,6 +1066,7 @@ jobs:
               --gateway-container-application-version "$MILK_GATEWAY_CONTAINER_APPLICATION_VERSION" \
               --gateway-container-image "$MILK_GATEWAY_CONTAINER_IMAGE" \
               --gateway-worker-version-id "$MILK_GATEWAY_WORKER_VERSION_ID" \
+              --gateway-official-openai-sdk-baseline-receipt-sha256 "$MILK_GATEWAY_OFFICIAL_OPENAI_SDK_BASELINE_RECEIPT_SHA256" \
               --gateway-anchor-output "$gateway_anchor"
 
           gateway_env=(
@@ -1470,16 +1485,20 @@ jobs:
               raise SystemExit("invalid smoke student job identity")
           credential_raw = Path(credential_name).read_bytes()
           credential = json.loads(credential_raw)
+          if credential.get("model") != "gpt-5.4":
+              raise ValueError("route proof model differs from the fixed production contract")
           if kind == "candidate":
               request = {
+                  "max_completion_tokens": 128,
                   "messages": [{"role": "user", "content": "Reply with only OK."}],
                   "model": credential["model"],
               }
-              prefix = f"route-smokes/v1/{student_job_id}"
-              intent_prefix = f"route-smoke-intents/v1/{student_job_id}"
-              intent_schema = "milk.official-openai-sdk-route-smoke-intent.v1"
+              prefix = f"route-smokes/v2/{student_job_id}"
+              intent_prefix = f"route-smoke-intents/v2/{student_job_id}"
+              intent_schema = "milk.official-openai-sdk-route-smoke-intent.v2"
           else:
               request = {
+                  "max_completion_tokens": 3840,
                   "messages": [{
                       "role": "user",
                       "content": "Write OK on 4096 separate lines. Do not summarize or stop early.",
@@ -1487,13 +1506,15 @@ jobs:
                   "model": credential["model"],
                   "stream": True,
               }
-              prefix = f"route-saturation-fallback-smokes/v1/{student_job_id}"
-              intent_prefix = f"route-saturation-fallback-smoke-intents/v1/{student_job_id}"
-              intent_schema = "milk.official-openai-sdk-saturation-fallback-smoke-intent.v1"
+              prefix = f"route-saturation-fallback-smokes/v2/{student_job_id}"
+              intent_prefix = f"route-saturation-fallback-smoke-intents/v2/{student_job_id}"
+              intent_schema = "milk.official-openai-sdk-saturation-fallback-smoke-intent.v2"
           if credential["reasoning_effort"] is not None:
               request["reasoning_effort"] = credential["reasoning_effort"]
           expected = {
               "endpoint_sha256": hashlib.sha256(b"https://api.dragontales.milkinfrastructure.com/v1").hexdigest(),
+              "model": "gpt-5.4",
+              "proof_contract_sha256": "cf9e41c3220544bc163a6dfb82721154a8e078c9db3c9fa86a148a84ea275263",
               "request_sha256": hashlib.sha256(json.dumps(request, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
               "traffic_cohort_sha256": hashlib.sha256(credential["cohort_id"].encode()).hexdigest(),
               "traffic_key_sha256": hashlib.sha256(credential["api_key"].encode()).hexdigest(),
@@ -1513,14 +1534,22 @@ jobs:
                   raise ValueError("route smoke receipt is not canonical")
               if kind == "candidate":
                   keys = {
-                      "artifact_sha256", "authenticated", "candidate_sha256", "choice_count",
-                      "content_retained", "deployment_sha256", "endpoint_sha256", "finish_reason",
-                      "http_status", "request_sha256", "response_bytes", "response_sha256",
-                      "route_revision", "route_target", "schema_version", "sdk", "sdk_version",
-                      "succeeded", "traffic_cohort_sha256", "traffic_key_sha256",
+                      "artifact_sha256", "authenticated", "baseline_request_count",
+                      "candidate_request_count", "candidate_sha256", "choice_count",
+                      "content_retained", "deployment_sha256", "endpoint_sha256",
+                      "finish_reason", "http_status", "max_completion_tokens", "model",
+                      "proof_contract_sha256", "proof_step", "request_sha256",
+                      "response_bytes", "response_sha256", "route_revision", "route_target",
+                      "schema_version", "sdk", "sdk_request_count", "sdk_version", "succeeded",
+                      "traffic_cohort_sha256", "traffic_key_sha256",
                   }
                   valid = (
-                      value.get("schema_version") == "milk.official-openai-sdk-route-smoke.v1"
+                      value.get("schema_version") == "milk.official-openai-sdk-route-smoke.v2"
+                      and value.get("proof_step") == "candidate"
+                      and value.get("sdk_request_count") == 1
+                      and value.get("baseline_request_count") == 0
+                      and value.get("candidate_request_count") == 1
+                      and value.get("max_completion_tokens") == 128
                       and value.get("choice_count") == 1
                       and value.get("http_status") == 200
                       and type(value.get("response_bytes")) is int
@@ -1532,16 +1561,24 @@ jobs:
                   )
               else:
                   keys = {
-                      "artifact_sha256", "authenticated", "candidate_http_status",
+                      "artifact_sha256", "authenticated", "baseline_request_count",
+                      "candidate_http_status", "candidate_request_count",
                       "candidate_route_target", "candidate_sha256", "content_retained",
                       "deployment_sha256", "endpoint_sha256", "fallback_http_status",
-                      "fallback_route_target", "request_sha256", "route_revision",
-                      "schema_version", "sdk", "sdk_version", "succeeded",
-                      "traffic_cohort_sha256", "traffic_key_sha256",
+                      "fallback_route_target", "max_completion_tokens", "model",
+                      "proof_contract_sha256", "proof_step", "request_sha256",
+                      "route_revision", "schema_version", "sdk", "sdk_request_count",
+                      "sdk_version", "succeeded", "traffic_cohort_sha256",
+                      "traffic_key_sha256",
                   }
                   valid = (
                       value.get("schema_version")
-                      == "milk.official-openai-sdk-saturation-fallback-smoke.v1"
+                      == "milk.official-openai-sdk-saturation-fallback-smoke.v2"
+                      and value.get("proof_step") == "saturation_fallback"
+                      and value.get("sdk_request_count") == 2
+                      and value.get("baseline_request_count") == 1
+                      and value.get("candidate_request_count") == 1
+                      and value.get("max_completion_tokens") == 3840
                       and value.get("candidate_http_status") == 200
                       and value.get("candidate_route_target") == "candidate"
                       and value.get("fallback_http_status") == 200
@@ -1580,6 +1617,7 @@ jobs:
               raise SystemExit(0)
           intent = {
               "endpoint_sha256": expected["endpoint_sha256"],
+              "proof_contract_sha256": expected["proof_contract_sha256"],
               "request_sha256": expected["request_sha256"],
               "route_revision": revision,
               "schema_version": intent_schema,
@@ -1933,3 +1971,133 @@ jobs:
           raw=canonical_json(value); store=R2EvidenceStore.from_environment("MILK_ROUTE_EVIDENCE_R2_"); key="route-operations/v1/{}/{}-{}.json".format(value["student_job_id"],value["workflow_run_id"],value["run_attempt"]);
           create_same(store,key,raw,"application/json");
           assert store.get(key)==raw'
+
+  mechanics-traffic:
+    name: Fixed generated mechanics traffic
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          inputs.authorize_mechanics_traffic == true &&
+          vars.MILK_EVAL_ID == '959caacb397004bf3e60f13613da50f4ed3160a65d18b178c3d996398e29b5a0' &&
+          inputs.managed_eval_id == vars.MILK_EVAL_ID }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: milk-route-control-prod
+    env:
+      MILK_EVAL_ID: ${{ vars.MILK_EVAL_ID }}
+    steps:
+      - name: Read scheduler code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Materialize exact active eval
+        id: eval
+        shell: bash
+        env:
+          MILK_EVAL_CONFIG_JSON: ${{ vars.MILK_EVAL_CONFIG_JSON }}
+        run: |
+          set -euo pipefail
+          eval_root=$(mktemp -d "$RUNNER_TEMP/milk-mechanics-eval.XXXXXX")
+          printf '%s' "$MILK_EVAL_CONFIG_JSON" >"$eval_root/eval.json"
+          python3 -m milk_harness.eval_config \
+            --document "$eval_root/eval.json" \
+            --eval-id "$MILK_EVAL_ID" \
+            --harness-source-commit "$GITHUB_SHA" \
+            --root "$GITHUB_WORKSPACE" \
+            --manifest-output "$eval_root/manifest.json" \
+            --gateway-config-output "$eval_root/gateway.json" \
+            --github-env "$GITHUB_ENV" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Read exact gateway mechanics tool
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: milkinfrastructure/milk-gateway
+          ref: ${{ steps.eval.outputs.gateway_source_commit }}
+          path: milk-gateway-source
+          persist-credentials: false
+
+      - name: Run the fixed mechanics proof once
+        shell: bash
+        env:
+          MILK_MECHANICS_CONFIRMATION: ${{ inputs.confirmed_run_config_sha256 }}
+          MILK_MECHANICS_CREDENTIAL_JSON: ${{ secrets.MILK_MECHANICS_CREDENTIAL_JSON }}
+          MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID }}
+          MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY }}
+          MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          fail() {
+            printf 'mechanics traffic: %s\n' "$1" >&2
+            exit "${2:-64}"
+          }
+          python3 -m milk_harness.scheduler validate-confirmation \
+            --requested true \
+            --provided-sha256 "$MILK_MECHANICS_CONFIRMATION" \
+            --expected-sha256 "$MILK_EVAL_CONFIG_SHA256"
+
+          scratch=$(mktemp -d "$RUNNER_TEMP/milk-mechanics.XXXXXX")
+          cleanup() {
+            local status=$?
+            trap - EXIT HUP INT TERM
+            case "$scratch" in
+              "$RUNNER_TEMP"/milk-mechanics.*) rm -rf -- "$scratch" ;;
+            esac
+            exit "$status"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' HUP INT TERM
+          gateway_source=$GITHUB_WORKSPACE/milk-gateway-source
+          [ "$(git -C "$gateway_source" rev-parse --verify HEAD)" = "$MILK_GATEWAY_SOURCE_COMMIT" ] || \
+            fail 'gateway checkout differs from the confirmed source commit' 69
+
+          mkdir -m 0700 "$scratch/home"
+          if ! env -i CI=1 HOME="$scratch/home" LANG=C.UTF-8 PATH="$PATH" \
+            npm ci --ignore-scripts --no-audit --no-fund --prefix "$gateway_source" \
+              >"$scratch/npm.stdout" 2>"$scratch/npm.stderr"; then
+            : >"$scratch/npm.stdout"
+            : >"$scratch/npm.stderr"
+            fail 'exact mechanics SDK dependency install failed' 69
+          fi
+          : >"$scratch/npm.stdout"
+          : >"$scratch/npm.stderr"
+
+          credential=$scratch/mechanics-credential.json
+          credential_json=$MILK_MECHANICS_CREDENTIAL_JSON
+          unset MILK_MECHANICS_CREDENTIAL_JSON
+          while [[ $credential_json == *$'\n' ]]; do
+            credential_json=${credential_json%$'\n'}
+          done
+          printf '%s\n' "$credential_json" >"$credential"
+          credential_json=
+          unset credential_json
+
+          node_binary=$(readlink -f -- "$(command -v node)")
+          gateway_config_sha256=$(sha256sum -- "$MILK_GATEWAY_CONFIG_PATH" | cut -d' ' -f1)
+          operator_env=(
+            env -i
+            HOME="$scratch/home"
+            LANG=C.UTF-8
+            PATH=/usr/bin:/bin
+            PYTHONPATH="$GITHUB_WORKSPACE"
+            MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID="$MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID"
+            MILK_ROUTE_EVIDENCE_R2_BUCKET="$MILK_ROUTE_EVIDENCE_R2_BUCKET"
+            MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID="$MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID"
+            MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY="$MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY"
+          )
+          [ -z "$MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN" ] || \
+            operator_env+=(MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN="$MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN")
+          "${operator_env[@]}" python3 -m milk_harness.mechanics_operator \
+            --manifest "$MILK_CONFIRMED_RUN_CONFIG_PATH" \
+            --confirm-manifest-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256" \
+            --confirm-eval-sha256 "$MILK_EVAL_CONFIG_SHA256" \
+            --gateway-source-root "$gateway_source" \
+            --gateway-source-commit "$MILK_GATEWAY_SOURCE_COMMIT" \
+            --gateway-config "$MILK_GATEWAY_CONFIG_PATH" \
+            --gateway-config-sha256 "$gateway_config_sha256" \
+            --gateway-credential "$credential" \
+            --node "$node_binary" \
+            >"$scratch/receipt.json"
+          [ -s "$scratch/receipt.json" ] || fail 'durable mechanics receipt is empty' 70
+          printf 'mechanics traffic: durable receipt verified\n'

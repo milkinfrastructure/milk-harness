@@ -1549,9 +1549,13 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 ]["sha256"],
                 "registry_secret": "milk-registry",
                 "config_secret": "milk-config",
+                "capture_store_account_id": "capture-account",
+                "capture_store_identity_sha256": "5" * 64,
                 "capture_store_access_key_secret": "capture-access",
                 "capture_store_secret_key_secret": "capture-secret",
                 "capture_store_session_token_secret": None,
+                "control_store_account_id": "control-account",
+                "control_store_identity_sha256": "6" * 64,
                 "control_store_access_key_secret": "control-access",
                 "control_store_secret_key_secret": "control-secret",
                 "control_store_session_token_secret": None,
@@ -1570,8 +1574,19 @@ class JobsProviderIntegrationTest(unittest.TestCase):
             )
             ordinary_preflights = []
 
-            def unavailable_training(team_name):
+            def unavailable_training(team_name, secret_names):
                 ordinary_preflights.append(team_name)
+                self.assertEqual(
+                    secret_names,
+                    (
+                        "milk-registry",
+                        "milk-config",
+                        "capture-access",
+                        "capture-secret",
+                        "control-access",
+                        "control-secret",
+                    ),
+                )
                 events.append(("baseten-training-preflight", None))
                 return {
                     **baseten_preflight(),
@@ -1676,6 +1691,8 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                         "milk-student",
                         "DOCKER_REGISTRY_ghcr.io",
                         "gateway_config",
+                        "control-account",
+                        "6" * 64,
                         "control_access",
                         "control_secret",
                     )

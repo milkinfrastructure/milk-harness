@@ -20,6 +20,67 @@ from milk_harness.scheduler import (
 MAX_EVAL_BYTES = 48 * 1024
 LOCATION_NAMES = ("evidence", "ops_log", "create_authority", "route_evidence")
 SAFE_ACCOUNT = re.compile(r"[^\s]{1,128}\Z")
+MECHANICS_PROOF_EVAL_ID = (
+    "959caacb397004bf3e60f13613da50f4ed3160a65d18b178c3d996398e29b5a0"
+)
+
+
+def _validate_mechanics_proof_budget(gateway, manifest):
+    if gateway.get("eval_id") != MECHANICS_PROOF_EVAL_ID:
+        return None
+    teacher = gateway.get("teacher")
+    execution = teacher.get("execution") if isinstance(teacher, dict) else None
+    route = gateway.get("route")
+    expected_teacher = {
+        "max_decisions": 320,
+        "max_calls": 20,
+        "max_gpu_seconds": 3_600,
+        "max_parallel_runs": 1,
+    }
+    actual_teacher = {
+        "max_decisions": teacher.get("max_decisions") if isinstance(teacher, dict) else None,
+        "max_calls": execution.get("max_calls") if isinstance(execution, dict) else None,
+        "max_gpu_seconds": execution.get("max_gpu_seconds") if isinstance(execution, dict) else None,
+        "max_parallel_runs": execution.get("max_parallel_runs") if isinstance(execution, dict) else None,
+    }
+    contract = manifest["gateway_job_contract"]
+    contract_teacher = {
+        name: contract.get("teacher_" + name) for name in expected_teacher
+    }
+    expected_route = {
+        "winner_max_wall_seconds": 3_600,
+        "winner_max_cost_microusd": 7_500_000,
+    }
+    actual_route = {
+        name: route.get(name) if isinstance(route, dict) else None
+        for name in expected_route
+    }
+    if (
+        actual_teacher != expected_teacher
+        or any(type(value) is not int for value in actual_teacher.values())
+        or contract_teacher != expected_teacher
+        or any(type(value) is not int for value in contract_teacher.values())
+        or actual_route != expected_route
+        or any(type(value) is not int for value in actual_route.values())
+    ):
+        raise ValueError("mechanics proof gateway GPU limits are invalid")
+
+    teacher_jobs = (
+        actual_teacher["max_decisions"] + actual_teacher["max_calls"] - 1
+    ) // actual_teacher["max_calls"]
+    reserved_minutes = (
+        teacher_jobs * ((actual_teacher["max_gpu_seconds"] + 59) // 60)
+        + 1_800 // 60
+        + 3 * (1_800 // 60)
+        + (actual_route["winner_max_wall_seconds"] + 59) // 60
+    )
+    reserved_microusd = (
+        reserved_minutes
+        * manifest["limits"]["h100_reservation_rate_microusd_per_minute"]
+    )
+    if reserved_microusd > manifest["proof_budget"]["gpu_reservation_microusd"]:
+        raise ValueError("mechanics proof GPU reservation exceeds its budget")
+    return reserved_microusd
 
 
 def _location(value, label):
@@ -73,6 +134,7 @@ def validate_eval_document(raw, eval_id, harness_source_commit, root):
     gateway_raw = canonical_json(value["gateway_config"])
     if hashlib.sha256(gateway_raw).hexdigest() != manifest["gateway_config_sha256"]:
         raise ValueError("eval gateway config SHA-256 differs")
+    _validate_mechanics_proof_budget(value["gateway_config"], manifest)
 
     stores = value["gateway_config"].get("stores")
     if not isinstance(stores, dict) or set(stores) != {"capture", "control", "routes"}:
@@ -150,6 +212,9 @@ def materialized_environment(
         "source_commit": "MILK_GATEWAY_SOURCE_COMMIT",
         "image_admission_sha256": "MILK_GATEWAY_IMAGE_ADMISSION_SHA256",
         "release_sha256": "MILK_GATEWAY_RELEASE_SHA256",
+        "official_openai_sdk_baseline_receipt_sha256": (
+            "MILK_GATEWAY_OFFICIAL_OPENAI_SDK_BASELINE_RECEIPT_SHA256"
+        ),
         "application_id": "MILK_GATEWAY_CONTAINER_APPLICATION_ID",
         "application_version": "MILK_GATEWAY_CONTAINER_APPLICATION_VERSION",
         "container_image": "MILK_GATEWAY_CONTAINER_IMAGE",
@@ -166,6 +231,14 @@ def materialized_environment(
         env[prefix + "BUCKET"] = location["bucket"]
 
     bind("MILK_CONTROL_R2_", stores["control"])
+    bind("MILK_PROVIDER_GPU_CAPTURE_R2_", stores["capture"])
+    bind("MILK_PROVIDER_GPU_CONTROL_R2_", stores["control"])
+    env["MILK_PROVIDER_GPU_CAPTURE_IDENTITY_SHA256"] = manifest[
+        "store_identity_sha256s"
+    ]["provider_gpu_capture"]
+    env["MILK_PROVIDER_GPU_CONTROL_IDENTITY_SHA256"] = manifest[
+        "store_identity_sha256s"
+    ]["provider_gpu_control"]
     bind("MILK_EVIDENCE_R2_", locations["evidence"])
     bind("MILK_OPS_LOG_R2_", locations["ops_log"])
     bind("MILK_CREATE_AUTHORITY_WRITE_R2_", locations["create_authority"])

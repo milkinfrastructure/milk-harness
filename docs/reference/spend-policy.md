@@ -1,10 +1,14 @@
 # Paid-run policy
 
-The campaign budget authority is implemented in `milk_harness/budget.py`.
+The provider GPU budget authority is implemented in `milk_harness/budget.py`. It bounds authorized Baseten and Modal GPU work; it does not claim to cap a cloud-provider invoice or unrelated Cloudflare, OpenAI, GitHub, registry, storage, or network charges.
 
 - absolute ceiling: $1,000 (`1,000,000,000` microusd);
 - new-launch cutoff: $850 (`850,000,000` microusd);
 - protected running-work and teardown reserve: $150 (`150,000,000` microusd).
+
+The first cloud-mechanics proof has a separate `$15` external reserve: `$10` for one month of [Cloudflare Workers Paid and bounded included-resource use](https://developers.cloudflare.com/workers/platform/pricing/), `$2` for the exact capped [OpenAI baseline calls](https://developers.openai.com/api/docs/models/gpt-5.4), and `$3` contingency. [Public-repository standard GitHub-hosted Actions](https://docs.github.com/en/billing/concepts/product-billing/github-actions) and [Container registry bandwidth](https://docs.github.com/en/billing/concepts/product-billing/github-packages) are currently unbilled, and the proof stays inside [R2's included monthly storage and operation allowances](https://developers.cloudflare.com/r2/pricing/). The fixed eval validator derives a `$142.50` maximum GPU reservation from 16 one-hour teacher jobs, one 30-minute train job, three 30-minute branch jobs, and one one-hour winner. The `$160` GPU ceiling leaves `$17.50` of headroom. The exact proof therefore authorizes at most `$175` all-in: `$160` GPU plus `$15` external. Rerunning any paid or SDK step requires a new action-time confirmation; after terminal signed-zero evidence, the five-minute production schedule is disabled. Continued hosted operation uses a separate monthly operating authorization rather than silently extending this proof envelope.
+
+The external reserve admits one fixed `gpt-5.4` SDK contract, SHA-256 `cf9e41c3220544bc163a6dfb82721154a8e078c9db3c9fa86a148a84ea275263`: one deployment-baseline call, 320 generated-mechanics calls, one candidate call, and two saturation-fallback calls. That is exactly 324 calls, split 322 baseline and two candidate. Generated mechanics writes a create-only intent before traffic and a content-free receipt after success; an intent without a receipt is ambiguous and is never replayed. The cloud proof has not run, so this budget is an authorization ceiling, not recorded spend.
 
 The immutable campaign authority binds one Baseten training project, one Baseten serving team, and one Modal workspace, environment, and app. All three roles share the same mutable R2 `state/v1/campaigns/{campaign_id}/budget-head.json` `If-Match` CAS head; there is no second provider or serving budget. A run may switch roles only while preparing. Its first immutable reservation intent freezes the exact role and identity across an ambiguous create or crash.
 

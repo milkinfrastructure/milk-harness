@@ -2,7 +2,10 @@ import ast
 import datetime as dt
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 
 from deploy.baseten import winner
@@ -26,6 +29,8 @@ def values():
         ALIAS,
         "DOCKER_REGISTRY_ghcr.io",
         "gateway_config",
+        "control-account",
+        "7263a008be5acd33e18bc36dd3c35bff464fb4d284014297567a6287f0903330",
         "control_access",
         "control_secret",
         "control_session",
@@ -162,11 +167,40 @@ class WinnerPureContractTest(unittest.TestCase):
         self.assertIn("  accelerator: H100\n", raw)
         self.assertIn("--trusted-ingress-auth", raw)
         self.assertIn(
+            '  MILK_CONTROL_STORE_ACCOUNT_ID: "control-account"\n',
+            raw,
+        )
+        self.assertIn(
+            "  MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256: "
+            '"7263a008be5acd33e18bc36dd3c35bff464fb4d284014297567a6287f0903330"\n',
+            raw,
+        )
+        self.assertLess(
+            raw.index("hashlib.sha256(raw).hexdigest()"),
+            raw.index("materialize-student-winner"),
+        )
+        self.assertLess(
+            raw.index("unset MILK_CONTROL_STORE_ACCOUNT_ID"),
+            raw.index("student-job.sh serve"),
+        )
+        self.assertIn(
             "/usr/bin/test ! -r /secrets/DOCKER_REGISTRY_ghcr.io",
             raw,
         )
         self.assertNotIn("BASETEN_API_KEY", raw)
         self.assertNotIn(KEY, raw)
+        with self.assertRaisesRegex(ValueError, "identity hash"):
+            winner.settings(
+                IMAGE,
+                STUDENT,
+                ALIAS,
+                "DOCKER_REGISTRY_ghcr.io",
+                "gateway_config",
+                "control-account",
+                "0" * 63,
+                "control_access",
+                "control_secret",
+            )
         self.assertEqual(winner.SERVING_AUTOSCALING["min_replica"], 0)
         self.assertEqual(winner.SERVING_AUTOSCALING["max_replica"], 1)
         argv = winner.push_argv("/tmp/milk-winner/truss", RUN, CLAIM, "milk")
@@ -176,6 +210,50 @@ class WinnerPureContractTest(unittest.TestCase):
             json.loads(argv[argv.index("--labels") + 1]),
             winner.labels(RUN, CLAIM),
         )
+
+    def test_config_rejects_wrong_control_identity_before_storage(self):
+        raw = winner.truss_config(values(), RUN)
+        block = raw.split("  start_command: |-\n", 1)[1].split(
+            "\n  server_port:", 1
+        )[0]
+        command = "\n".join(line.removeprefix("    ") for line in block.splitlines())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, value in (
+                ("gateway_config", "{}"),
+                ("control_access", "wrong-access"),
+                ("control_secret", "control-secret"),
+                ("control_session", "control-session"),
+            ):
+                path = root / name
+                path.write_text(value, encoding="utf-8")
+                command = command.replace(f"/secrets/{name}", str(path))
+            marker = root / "gateway-called"
+            gateway = root / "gateway"
+            gateway.write_text(
+                f"#!/bin/sh\n: > {marker}\nexit 0\n",
+                encoding="utf-8",
+            )
+            gateway.chmod(0o700)
+            command = command.replace(
+                "/usr/local/bin/dragontales-gateway", str(gateway)
+            ).replace("/tmp/dragontales", str(root / "dragontales"))
+            result = subprocess.run(
+                ["/bin/sh", "-c", command],
+                env={
+                    **os.environ,
+                    "DRAGONTALES_STUDENT_JOB_ID": STUDENT,
+                    "DRAGONTALES_MODEL_ALIAS": ALIAS,
+                    "MILK_CONTROL_STORE_ACCOUNT_ID": "control-account",
+                    "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": (
+                        "7263a008be5acd33e18bc36dd3c35bff464fb4d284014297567a6287f0903330"
+                    ),
+                },
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 64)
+            self.assertFalse(marker.exists())
 
     def test_push_identity_targets_exact_deployment_not_environment(self):
         raw = json.dumps(

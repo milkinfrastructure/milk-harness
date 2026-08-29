@@ -552,6 +552,8 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
             "milk-winner",
             "DOCKER_REGISTRY_ghcr.io",
             "gateway_config",
+            "control-account",
+            "6" * 64,
             "control_access",
             "control_secret",
             "control_session",
