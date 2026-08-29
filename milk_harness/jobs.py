@@ -9116,17 +9116,13 @@ def modal_ready_preflight(
         create_if_missing=False,
         environment_name=provider_identity["environment_name"],
     )
-    call(app.hydrate)
     if (
-        getattr(workspace, "object_id", None)
-        != provider_identity["workspace_id"]
-        or getattr(workspace, "name", None)
-        != provider_identity["workspace_name"]
+        getattr(workspace, "name", None) != provider_identity["workspace_name"]
         or getattr(environment, "object_id", None)
         != provider_identity["environment_id"]
         or getattr(environment, "name", None)
         != provider_identity["environment_name"]
-        or getattr(app, "object_id", None) != provider_identity["app_id"]
+        or getattr(app, "app_id", None) != provider_identity["app_id"]
         or getattr(app, "name", None) != provider_identity["app_name"]
     ):
         raise ValueError("Modal provider identity differs during preflight")

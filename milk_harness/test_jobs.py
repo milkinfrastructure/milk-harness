@@ -892,6 +892,57 @@ def provider_arguments(release_sha256):
 
 
 class BasetenJobsTests(unittest.TestCase):
+    def test_modal_preflight_uses_live_1_5_4_identity_surface(self):
+        calls = []
+
+        class WorkspaceHandle:
+            name = "milk-production"
+
+            def hydrate(self):
+                calls.append("workspace")
+
+        class EnvironmentHandle:
+            object_id = "en-main"
+            name = "main"
+
+            def hydrate(self):
+                calls.append("environment")
+
+        class AppHandle:
+            app_id = "ap-production"
+            name = "milk-gpu-jobs"
+
+        sdk = types.SimpleNamespace(
+            __version__="1.5.4",
+            Workspace=types.SimpleNamespace(from_context=lambda: WorkspaceHandle()),
+            Environment=types.SimpleNamespace(
+                from_name=lambda name, **unused: EnvironmentHandle()
+            ),
+            App=types.SimpleNamespace(
+                lookup=lambda name, **unused: AppHandle()
+            ),
+        )
+        with tempfile.TemporaryDirectory() as root:
+            runtime = jobs_module.ModalJobs(
+                store=LocalEvidenceStore(Path(root) / "evidence"),
+                request_guard=lambda: None,
+                modal_sdk=sdk,
+            )
+            with self.assertRaisesRegex(ValueError, "plans differ by campaign"):
+                jobs_module.modal_ready_preflight(
+                    runtime,
+                    {
+                        "workspace_id": "ws-production",
+                        "workspace_name": "milk-production",
+                        "environment_id": "en-main",
+                        "environment_name": "main",
+                        "app_id": "ap-production",
+                        "app_name": "milk-gpu-jobs",
+                    },
+                    {},
+                )
+        self.assertEqual(calls, ["workspace", "environment"])
+
     def test_modal_model_volumes_are_distinct_and_used_only_when_needed(self):
         arguments = types.SimpleNamespace(
             modal_registry_secret_name="registry",

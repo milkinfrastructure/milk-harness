@@ -869,14 +869,9 @@ class ModalJobs:
         workspace = self._call(
             value, self.modal.Workspace.from_context, create=create
         )
-        self._hydrate(
-            value,
-            workspace,
-            identity["workspace_id"],
-            "workspace",
-            identity["workspace_name"],
-            create=create,
-        )
+        self._call(value, workspace.hydrate, create=create)
+        if getattr(workspace, "name", None) != identity["workspace_name"]:
+            raise ValueError("Modal workspace name differs")
         environment = self._call(
             value,
             self.modal.Environment.from_name,
@@ -900,14 +895,11 @@ class ModalJobs:
             environment_name=identity["environment_name"],
             create=create,
         )
-        self._hydrate(
-            value,
-            app,
-            identity["app_id"],
-            "app",
-            identity["app_name"],
-            create=create,
-        )
+        if (
+            getattr(app, "app_id", None) != identity["app_id"]
+            or getattr(app, "name", None) != identity["app_name"]
+        ):
+            raise ValueError("Modal app identity differs")
         return app
 
     def _create_resources(self, value, app):
@@ -1272,7 +1264,7 @@ class ModalJobs:
         if getattr(sandbox, "name", name) != name:
             raise ValueError("named Modal sandbox name differs from its create intent")
         _opaque(getattr(sandbox, "object_id", None), "Modal sandbox object ID")
-        if getattr(app, "object_id", None) != value["provider_identity"]["app_id"]:
+        if getattr(app, "app_id", None) != value["provider_identity"]["app_id"]:
             raise ValueError("Modal sandbox app identity changed")
         return sandbox
 
@@ -2328,9 +2320,8 @@ class ModalJobs:
         sandboxes = self._call(
             value,
             self.modal.Sandbox.list,
-            app_id=app.object_id,
+            app_id=app.app_id,
             tags=_sandbox_tags(value),
-            environment_name=value["provider_identity"]["environment_name"],
         )
         active = []
         observed = 0

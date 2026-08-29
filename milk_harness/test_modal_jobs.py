@@ -403,6 +403,23 @@ class Handle:
         self.calls.append(("hydrate", self.object_id))
 
 
+class WorkspaceHandle:
+    def __init__(self, name, calls):
+        self.name = name
+        self.calls = calls
+
+    def hydrate(self):
+        self.calls.append(("hydrate_workspace", self.name))
+
+
+class AppHandle:
+    def __init__(self, app_id, name, calls, logs):
+        self.app_id = app_id
+        self.name = name
+        self.calls = calls
+        self.logs = logs
+
+
 class ImageHandle:
     def __init__(self, calls):
         self.calls = calls
@@ -514,9 +531,7 @@ class FakeModal:
             @staticmethod
             def from_context():
                 outer.calls.append(("workspace",))
-                return Handle(
-                    identity["workspace_id"], identity["workspace_name"], outer.calls
-                )
+                return WorkspaceHandle(identity["workspace_name"], outer.calls)
 
         class Environment:
             @staticmethod
@@ -533,9 +548,7 @@ class FakeModal:
             @staticmethod
             def lookup(name, **kwargs):
                 outer.calls.append(("app", name, kwargs))
-                handle = Handle(identity["app_id"], name, outer.calls)
-                handle.logs = Logs()
-                return handle
+                return AppHandle(identity["app_id"], name, outer.calls, Logs())
 
         class Secret:
             @staticmethod
@@ -586,8 +599,13 @@ class FakeModal:
                 return outer.created
 
             @staticmethod
-            def list(**kwargs):
-                outer.calls.append(("list", kwargs))
+            def list(*, app_id=None, tags=None, client=None):
+                outer.calls.append(
+                    (
+                        "list",
+                        {"app_id": app_id, "tags": tags, "client": client},
+                    )
+                )
                 return [] if outer.created is None else [outer.created]
 
         class Probe:
