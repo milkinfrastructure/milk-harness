@@ -22,8 +22,9 @@ EXO_SERVICE_USER=exo
 sudo tools/exo/install-host-command "$EXO_SERVICE_USER"
 ```
 
-The Exo service environment needs authenticated `gh` access to the private
-repository. Tool initialization supplies only the fixed command path:
+The Exo service environment needs authenticated `gh` access to the target
+repository. Tool initialization supplies only the fixed command path. Replace
+`YOUR_ORG` with the owner of the checkout:
 
 ```json
 {
@@ -31,7 +32,7 @@ repository. Tool initialization supplies only the fixed command path:
   "toolId": null,
   "source": {
     "type": "git",
-    "repository": "git@github.com:milkinfrastructure/milk-harness.git",
+    "repository": "git@github.com:YOUR_ORG/milk-harness.git",
     "commit": "<exact-40-character-commit-sha>",
     "subdirectory": "tools/exo"
   },
@@ -42,6 +43,26 @@ repository. Tool initialization supplies only the fixed command path:
 Exo checks out that commit, copies only `tools/exo`, validates the manifest and
 schemas, and loads `index.mjs` on the next model round. The command path and
 host environment are not model arguments.
+
+## Fork target
+
+The installed command defaults to Milk production. A self-host operator may
+set these values in the Exo service environment:
+
+```text
+MILK_MANAGED_REPOSITORY=github.com/YOUR_ORG/milk-harness
+MILK_MANAGED_WORKFLOW=self-host-loop.yml
+MILK_MANAGED_WORKFLOW_REF=main
+```
+
+The repository must be `github.com/OWNER/REPOSITORY`; the workflow must be a
+`.yml` or `.yaml` filename; and the ref must be a simple branch or tag. The
+model cannot override them. The bundled `production-loop.yml` remains a
+Milk-managed production workflow with strict Milk image and release admission;
+it is not a custom-image self-host template.
+
+Run the non-dispatching config/control smoke in
+[`examples/self-host`](../../examples/self-host) before installing the command.
 
 ## Admit one eval
 

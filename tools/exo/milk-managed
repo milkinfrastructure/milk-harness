@@ -2,14 +2,42 @@
 set -eu
 umask 077
 
-repository=github.com/milkinfrastructure/milk-harness
-workflow=production-loop.yml
-workflow_ref=main
+repository=${MILK_MANAGED_REPOSITORY:-github.com/milkinfrastructure/milk-harness}
+workflow=${MILK_MANAGED_WORKFLOW:-production-loop.yml}
+workflow_ref=${MILK_MANAGED_WORKFLOW_REF:-main}
 eval_dir=${MILK_MANAGED_EVAL_DIR:-/etc/milk/evals}
 state_root=${MILK_MANAGED_STATE_ROOT:-/var/lib/milk/evals}
 eval_owner_uid=${MILK_MANAGED_EVAL_OWNER_UID:-0}
 lock_acquired=false
 consumed_file=
+
+valid_component() {
+  case "$1" in
+    ''|.|..|-*|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+}
+
+valid_dispatch_target() {
+  case "$repository" in
+    github.com/*/*) ;;
+    *) return 1 ;;
+  esac
+  repository_path=${repository#github.com/}
+  repository_owner=${repository_path%%/*}
+  repository_name=${repository_path#*/}
+  [ "$repository_name" != "$repository_path" ] || return 1
+  case "$repository_name" in */*) return 1 ;; esac
+  valid_component "$repository_owner" && valid_component "$repository_name" || return 1
+  case "$workflow" in
+    *.yml|*.yaml) valid_component "$workflow" || return 1 ;;
+    *) return 1 ;;
+  esac
+  case "$workflow_ref" in
+    ''|-*|/*|*/|*//*|*..*|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+}
+
+valid_dispatch_target || exit 64
 
 result() {
   printf '{"ok":%s,"eval_id":"%s","state":"%s","dispatch_state":"%s","generation_done":false,"changed":%s,"approval_required":%s}\n' \

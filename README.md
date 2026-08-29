@@ -2,13 +2,15 @@
 
 Milk Harness watches the traffic captured by [`milk-gateway`](https://github.com/milkinfrastructure/milk-gateway), generates evaluations until a configured limit is reached, and exits. It runs disposable provider jobs; it is not a standing model server or control service.
 
-The hosted customer experience is deliberately Stripe-like:
+The current hosted pilot is Stripe-like at the SDK boundary but single-tenant: one gateway deployment owns one tenant, project, environment, and workload scope. It is not a shared multi-customer endpoint.
 
 1. Point the official OpenAI SDK at the Milk gateway.
 2. Set one `dt_live_...` key.
-3. Send normal application traffic and read bounded status and results.
+3. Send normal application traffic.
 
-Milk Infrastructure owns the hosted eval configuration, object stores, provider credentials, and route policy. Hosted customers do not receive or manage those secrets. Self-hosters run the same gateway and harness but supply the canonical eval configuration and environment secrets themselves.
+Milk Infrastructure owns the hosted eval configuration, object stores, provider credentials, route policy, and operator-only status/results inspection. The `dt_live_...` key authorizes chat traffic only; there is no customer status/results API yet.
+
+The forkable self-host surface currently covers canonical config validation and the Exo control boundary. Full provider execution remains Milk-managed because production admission accepts only Milk release receipts and immutable Milk image repositories. The bounded local smoke is in [`examples/self-host`](examples/self-host).
 
 No local Mac GPU is used. The gateway and scheduler are CPU-only; only an explicitly confirmed provider job can start a cloud GPU.
 
@@ -16,7 +18,7 @@ The code is MIT licensed, but this source repository and its OCI images remain p
 
 ## Product contract
 
-One canonical `milk.eval.v1` document contains every non-secret setting for one self-hosted or operator-managed eval:
+One canonical `milk.eval.v1` document contains every non-secret setting for one Milk-managed eval:
 
 - tenant, project, environment, and workload scope;
 - hard call and decision limits;
@@ -43,7 +45,7 @@ R2 records are the authority for leases, claims, budgets, results, and routes. G
 
 ## Limits and spend
 
-`teacher.max_decisions` is the eval-generation limit. The gateway stops creating new teacher claims at that limit while allowing reconciliation and teardown to finish.
+`teacher.max_decisions` is the lifetime teacher-decision limit for one tenant/project/environment/workload scope. Reusing that scope in another eval also reuses its prior claims; an independent eval requires a new workload ID. The gateway stops creating new teacher claims at the limit while allowing reconciliation and teardown to finish.
 
 Paid work has three gates:
 
@@ -62,6 +64,8 @@ The current campaign ceiling is `$1,000`. New paid work stops at `$850`, preserv
 ```
 
 The host command accepts only an operator-admitted config under `/etc/milk/evals/<eval_id>.json`. Exo receives no provider token, arbitrary command, route key, or spending authority.
+
+The host operator may set a GitHub repository, workflow file, and ref for a fork. Those values come only from the service environment; they are never model inputs. Milk production remains the default. See [`tools/exo/README.md`](tools/exo/README.md).
 
 ## Cloud deployment
 

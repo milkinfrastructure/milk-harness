@@ -146,6 +146,37 @@ grep -Fxq -- '--branch' "$list_log"
 grep -Fxq -- '--event' "$list_log"
 grep -Fxq 'workflow_dispatch' "$list_log"
 
+rm -f "$dispatch_log" "$list_log" "$view_log"
+[ "$(MILK_MANAGED_REPOSITORY=github.com/example/milk-harness \
+  MILK_MANAGED_WORKFLOW=self-host-loop.yml \
+  MILK_MANAGED_WORKFLOW_REF=stable \
+  TEST_GH_DATABASE_ID=404 run reconcile "$second_eval_id")" = \
+  "$(expected true "$second_eval_id" running running true false)" ]
+grep -Fxq 'github.com/example/milk-harness' "$dispatch_log"
+grep -Fxq 'self-host-loop.yml' "$dispatch_log"
+grep -Fxq 'stable' "$dispatch_log"
+
+for invalid_target in \
+  'MILK_MANAGED_REPOSITORY=example/milk-harness' \
+  'MILK_MANAGED_REPOSITORY=github.com/example/../milk-harness' \
+  'MILK_MANAGED_WORKFLOW=../production-loop.yml' \
+  'MILK_MANAGED_WORKFLOW_REF=refs//heads/main'
+do
+  target_name=${invalid_target%%=*}
+  target_value=${invalid_target#*=}
+  set +e
+  invalid_output=$(env "$target_name=$target_value" \
+    PATH="$test_root/bin:$PATH" \
+    MILK_MANAGED_EVAL_DIR="$test_root/evals" \
+    MILK_MANAGED_STATE_ROOT="$test_root/state" \
+    MILK_MANAGED_EVAL_OWNER_UID="$(id -u)" \
+    "$command" status "$second_eval_id" 2>/dev/null)
+  invalid_status=$?
+  set -e
+  [ "$invalid_status" -eq 64 ]
+  [ -z "$invalid_output" ]
+done
+
 rm -f "$list_log" "$view_log"
 [ "$(TEST_GH_OBSERVATION=queued: run status "$eval_id")" = \
   "$(expected true "$eval_id" running running false false)" ]
