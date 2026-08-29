@@ -44,6 +44,7 @@ jobs:
     outputs:
       summary_b64: ${{ steps.tick.outputs.summary_b64 }}
       accepted: ${{ steps.tick.outputs.accepted }}
+      generation_done: ${{ steps.tick.outputs.generation_done }}
     env:
       MILK_EVAL_ID: ${{ vars.MILK_EVAL_ID }}
       MILK_GHCR_PULL_USERNAME: ${{ secrets.MILK_GHCR_PULL_USERNAME }}
@@ -111,6 +112,8 @@ jobs:
           run_config=$MILK_CONFIRMED_RUN_CONFIG_PATH
           stdout=$scratch/stdout
           stderr=$scratch/stderr
+          generation_stdout=$scratch/generation-status.json
+          generation_stderr=$scratch/generation-status.stderr
           mkdir -m 0700 "$docker_config"
           python3 -m milk_harness.scheduler validate-run-config \
             --phase gateway \
@@ -143,19 +146,23 @@ jobs:
           [ -z "$MILK_CONTROL_STORE_SESSION_TOKEN" ] || \
             gateway_store_env+=(-e MILK_CONTROL_STORE_SESSION_TOKEN)
 
+          gateway_command=(
+            docker --config "$docker_config" run --rm
+            --read-only
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m
+            --cap-drop ALL
+            --security-opt no-new-privileges
+            --pids-limit 128
+            --memory 1g
+            --cpus 1
+            "${gateway_store_env[@]}"
+            --mount "type=bind,source=$config,target=/run/secrets/config.json,readonly"
+            "$MILK_GATEWAY_IMAGE" --config /run/secrets/config.json
+          )
+
           started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
           set +e
-          docker --config "$docker_config" run --rm \
-            --read-only \
-            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
-            --cap-drop ALL \
-            --security-opt no-new-privileges \
-            --pids-limit 128 \
-            --memory 1g \
-            --cpus 1 \
-            "${gateway_store_env[@]}" \
-            --mount "type=bind,source=$config,target=/run/secrets/config.json,readonly" \
-            "$MILK_GATEWAY_IMAGE" --config /run/secrets/config.json tick --once \
+          "${gateway_command[@]}" tick --once \
             >"$stdout" 2>"$stderr"
           status=$?
           set -e
@@ -169,6 +176,14 @@ jobs:
             --completed-at "$completed_at" \
             --output "$scratch/summary.json" \
             --github-output "$GITHUB_OUTPUT"
+          if ! "${gateway_command[@]}" generation-status \
+            >"$generation_stdout" 2>"$generation_stderr"; then
+            fail 'generation status failed' 70
+          fi
+          python3 -m milk_harness.scheduler validate-generation-status \
+            --input "$generation_stdout" \
+            --eval-id "$MILK_EVAL_ID" \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: Require an accepted gateway result
         if: ${{ steps.tick.outputs.accepted != 'true' }}
@@ -176,7 +191,7 @@ jobs:
         run: exit 1
 
   provider-jobs:
-    name: Provider reconciliation and dispatch
+    name: Provider reconciliation and dispatch [generation_done=${{ needs.gateway-tick.outputs.generation_done }}]
     needs: gateway-tick
     if: >-
       ${{ always() &&

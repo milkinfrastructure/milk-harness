@@ -188,6 +188,27 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertIn("persist-credentials: false", self.gateway)
         self.assertIn("persist-credentials: false", self.provider)
 
+    def test_generation_completion_uses_typed_gateway_status_and_job_name(self):
+        tick = self.gateway.index('"${gateway_command[@]}" tick --once')
+        status = self.gateway.index('"${gateway_command[@]}" generation-status')
+        validate = self.gateway.index("validate-generation-status")
+        self.assertLess(tick, status)
+        self.assertLess(status, validate)
+        self.assertEqual(self.gateway.count('"${gateway_command[@]}"'), 2)
+        self.assertIn('"${gateway_store_env[@]}"', self.gateway)
+        self.assertIn('--input "$generation_stdout"', self.gateway)
+        self.assertIn('--eval-id "$MILK_EVAL_ID"', self.gateway)
+        self.assertIn('--github-output "$GITHUB_OUTPUT"', self.gateway)
+        self.assertIn(
+            "generation_done: ${{ steps.tick.outputs.generation_done }}",
+            self.gateway,
+        )
+        self.assertIn(
+            "name: Provider reconciliation and dispatch "
+            "[generation_done=${{ needs.gateway-tick.outputs.generation_done }}]",
+            self.provider,
+        )
+
     def test_empty_r2_session_tokens_are_not_passed_to_containers(self):
         cases = (
             (

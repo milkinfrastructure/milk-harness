@@ -106,6 +106,21 @@ process.stdout.write(JSON.stringify({ ...${JSON.stringify(VALID)}, state: "compl
     await runFixedCommand(falseCompletion, "status", EVAL_ID),
     failure("status", "invalid_output"),
   );
+
+  const completed = await executable(`
+process.stdout.write(JSON.stringify({ ...${JSON.stringify(VALID)}, state: "ready", dispatch_state: "succeeded", generation_done: true }));
+`);
+  assert.deepEqual(await runFixedCommand(completed, "status", EVAL_ID), {
+    ok: true,
+    action: "status",
+    evalId: EVAL_ID,
+    state: "ready",
+    dispatchState: "succeeded",
+    generationDone: true,
+    changed: false,
+    approvalRequired: false,
+    code: "ok",
+  });
 });
 
 test("timeout, process failure, and oversized output return fixed errors", async () => {

@@ -31,7 +31,17 @@ case "${1:-} ${2:-}" in
   'run view')
     printf '%s\n' "${3:-}" >"$TEST_GH_VIEW_LOG"
     [ "${TEST_GH_VIEW_FAIL:-0}" -eq 0 ] || exit 1
+    job_view=false
+    for argument do
+      [ "$argument" != status,conclusion,jobs ] || job_view=true
+    done
     printf '%s\n' "${TEST_GH_OBSERVATION:-queued:}"
+    if [ "$job_view" = true ]; then
+      : >"$TEST_GH_JOB_VIEW_LOG"
+      for argument do printf '%s\n' "$argument" >>"$TEST_GH_JOB_VIEW_LOG"; done
+      [ "${TEST_GH_OBSERVATION:-queued:}" != completed:success ] || \
+        printf '%s\n' "$TEST_GH_GENERATION_JOB_NAME"
+    fi
     ;;
   'workflow run')
     : >"$TEST_GH_DISPATCH_LOG"
@@ -73,6 +83,7 @@ admit_eval "$test_root/secondary.json" "$second_eval_id"
 dispatch_log=$test_root/dispatch.log
 list_log=$test_root/list.log
 view_log=$test_root/view.log
+job_view_log=$test_root/job-view.log
 
 run() {
   PATH="$test_root/bin:$PATH" \
@@ -81,6 +92,7 @@ run() {
   MILK_MANAGED_EVAL_OWNER_UID="$(id -u)" \
   TEST_GH_DATABASE_ID="${TEST_GH_DATABASE_ID:-}" \
   TEST_GH_OBSERVATION="${TEST_GH_OBSERVATION:-queued:}" \
+  TEST_GH_GENERATION_JOB_NAME="${TEST_GH_GENERATION_JOB_NAME-Provider reconciliation and dispatch [generation_done=false]}" \
   TEST_GH_LIST_FAIL="${TEST_GH_LIST_FAIL:-0}" \
   TEST_GH_VIEW_FAIL="${TEST_GH_VIEW_FAIL:-0}" \
   TEST_GH_WORKFLOW_FAIL="${TEST_GH_WORKFLOW_FAIL:-0}" \
@@ -88,12 +100,14 @@ run() {
   TEST_GH_DISPATCH_LOG="$dispatch_log" \
   TEST_GH_LIST_LOG="$list_log" \
   TEST_GH_VIEW_LOG="$view_log" \
+  TEST_GH_JOB_VIEW_LOG="$job_view_log" \
     "$command" "$@"
 }
 
 expected() {
-  printf '{"ok":%s,"eval_id":"%s","state":"%s","dispatch_state":"%s","generation_done":false,"changed":%s,"approval_required":%s}' \
-    "$1" "$2" "$3" "$4" "$5" "$6"
+  expected_generation_done=${7:-false}
+  printf '{"ok":%s,"eval_id":"%s","state":"%s","dispatch_state":"%s","generation_done":%s,"changed":%s,"approval_required":%s}' \
+    "$1" "$2" "$3" "$4" "$expected_generation_done" "$5" "$6"
 }
 
 state_dir=$test_root/state/$eval_id
@@ -128,7 +142,7 @@ rm -f "$state" "$dispatch_log" "$list_log" "$view_log"
   "$(expected true "$eval_id" running running true false)" ]
 [ -f "$state" ] && [ ! -L "$state" ]
 [ "$(stat -f '%Lp' "$state" 2>/dev/null || stat -c '%a' "$state")" = 600 ]
-[ "$(sed -n '1p' "$state")" = milk-managed-state-v2 ]
+[ "$(sed -n '1p' "$state")" = milk-managed-state-v3 ]
 [ "$(sed -n '2p' "$state")" = reconcile ]
 request_id=$(sed -n '3p' "$state")
 [ "${#request_id}" -eq 97 ]
@@ -140,6 +154,8 @@ managed_title="Milk production loop [managed:$request_id]"
 [ "${#managed_title}" -le 255 ]
 [ "$(sed -n '4p' "$state")" = 101 ]
 [ "$(sed -n '5p' "$state")" = "$eval_id" ]
+[ "$(sed -n '6p' "$state")" = "$eval_confirmation_sha256" ]
+[ "$(wc -l <"$state" | tr -d '[:space:]')" = 6 ]
 grep -Fxq 'production-loop.yml' "$dispatch_log"
 grep -Fxq 'github.com/milkinfrastructure/milk-harness' "$dispatch_log"
 grep -Fxq 'main' "$dispatch_log"
@@ -190,6 +206,41 @@ rm -f "$list_log" "$view_log"
 [ ! -e "$list_log" ]
 [ "$(TEST_GH_OBSERVATION=completed:success run status "$eval_id")" = \
   "$(expected true "$eval_id" ready succeeded false false)" ]
+grep -Fxq -- '--json' "$job_view_log"
+grep -Fxq status,conclusion,jobs "$job_view_log"
+[ "$(TEST_GH_OBSERVATION=completed:success \
+  TEST_GH_GENERATION_JOB_NAME='Provider reconciliation and dispatch [generation_done=true]' \
+  run status "$eval_id")" = \
+  "$(expected true "$eval_id" ready succeeded false false true)" ]
+[ "$(TEST_GH_OBSERVATION=completed:success \
+  TEST_GH_GENERATION_JOB_NAME='Provider reconciliation and dispatch [generation_done=unknown]' \
+  run status "$eval_id")" = \
+  "$(expected false "$eval_id" blocked unknown false false)" ]
+duplicate_job_names=$(printf '%s\n%s' \
+  'Provider reconciliation and dispatch [generation_done=false]' \
+  'Provider reconciliation and dispatch [generation_done=true]')
+[ "$(TEST_GH_OBSERVATION=completed:success \
+  TEST_GH_GENERATION_JOB_NAME="$duplicate_job_names" run status "$eval_id")" = \
+  "$(expected false "$eval_id" blocked unknown false false)" ]
+[ "$(TEST_GH_OBSERVATION=completed:success TEST_GH_GENERATION_JOB_NAME= \
+  run status "$eval_id")" = \
+  "$(expected false "$eval_id" blocked unknown false false)" ]
+
+rm -f "$dispatch_log" "$approval"
+[ "$(TEST_GH_OBSERVATION=completed:success \
+  TEST_GH_GENERATION_JOB_NAME='Provider reconciliation and dispatch [generation_done=true]' \
+  run reconcile "$eval_id")" = \
+  "$(expected true "$eval_id" ready succeeded false false true)" ]
+[ ! -e "$dispatch_log" ]
+printf '%s\n' "$eval_confirmation_sha256" >"$approval"
+chmod 0600 "$approval"
+[ "$(TEST_GH_OBSERVATION=completed:success \
+  TEST_GH_GENERATION_JOB_NAME='Provider reconciliation and dispatch [generation_done=true]' \
+  run run_confirmed "$eval_id")" = \
+  "$(expected true "$eval_id" ready succeeded false false true)" ]
+[ -e "$approval" ]
+[ ! -e "$dispatch_log" ]
+rm -f "$approval"
 [ "$(TEST_GH_OBSERVATION=completed:neutral run status "$eval_id")" = \
   "$(expected false "$eval_id" failed failed false false)" ]
 [ "$(TEST_GH_OBSERVATION=completed:skipped run status "$eval_id")" = \
@@ -231,8 +282,8 @@ printf '{"schema_version":"milk.eval.test.v1","manifest":{"campaign_id":"%s"},"g
   "$eval_id" "$eval_id" >"$test_root/evals/$eval_id.json"
 chmod 0440 "$test_root/evals/$eval_id.json"
 [ "$(TEST_GH_OBSERVATION=completed:success run run_confirmed "$eval_id")" = \
-  "$(expected false "$eval_id" blocked succeeded true true)" ]
-[ ! -e "$approval" ]
+  "$(expected false "$eval_id" blocked unknown false false)" ]
+[ -e "$approval" ]
 [ ! -e "$dispatch_log" ]
 
 chmod 0640 "$test_root/evals/$eval_id.json"
@@ -317,4 +368,6 @@ grep -Fq '/opt/milk/bin/milk-managed' "$root/tools/exo/README.md"
 grep -Fq 'sudo install -o root' "$root/tools/exo/README.md"
 grep -Fq '"/etc/milk/evals/$EVAL_ID.json"' "$root/tools/exo/README.md"
 grep -Fq 'generation_done' "$root/tools/exo/README.md"
+grep -Fq 'Provider reconciliation and dispatch [generation_done=true|false]' "$root/tools/exo/README.md"
+grep -Fq 'exact document SHA-256' "$root/tools/exo/README.md"
 printf 'managed Exo host command tests: ok\n'

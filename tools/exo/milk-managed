@@ -10,6 +10,7 @@ state_root=${MILK_MANAGED_STATE_ROOT:-/var/lib/milk/evals}
 eval_owner_uid=${MILK_MANAGED_EVAL_OWNER_UID:-0}
 lock_acquired=false
 consumed_file=
+generation_done=false
 
 valid_component() {
   case "$1" in
@@ -40,8 +41,8 @@ valid_dispatch_target() {
 valid_dispatch_target || exit 64
 
 result() {
-  printf '{"ok":%s,"eval_id":"%s","state":"%s","dispatch_state":"%s","generation_done":false,"changed":%s,"approval_required":%s}\n' \
-    "$1" "$eval_id" "$2" "$3" "$4" "$5"
+  printf '{"ok":%s,"eval_id":"%s","state":"%s","dispatch_state":"%s","generation_done":%s,"changed":%s,"approval_required":%s}\n' \
+    "$1" "$eval_id" "$2" "$3" "$generation_done" "$4" "$5"
 }
 
 mode_of() {
@@ -144,6 +145,7 @@ state_action=
 state_request_id=
 state_database_id=
 state_eval_id=
+state_confirmation_sha256=
 load_state() {
   if [ ! -e "$state_file" ] && [ ! -L "$state_file" ]; then
     return 1
@@ -155,14 +157,15 @@ load_state() {
   case "$state_size" in
     ''|*[!0-9]*) return 2 ;;
   esac
-  [ "$state_size" -le 256 ] || return 2
-  [ "$(wc -l <"$state_file" 2>/dev/null | tr -d '[:space:]')" = 5 ] || return 2
+  [ "$state_size" -le 320 ] || return 2
+  [ "$(wc -l <"$state_file" 2>/dev/null | tr -d '[:space:]')" = 6 ] || return 2
   state_version=$(sed -n '1p' "$state_file")
   state_action=$(sed -n '2p' "$state_file")
   state_request_id=$(sed -n '3p' "$state_file")
   state_database_id=$(sed -n '4p' "$state_file")
   state_eval_id=$(sed -n '5p' "$state_file")
-  [ "$state_version" = milk-managed-state-v2 ] || return 2
+  state_confirmation_sha256=$(sed -n '6p' "$state_file")
+  [ "$state_version" = milk-managed-state-v3 ] || return 2
   case "$state_action" in
     reconcile|run_confirmed) ;;
     *) return 2 ;;
@@ -173,6 +176,8 @@ load_state() {
     ''|0|*[!0-9]*) return 2 ;;
   esac
   [ "$state_eval_id" = "$eval_id" ] || return 2
+  valid_hex "$state_confirmation_sha256" 64 || return 2
+  [ "$state_confirmation_sha256" = "$eval_confirmation_sha256" ] || return 2
 }
 
 write_state() {
@@ -183,8 +188,9 @@ write_state() {
   if [ -e "$state_tmp" ] || [ -L "$state_tmp" ]; then
     return 1
   fi
-  if ! printf 'milk-managed-state-v2\n%s\n%s\n%s\n%s\n' \
+  if ! printf 'milk-managed-state-v3\n%s\n%s\n%s\n%s\n%s\n' \
     "$write_action" "$write_request_id" "$write_database_id" "$eval_id" \
+    "$eval_confirmation_sha256" \
     >"$state_tmp"; then
     rm -f -- "$state_tmp" >/dev/null 2>&1 || :
     return 1
@@ -218,6 +224,7 @@ correlate_once() {
 }
 
 refresh_state() {
+  generation_done=false
   if [ "$state_database_id" = pending ]; then
     if correlate_once; then
       state_database_id=$correlated_database_id
@@ -228,15 +235,24 @@ refresh_state() {
       return 2
     fi
   fi
-  observation=$(gh run view "$state_database_id" \
+  run_view=$(gh run view "$state_database_id" \
     --repo "$repository" \
-    --json status,conclusion \
-    --jq '.status + ":" + (.conclusion // "")' \
+    --json status,conclusion,jobs \
+    --jq '(.status + ":" + (.conclusion // "")), (.jobs[].name | select(startswith("Provider reconciliation and dispatch [generation_done=")))' \
     2>/dev/null) || return 2
+  observation=$(printf '%s\n' "$run_view" | sed -n '1p')
   case "$observation" in
     queued:|in_progress:|requested:|waiting:|pending:|completed:success|completed:action_required|completed:cancelled|completed:failure|completed:neutral|completed:skipped|completed:stale|completed:startup_failure|completed:timed_out) ;;
     *) return 2 ;;
   esac
+  if [ "$observation" = completed:success ]; then
+    generation_job_name=$(printf '%s\n' "$run_view" | sed -n '2,$p')
+    case "$generation_job_name" in
+      'Provider reconciliation and dispatch [generation_done=false]') ;;
+      'Provider reconciliation and dispatch [generation_done=true]') generation_done=true ;;
+      *) return 2 ;;
+    esac
+  fi
 }
 
 read_managed_state() {
@@ -323,6 +339,10 @@ guard_previous_dispatch() {
       ;;
     completed:success)
       prior_dispatch_state=succeeded
+      if [ "$generation_done" = true ]; then
+        result true ready succeeded false false
+        exit 0
+      fi
       ;;
     completed:cancelled|completed:failure|completed:neutral|completed:skipped|completed:stale|completed:startup_failure|completed:timed_out)
       prior_dispatch_state=failed

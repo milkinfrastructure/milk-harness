@@ -131,6 +131,14 @@ PROVIDER_LEASE_MAX_CLOCK_SKEW_SECONDS = 30
 PROVIDER_LEASE_ATTEMPTS = 8
 MAX_GATEWAY_INGEST_REFERENCES = 18
 MAX_TEACHER_DECISIONS = 4_096
+GENERATION_STATUS_KEYS = {
+    "schema_version",
+    "eval_id",
+    "max_decisions",
+    "claimed_decisions",
+    "remaining_decisions",
+    "generation_done",
+}
 SUMMARY_KEYS = {
     "schema_version",
     "source",
@@ -1979,6 +1987,28 @@ def validate_create_confirmation(requested, provided_sha256, expected_sha256):
     return provided_sha256
 
 
+def validate_generation_status(raw, expected_eval_id):
+    value = _strict_object(raw, limit=1024)
+    counts = tuple(
+        value.get(name)
+        for name in ("max_decisions", "claimed_decisions", "remaining_decisions")
+    )
+    if (
+        set(value) != GENERATION_STATUS_KEYS
+        or value.get("schema_version") != "dragontales.generation-status.v1"
+        or not isinstance(expected_eval_id, str)
+        or HEX64.fullmatch(expected_eval_id) is None
+        or value.get("eval_id") != expected_eval_id
+        or any(type(count) is not int or count < 0 for count in counts)
+        or not 1 <= counts[0] <= MAX_TEACHER_DECISIONS
+        or counts[0] != counts[1] + counts[2]
+        or type(value.get("generation_done")) is not bool
+        or value["generation_done"] != (counts[2] == 0)
+    ):
+        raise ValueError("gateway generation status is invalid")
+    return value["generation_done"]
+
+
 def _create_authority(
     requested,
     confirmation_valid,
@@ -2216,6 +2246,11 @@ def main(argv=None):
     confirmation.add_argument("--provided-sha256", default="")
     confirmation.add_argument("--expected-sha256", default="")
 
+    generation_status = commands.add_parser("validate-generation-status")
+    generation_status.add_argument("--input", required=True)
+    generation_status.add_argument("--eval-id", required=True)
+    generation_status.add_argument("--github-output", required=True)
+
     create_gate = commands.add_parser("create-gate")
     create_gate.add_argument("--event", required=True)
     create_gate.add_argument("--requested", default="")
@@ -2331,6 +2366,13 @@ def main(argv=None):
             arguments.provided_sha256,
             arguments.expected_sha256,
         )
+        return 0
+    if arguments.command == "validate-generation-status":
+        generation_done = validate_generation_status(
+            _regular_file(arguments.input).read_bytes(), arguments.eval_id
+        )
+        with Path(arguments.github_output).open("a", encoding="utf-8") as output:
+            output.write(f"generation_done={'true' if generation_done else 'false'}\n")
         return 0
     if arguments.command == "create-gate":
         value = provider_create_gate(

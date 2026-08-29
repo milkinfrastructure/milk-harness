@@ -59,7 +59,8 @@ The repository must be `github.com/OWNER/REPOSITORY`; the workflow must be a
 `.yml` or `.yaml` filename; and the ref must be a simple branch or tag. The
 model cannot override them. The bundled `production-loop.yml` remains a
 Milk-managed production workflow with strict Milk image and release admission;
-it is not a custom-image self-host template.
+it is not a custom-image self-host template. A compatible fork workflow must
+use the same exact generation-completion job-name contract described below.
 
 Run the non-dispatching config/control smoke in
 [`examples/self-host`](../../examples/self-host) before installing the command.
@@ -107,17 +108,20 @@ sudo install -o "$EXO_SERVICE_USER" -g "$(id -gn "$EXO_SERVICE_USER")" -m 0600 \
 rm -f -- "$approval_source"
 ```
 
-The command atomically consumes that file and requires it to match the admitted
-document bytes validated for that call before it dispatches paid work. Changing
-the document after approval blocks dispatch. Approval remains one-use; there is
-no persistent activation.
+The command requires approval to match the admitted document bytes validated
+for that call before it dispatches paid work. It atomically consumes a valid
+approval immediately before dispatch. Changing the document blocks dispatch;
+an existing dispatch state bound to the prior document also blocks before the
+approval is consumed. Approval remains one-use; there is no persistent
+activation.
 
-Before any dispatch, the command writes a `pending` record, then resolves and
-persists exactly one GitHub Actions database ID for `main` and
-`workflow_dispatch`. A missing or ambiguous correlation stays pending and
-blocks another dispatch. An atomic per-eval lock serializes calls for that eval
-without blocking other evals. A hard kill may leave the lock behind; an
-operator must inspect the process and GitHub run before removing it.
+Before any dispatch, the command writes a `pending` record bound to the eval ID
+and exact document SHA-256, then resolves and persists exactly one GitHub
+Actions database ID for `main` and `workflow_dispatch`. A missing or ambiguous
+correlation stays pending and blocks another dispatch. An atomic per-eval lock
+serializes calls for that eval without blocking other evals. A hard kill may
+leave the lock behind; an operator must inspect the process and GitHub run
+before removing it.
 
 ## Status contract
 
@@ -131,15 +135,22 @@ The fixed command writes one content-free JSON object on stdout:
 or `failed`. `dispatch_state` is `idle`, `pending`, `running`, `succeeded`,
 `action_required`, `failed`, or `unknown`.
 
-A successful GitHub workflow pass reports `state=ready`,
-`dispatch_state=succeeded`, and `generation_done=false`. It never reports
-generation complete because the workflow does not yet publish a typed,
-content-free completion receipt bound to the GitHub run ID, eval ID, and exact
-document SHA-256. That receipt must carry the gateway's authoritative
-`max_decisions`, `claimed_decisions`, and `remaining_decisions`; only a validated
-zero `remaining_decisions` may set `generation_done=true`. Workflow success and
-free-form logs are not completion authority, so the command fails closed until
-that receipt exists.
+After every tick, the workflow invokes the gateway's content-free
+`generation-status` command with the same read-only capture/control authority.
+It requires the exact v1 schema and eval ID, integer counts satisfying
+`max_decisions = claimed_decisions + remaining_decisions`, and a completion
+boolean equal to `remaining_decisions == 0`. The provider job exposes only that
+validated boolean through its exact deterministic name:
+
+```text
+Provider reconciliation and dispatch [generation_done=true|false]
+```
+
+For a correlated successful run bound to the current document SHA-256, the host
+command accepts exactly one of those names through GitHub's typed jobs response.
+`generation_done=true` prevents both reconcile and paid dispatch. Missing,
+duplicated, or malformed names fail closed; workflow success and logs are never
+completion authority.
 
 Unknown fields, malformed output, stderr, and process errors are never returned
 to the model.

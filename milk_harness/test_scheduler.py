@@ -28,6 +28,7 @@ from milk_harness.scheduler import (
     encode_summary,
     immutable_image,
     load_provider_lease_token,
+    main as scheduler_main,
     provider_create_gate,
     provider_lease_token,
     release_provider_lease,
@@ -37,6 +38,7 @@ from milk_harness.scheduler import (
     store_location_sha256,
     summarize_step,
     validate_create_confirmation,
+    validate_generation_status,
     verify_gateway_run_config,
     verify_gateway_ingest_run_config,
     verify_provider_run_config,
@@ -464,6 +466,71 @@ class SchedulerTest(unittest.TestCase):
         self.assertTrue(denied["requested"])
         self.assertFalse(denied["confirmation_valid"])
         self.assertFalse(denied["granted"])
+
+    def test_generation_status_is_exact_eval_bound_and_consistent(self):
+        status = {
+            "schema_version": "dragontales.generation-status.v1",
+            "eval_id": HEX,
+            "max_decisions": 7,
+            "claimed_decisions": 2,
+            "remaining_decisions": 5,
+            "generation_done": False,
+        }
+        self.assertFalse(validate_generation_status(canonical_json(status), HEX))
+        done = {
+            **status,
+            "claimed_decisions": 7,
+            "remaining_decisions": 0,
+            "generation_done": True,
+        }
+        self.assertTrue(validate_generation_status(canonical_json(done), HEX))
+
+        for changed in (
+            {"schema_version": "dragontales.generation-status.v2"},
+            {"eval_id": "b" * 64},
+            {
+                "max_decisions": 0,
+                "claimed_decisions": 0,
+                "remaining_decisions": 0,
+            },
+            {
+                "max_decisions": 4_097,
+                "claimed_decisions": 2,
+                "remaining_decisions": 4_095,
+            },
+            {"claimed_decisions": True},
+            {"claimed_decisions": 3},
+            {"generation_done": True},
+            {"unexpected": None},
+        ):
+            with self.subTest(changed=changed), self.assertRaisesRegex(
+                ValueError, "generation status is invalid"
+            ):
+                validate_generation_status(canonical_json({**status, **changed}), HEX)
+        with self.assertRaisesRegex(ValueError, "duplicate key"):
+            validate_generation_status(b'{"eval_id":"a","eval_id":"b"}', HEX)
+
+        status_path = self.root / "generation-status.json"
+        github_output = self.root / "github-output"
+        status_path.write_bytes(canonical_json(done))
+        github_output.write_text("", encoding="utf-8")
+        self.assertEqual(
+            scheduler_main(
+                [
+                    "validate-generation-status",
+                    "--input",
+                    str(status_path),
+                    "--eval-id",
+                    HEX,
+                    "--github-output",
+                    str(github_output),
+                ]
+            ),
+            0,
+        )
+        self.assertEqual(
+            github_output.read_text(encoding="utf-8"), "generation_done=true\n"
+        )
 
     def test_provider_create_authority_is_external_and_tamper_evident(self):
         evidence = LocalEvidenceStore(self.root / "evidence")
