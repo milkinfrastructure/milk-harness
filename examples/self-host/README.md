@@ -1,6 +1,6 @@
 # Self-host control smoke
 
-This smoke validates and materializes a canonical `milk.eval.v1` document, then exercises the local Exo host-command boundary. It does not contact GitHub, Cloudflare, Baseten, or Modal and cannot create paid work.
+This smoke validates and materializes a canonical `milk.eval.v1` document, then exercises the local Exo host-command boundary. It is a config/control smoke, not provider execution or production qualification. It does not contact GitHub, Cloudflare, Baseten, or Modal, cannot create paid work, and uses no GPU.
 
 Run it from the repository root with Python 3 and the GitHub CLI installed:
 
@@ -37,4 +37,6 @@ The final output is an `idle` status object. Remove `$smoke_root` when finished.
 
 Every identifier, image digest, deployment receipt, store name, and provider resource in the example is fake. Do not install it as a repository variable and do not dispatch `reconcile` or `run_confirmed` with it.
 
-The current provider workflow remains Milk-managed. It admits only Milk release receipts and immutable Milk image repositories. A fork may point `milk-managed` at an operator-owned GitHub repository, workflow file, and ref, but that workflow is operator-supplied; this repository does not yet include a turnkey custom-image or custom-domain provider deployment.
+The stable eval ID is exactly the example manifest's `campaign_id` and must also match `gateway_config.eval_id`. It is not the config hash. Validation separately computes the canonical outer document's SHA-256, which production uses as the explicit paid-dispatch confirmation.
+
+The current provider workflow remains Milk-managed. It admits only Milk release receipts and immutable Milk image repositories. A fork may point `milk-managed` at an operator-owned GitHub repository, workflow file, and ref, but that workflow is operator-supplied. A self-host operator owns its eval configuration, storage credentials, provider credentials, images, domains, and spend controls; this repository does not yet include a turnkey custom-image or custom-domain provider deployment.

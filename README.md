@@ -1,14 +1,14 @@
 # Milk Harness
 
-Milk Harness watches the traffic captured by [`milk-gateway`](https://github.com/milkinfrastructure/milk-gateway), generates evaluations until a configured limit is reached, and exits. It runs disposable provider jobs; it is not a standing model server or control service.
+Milk Harness validates one operator-admitted eval document, watches completed traffic captured by [`milk-gateway`](https://github.com/milkinfrastructure/milk-gateway), generates evaluation work until that eval's limit is reached, and exits. It runs disposable provider jobs; it is not a standing model server or control service.
 
 The current hosted pilot is Stripe-like at the SDK boundary but single-tenant: one gateway deployment owns one tenant, project, environment, and workload scope. It is not a shared multi-customer endpoint.
 
 1. Point the official OpenAI SDK at the Milk gateway.
-2. Set one `dt_live_...` key.
+2. Send one `dt_live_...` key as the Bearer credential.
 3. Send normal application traffic.
 
-Milk Infrastructure owns the hosted eval configuration, object stores, provider credentials, route policy, and operator-only status/results inspection. The `dt_live_...` key authorizes chat traffic only; there is no customer status/results API yet.
+Milk Infrastructure is the operator for the hosted pilot and owns its eval configuration, storage and provider credentials, route policy, and operator-only status/results inspection. A self-host operator supplies the equivalent configuration and secrets. Customers receive only the `dt_live_...` traffic key; it authorizes chat traffic, not provider work or status/results access.
 
 The forkable self-host surface currently covers canonical config validation and the Exo control boundary. Full provider execution remains Milk-managed because production admission accepts only Milk release receipts and immutable Milk image repositories. The bounded local smoke is in [`examples/self-host`](examples/self-host).
 
@@ -33,7 +33,9 @@ MILK_EVAL_CONFIG_JSON=<canonical milk.eval.v1 JSON>
 MILK_EVAL_ID=<stable campaign/eval ID embedded in the manifest and gateway config>
 ```
 
-Credentials remain individual masked secrets. They are not embedded in the eval document or bundled into JSON secret blobs.
+`MILK_EVAL_ID` is the stable campaign identity: it must equal both `manifest.campaign_id` and `gateway_config.eval_id`. It is not the document hash. Validation separately computes `MILK_EVAL_CONFIG_SHA256` over the exact canonical outer document; an explicitly confirmed manual dispatch must match that digest before paid work can start.
+
+Credentials remain individual operator-owned masked secrets. They are not embedded in the eval document or bundled into JSON secret blobs.
 
 The scheduled loop performs three bounded, separately credentialed steps:
 
@@ -51,7 +53,7 @@ Paid work has three gates:
 
 - an immutable price receipt for the exact provider;
 - a pessimistic reservation inside the campaign budget;
-- a confirmed manual dispatch whose hash matches the active canonical eval document.
+- a confirmed manual dispatch whose hash matches the exact admitted outer eval document.
 
 The current campaign ceiling is `$1,000`. New paid work stops at `$850`, preserving `$150` for running work and teardown. Scheduled runs cannot authorize provider creates.
 
@@ -77,7 +79,7 @@ Production uses three GitHub environments:
 
 The workflow is [`production-loop.yml`](.github/workflows/production-loop.yml). Keep Actions disabled until all three environments, the two eval variables, provider resources, and object-store credentials are complete. Enabling the workflow starts the five-minute reconciliation clock; it does not by itself authorize paid work.
 
-Provider work uses immutable private `linux/amd64` images:
+Existing private-image evidence records these compressed `linux/amd64` sizes:
 
 | Image | Compressed size |
 | --- | ---: |
@@ -90,6 +92,8 @@ Provider work uses immutable private `linux/amd64` images:
 Modal and Baseten pull those exact images. They do not rebuild them. The local Mac does not build or run GPU images.
 
 Alpine cannot materially shrink the pinned CUDA, PyTorch, and vLLM layers; model weights remain external and are mounted and hash-verified at runtime.
+
+Those image admissions predate the current eval-scoped source. The current source is a release candidate until it is rebuilt into new private images and passes the complete cloud proof below.
 
 See [`docs/reference/production-scheduler.md`](docs/reference/production-scheduler.md) for the credential boundaries and [`docs/reference/spend-policy.md`](docs/reference/spend-policy.md) for budget semantics.
 
@@ -106,7 +110,7 @@ node --test tools/exo/index.test.mjs
 
 Builds run on a clean CPU-only x86 host. The release script accepts no provider, R2-authority, route-signing, OpenAI, or local-GPU credentials.
 
-Current live qualification and exact release IDs are recorded in [`docs/reference/production-status.md`](docs/reference/production-status.md).
+Current qualification evidence and remaining gates are recorded in [`docs/reference/production-status.md`](docs/reference/production-status.md).
 
 ## Production qualification
 
