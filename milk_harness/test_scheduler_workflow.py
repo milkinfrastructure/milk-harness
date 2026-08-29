@@ -7,12 +7,19 @@ from milk_harness.run_once import RunConfig
 
 
 ROOT = Path(__file__).parents[1]
+WORKFLOWS = ROOT / ".github/workflows"
 WORKFLOW = ROOT / ".github/workflows/production-loop.yml"
 CONFIG = ROOT / "deploy/run-once.production.json"
 MECHANICS_CONFIG = ROOT / "deploy/run-once.mechanics.json"
 
 
 class ProductionWorkflowTest(unittest.TestCase):
+    def test_repository_has_only_ci_and_the_manual_bridge(self):
+        self.assertEqual(
+            {path.name for path in WORKFLOWS.glob("*.yml")},
+            {"offline-gates.yml", "production-loop.yml"},
+        )
+
     def test_single_flight_workflow_runs_only_run_once(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertNotIn("schedule:", text)
