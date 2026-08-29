@@ -26,7 +26,14 @@ source_command=$source_dir/milk-managed
   exit 66
 }
 
-for path in /opt/milk /opt/milk/bin /var/lib/milk; do
+for path in \
+  /opt/milk \
+  /opt/milk/bin \
+  /etc/milk \
+  /etc/milk/evals \
+  /var/lib/milk \
+  /var/lib/milk/evals
+do
   if [ -L "$path" ]; then
     printf 'refusing symbolic-link install path: %s\n' "$path" >&2
     exit 73
@@ -35,7 +42,10 @@ done
 
 install -d -o root -g root -m 0755 /opt/milk /opt/milk/bin
 install -o root -g root -m 0755 "$source_command" /opt/milk/bin/milk-managed
-install -d -o "$service_uid" -g "$service_gid" -m 0700 /var/lib/milk
+install -d -o root -g root -m 0755 /etc/milk
+install -d -o root -g "$service_gid" -m 0750 /etc/milk/evals
+install -d -o "$service_uid" -g "$service_gid" -m 0700 \
+  /var/lib/milk /var/lib/milk/evals
 
-printf 'installed /opt/milk/bin/milk-managed; state directory owner uid=%s gid=%s\n' \
+printf 'installed /opt/milk/bin/milk-managed; eval documents=/etc/milk/evals; state=/var/lib/milk/evals; service uid=%s gid=%s\n' \
   "$service_uid" "$service_gid"

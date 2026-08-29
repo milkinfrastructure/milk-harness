@@ -1,25 +1,29 @@
 # Exo tool
 
-This source installs one `milk` model tool. Its only argument is `action`, one
-of `status`, `reconcile`, or `run_confirmed`. The fixed host command receives
-that value as its only subcommand. `run_confirmed` does not create approval; the
-host command must consume an existing one-use confirmation before paid work.
+This directory provides one `milk` model tool. Every call requires exactly:
+
+```json
+{"action":"status","eval_id":"<64 lowercase hex>"}
+```
+
+`action` is `status`, `reconcile`, or `run_confirmed`. `eval_id` is the
+SHA-256 of one exact eval document admitted by an operator. The model cannot
+provide a path, repository, workflow, branch, provider, or credential.
+
+## Install
 
 Install the host command from the same exact checkout. The installer fixes the
-command at `/opt/milk/bin/milk-managed` and creates `/var/lib/milk` as a `0700`
-directory owned by the Exo service user. It never creates approval.
+command at `/opt/milk/bin/milk-managed`, creates the root-owned admission
+directory `/etc/milk/evals`, and creates the service-owned state root
+`/var/lib/milk/evals`.
 
 ```sh
 EXO_SERVICE_USER=exo
 sudo tools/exo/install-host-command "$EXO_SERVICE_USER"
 ```
 
-The Exo service environment must provide authenticated `gh` access to the
-private repository and the exact `MILK_CONFIRMED_RUN_CONFIG_SHA256`. Tool
-initialization supplies only the fixed command path; it does not inject either.
-
-Install from the private repository at one exact 40-character commit with
-Exo's `manage_tool`:
+The Exo service environment needs authenticated `gh` access to the private
+repository. Tool initialization supplies only the fixed command path:
 
 ```json
 {
@@ -28,50 +32,83 @@ Exo's `manage_tool`:
   "source": {
     "type": "git",
     "repository": "git@github.com:milkinfrastructure/milk-harness.git",
-    "commit": "<exact-commit-sha>",
+    "commit": "<exact-40-character-commit-sha>",
     "subdirectory": "tools/exo"
   },
   "initialization": "{\"command\":\"/opt/milk/bin/milk-managed\"}"
 }
 ```
 
-Exo checks out that commit, copies only `tools/exo` into its managed tool
-store, validates `exo-tool.json` and the schemas, then loads `index.mjs` on the
-next model round. The initialized command path is not exposed as a model
-argument.
+Exo checks out that commit, copies only `tools/exo`, validates the manifest and
+schemas, and loads `index.mjs` on the next model round. The command path and
+host environment are not model arguments.
 
-For one paid pass, an operator writes the reviewed configuration SHA followed
-by one newline as a `0600` file owned by the service user. The parent directory
-is already private, and the command atomically renames this file before it
-validates or dispatches it.
+## Admit one eval
+
+Hash the exact reviewed document, then install it under that hash. The
+directory and document remain root-owned; the Exo service group has read-only
+access.
 
 ```sh
-APPROVED_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+EVAL_DOCUMENT=/absolute/path/reviewed-eval.json
+EVAL_ID=$(sha256sum "$EVAL_DOCUMENT" | cut -d ' ' -f 1)
+EXO_SERVICE_USER=exo
+sudo install -o root -g "$(id -gn "$EXO_SERVICE_USER")" -m 0440 \
+  "$EVAL_DOCUMENT" "/etc/milk/evals/$EVAL_ID.json"
+```
+
+The host command accepts only `/etc/milk/evals/$EVAL_ID.json`. Before every
+action it rejects symbolic links, wrong ownership or modes, oversized files,
+and any document whose SHA-256 differs from `eval_id`.
+
+State, lock, and approval are isolated under
+`/var/lib/milk/evals/$EVAL_ID/`. The command creates that `0700` service-owned
+directory on the first call. A request ID is `$EVAL_ID-<128-bit nonce>`, so
+GitHub run correlation is also eval-specific.
+
+## Confirm one paid pass
+
+`run_confirmed` never creates approval. After calling `status` once for the
+eval, an operator may install one service-owned approval containing the exact
+eval ID and one newline:
+
+```sh
 approval_source=$(mktemp)
 chmod 0600 "$approval_source"
-printf '%s\n' "$APPROVED_SHA256" >"$approval_source"
+printf '%s\n' "$EVAL_ID" >"$approval_source"
 sudo install -o "$EXO_SERVICE_USER" -g "$(id -gn "$EXO_SERVICE_USER")" -m 0600 \
-  "$approval_source" /var/lib/milk/run-confirmed.approval
+  "$approval_source" \
+  "/var/lib/milk/evals/$EVAL_ID/run-confirmed.approval"
 rm -f -- "$approval_source"
 ```
 
-Before any dispatch, the command persists a unique 128-bit request ID and a
-`pending` record in `/var/lib/milk/managed-dispatch.state`. The workflow places
-that ID in its run name. The command then resolves and persists exactly one
-GitHub Actions database ID for `main` and `workflow_dispatch`; `status` reads
-only that run ID. A missing or ambiguous correlation remains pending and blocks
-another dispatch. Only an exact run with conclusion `success` reports
-`complete`. An atomic `managed-dispatch.state.lock` directory serializes all
-host-command calls. A hard-kill may leave that lock behind; it is never removed
-automatically, so an operator must inspect the process and GitHub run before
-removing it.
+The command atomically consumes that file before it validates or dispatches
+paid work. Approval remains one-use; there is no persistent activation.
 
-The command must write exactly this content-free JSON object on stdout:
+Before any dispatch, the command writes a `pending` record, then resolves and
+persists exactly one GitHub Actions database ID for `main` and
+`workflow_dispatch`. A missing or ambiguous correlation stays pending and
+blocks another dispatch. An atomic per-eval lock serializes calls for that eval
+without blocking other evals. A hard kill may leave the lock behind; an
+operator must inspect the process and GitHub run before removing it.
+
+## Status contract
+
+The fixed command writes one content-free JSON object on stdout:
 
 ```json
-{"ok":true,"state":"idle","changed":false,"approval_required":false}
+{"ok":true,"eval_id":"<64 lowercase hex>","state":"idle","dispatch_state":"idle","generation_done":false,"changed":false,"approval_required":false}
 ```
 
-Allowed states are `idle`, `ready`, `waiting_for_confirmation`, `running`,
-`complete`, `blocked`, and `failed`. Unknown fields, malformed output, stderr,
-and process errors are never returned to the model.
+`state` is `idle`, `ready`, `waiting_for_confirmation`, `running`, `blocked`,
+or `failed`. `dispatch_state` is `idle`, `pending`, `running`, `succeeded`,
+`action_required`, `failed`, or `unknown`.
+
+A successful GitHub workflow pass reports `state=ready`,
+`dispatch_state=succeeded`, and `generation_done=false`. It never reports
+generation complete because the host command does not yet read authoritative
+generation counts. The manager can therefore continue another bounded pass
+instead of stopping on dispatch success.
+
+Unknown fields, malformed output, stderr, and process errors are never returned
+to the model.
