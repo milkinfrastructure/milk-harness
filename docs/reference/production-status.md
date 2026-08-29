@@ -4,7 +4,7 @@ Last updated: 2026-08-29.
 
 ## Current status
 
-The gateway and harness source repositories are public. Exact current-source private images have passed native `linux/amd64` build and admission, but the hosted system is not deployed or production-qualified. Runtime OCI images remain private.
+The gateway and harness source repositories are public. Exact private images from the `v0.1.0-rc.1` source commits—gateway `bc1b53c45c337d95daa38cd8170da46c246e5a70` and harness `aa294358bede782d1e533fc1f6432615b5366a82`—have passed native `linux/amd64` build and admission. The harness default branch adds only documentation and build-test changes after that tag; it does not change runtime image inputs. The hosted system is not deployed or production-qualified, and runtime OCI images remain private.
 
 The candidate uses one stable eval identity across the manifest, gateway config, scheduler, and durable object keys: `MILK_EVAL_ID`, `manifest.campaign_id`, and `gateway_config.eval_id` are equal. The separately computed SHA-256 of the canonical outer eval document is the paid-work authorization boundary. Private-image build and admission are complete; production publication/readback and the complete cloud proof remain required before the candidate can be called released.
 

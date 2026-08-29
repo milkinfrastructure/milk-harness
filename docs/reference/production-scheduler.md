@@ -62,7 +62,7 @@ For the first controlled proof, `MILK_GATEWAY_WORKER_VERSION_ID` is the exact Wo
 
 The eval manifest carries exact digest references for `milk-gateway`, `milk-jobs`, `milk-student-train`, `milk-student-branch`, and `milk-teacher-gpt-oss`, plus the exact image release SHA-256. The jobs image loads and verifies that immutable release and each image admission from evidence before provider setup. The local Mac neither builds nor runs GPU images; GPU work occurs only in an explicitly authorized cloud provider job.
 
-This document describes the production contract. The current source remains a release candidate until new private images are built and admitted from its exact commits and the complete cloud proof succeeds. Earlier image admissions cannot qualify the current source.
+This document describes the production contract. The `v0.1.0-rc.1` release candidate binds gateway commit `bc1b53c45c337d95daa38cd8170da46c246e5a70` and harness commit `aa294358bede782d1e533fc1f6432615b5366a82`; its exact private images are built and admitted. It remains unqualified until the complete cloud proof succeeds. Any image-producing source change requires a new exact-commit image build and admission; earlier admissions cannot qualify that changed source.
 
 ## Operational-log boundary
 
