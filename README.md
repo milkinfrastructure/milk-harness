@@ -104,21 +104,21 @@ Follow the ordered [`production runbook`](docs/reference/production-runbook.md) 
 
 The mechanics proof uses the existing typed GPT-OSS teacher profile. Hosted GLM is the next explicit typed teacher profile after mechanics reaches the production gate; it uses the same eval and scheduler contract rather than a generic provider framework.
 
-The current release-candidate admission records these compressed `linux/amd64` sizes:
+The current v6 candidate admissions record these compressed `linux/amd64` sizes:
 
 | Image | Compressed size |
 | --- | ---: |
-| CPU `milk-gateway` | 12.05 MiB |
+| CPU `milk-gateway` | 12.0520439 MiB |
 | CPU `milk-jobs` | 58.23 MiB |
 | GPU `milk-teacher-gpt-oss` | 10,420.52 MiB |
 | GPU `milk-student-train` | 6,371.98 MiB |
 | GPU `milk-student-branch` | 10,836.95 MiB |
 
-Modal and Baseten pull those exact images. They do not rebuild them. The local Mac does not build or run GPU images.
+Cloudflare pulls the separately admitted gateway image. Modal and Baseten pull the exact jobs and GPU images. They do not rebuild images. The local Mac does not build or run GPU images.
 
 Alpine cannot materially shrink the pinned CUDA, PyTorch, and vLLM layers; model weights remain external and are mounted and hash-verified at runtime. The teacher and branch share the same vLLM layers, so all five images contain 16.88 GiB of unique compressed content rather than their 27.05 GiB arithmetic sum. Milk adds 463.57 MiB across the five images; the remaining unique bytes are pinned upstream runtimes.
 
-Image release v5 (`cd8a756a384780977a0f9c33cff17297844ed94562bb1bb5f6cd2878d20bf30c`) retains the initial v4 gateway and GPU images bound to gateway `bc1b53c45c337d95daa38cd8170da46c246e5a70` and harness `aa294358bede782d1e533fc1f6432615b5366a82`, and selectively replaces only `milk-jobs` from harness `0eebb1aa0326b1cf13403b885295b99cc02fd71b`. The new 58.23 MiB jobs image is `milk-jobs@sha256:c80c438845462cf2d3dbe74d49bb08a1c8b109b5ff83f551619271cc92e59260`; its admission is `a6e3b0bb7a09f9db31cd76b9c0238655141391c9c63e969c5175306112f30790` and build context is `0dbd7543c82077868a4b6a4440be4dfc0d323ccfeb3eff22e2ccf08d1b69b536`. The native selective rebuild took 3 minutes 12 seconds, used no local GPU, and left no active builder. The hosted release remains a candidate until production publication/readback and the complete cloud proof below pass.
+The current gateway release (`39760f00e041d5fd91f84990584cf99dd4b2eb7ded9eac07615a53415bd884e4`) is bound to gateway source `659b1723539fa3126472348b6fc3afb52831dfca`. Its image is `milk-gateway@sha256:2e0180deda8854c6bc76a1fa0b9ab02e43f49c9d14325c0e0f300c613d30be20` and its admission is `a3bd04a269f5a81190cc60c4c57b4614ea2e63aad7f5a0a054ed61f4302ae5be`. The CPU-only build completed in 1 hour 3 minutes 20 seconds and removed its ephemeral builder. Harness image release v5 (`aadbb2fcc88cd775c51e7d976a1256110482a16105570fe5b4007061517830fb`) is bound to harness source `3553ad5c4f7b8c72a6a071b1510f6104fad57a4d`. It retains the three GPU images and admissions byte-for-byte from harness `aa294358bede782d1e533fc1f6432615b5366a82`; those images retain their embedded gateway build dependency `milk-gateway@sha256:f5fd6786a5d36870045c9fc8271ac28940ae88809569f5c3fb8fbb2d2582ca4c` from gateway source `bc1b53c45c337d95daa38cd8170da46c246e5a70`. It selectively replaces only `milk-jobs` with `milk-jobs@sha256:97e00265eee7c1350b12ba0821a24012fcc312f127f2ce75a463fe991af5e056`; its admission is `6b594d17a39b7ab4e3e782916c4be57d32e3034e3385400840bf1ec85dae9868` and build context is `b77f25092b46c979ab8788eae320748a91f5590c48fec2d113134fa2ce50c03e`. The CPU-only selective build completed in 3 minutes 58 seconds, used no local GPU, and removed its ephemeral builder. Both immutable release records validate locally, but the current v6 evidence is not published to production R2. The five objects currently in `milk-prod-evidence` are the previous harness release; current publication requires the new gateway admission and release plus the new jobs admission and harness release, followed by metadata and least-privilege body readback. The hosted release remains a candidate until that readback and the complete cloud proof below pass.
 
 See [`docs/reference/production-scheduler.md`](docs/reference/production-scheduler.md) for the credential boundaries and [`docs/reference/spend-policy.md`](docs/reference/spend-policy.md) for budget semantics.
 
