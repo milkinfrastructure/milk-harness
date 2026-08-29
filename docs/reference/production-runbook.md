@@ -18,6 +18,18 @@ deploy/build-images.sh \
 
 Both commands produce content-free local receipts. Do not continue until each image is private, digest-addressed, registry-read back, and admitted by its release receipt. A selective harness rebuild may use `--reuse-release-dir`; it must pass that script's immutable dependency checks.
 
+From a credential-clean shell containing only the `MILK_EVIDENCE_R2_*` authority, publish both exact local releases:
+
+```sh
+cd /absolute/path/to/milk-harness
+python3 -m milk_harness.publish_image_admission \
+  --gateway-release-dir /absolute/new/gateway-release-evidence
+python3 -m milk_harness.publish_image_admission \
+  --release-dir /absolute/new/harness-release-evidence
+```
+
+Each command uses create-only object keys and succeeds only after reading back the exact admission and release bodies. Do not supply builder, provider, traffic, GitHub, or other object-store credentials to either process.
+
 ## 2. Deploy the gateway
 
 Bootstrap the first Cloudflare application:
@@ -46,6 +58,19 @@ The deploy command verifies exact config health and the official-SDK baseline be
 
 ## 3. Admit one eval
 
+After the verified gateway deployment exists, materialize the exact canonical eval document. From a credential-clean shell containing only the `MILK_EVIDENCE_R2_*` authority, publish and read it back before setting repository variables or authorizing paid work:
+
+```sh
+cd /absolute/path/to/milk-harness
+python3 -m milk_harness.publish_eval \
+  --document /absolute/eval.json \
+  --eval-id '<stable-eval-id>' \
+  --harness-source-commit "$(git rev-parse HEAD)" \
+  --root .
+```
+
+The publisher validates the document against the checked-out harness source, creates its content-addressed object once, and succeeds only after exact body readback. Retain the printed outer-document SHA-256.
+
 Provision the three GitHub environments and distinct credentials in [`production-scheduler.md`](production-scheduler.md). Then set only the two repository variables:
 
 ```sh
@@ -54,7 +79,7 @@ gh variable set MILK_EVAL_ID --body '<stable-eval-id>'
 gh variable set MILK_EVAL_CONFIG_JSON </absolute/eval.json
 ```
 
-Verify the canonical outer document locally and retain its printed SHA-256. The eval must bind the exact gateway deployment receipt, release receipts, image digests, provider resources, credential identities, and fixed proof contract.
+The eval must bind the exact gateway deployment receipt, release receipts, image digests, provider resources, credential identities, and fixed proof contract.
 
 ## 4. Start reconciliation
 
