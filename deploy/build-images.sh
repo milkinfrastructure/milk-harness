@@ -314,6 +314,7 @@ if (
     release["schema_version"] not in {
         "milk.private-harness-release.v3",
         "milk.private-harness-release.v4",
+        "milk.private-harness-release.v5",
     }
     or release["gateway_image_reference"] != gateway
 ):

@@ -718,7 +718,7 @@ for artifact in ("student-train", "student-branch", "teacher-gpt-oss", "jobs"):
     assert left == right
 PY
 
-seed=$test_root/verified-v3
+seed=$test_root/verified-v5
 PYTHONPATH=$root python3 - "$seed" <<'PY'
 import hashlib
 import json
@@ -730,7 +730,7 @@ from milk_harness.test_jobs import private_image_release
 
 seed = Path(sys.argv[1])
 harness = seed / "evidence" / "harness"
-private_image_release(harness, "milk.private-harness-release.v3")
+private_image_release(harness, "milk.private-harness-release.v5")
 release_raw = (harness / "release.json").read_bytes()
 (seed / "evidence" / "native-builder-result.json").write_text(
     json.dumps(
@@ -738,7 +738,7 @@ release_raw = (harness / "release.json").read_bytes()
             "schema_version": "milk.native-amd64-builder-result.v1",
             "platform": "linux/amd64",
             "harness_release_sha256": hashlib.sha256(release_raw).hexdigest(),
-            "harness_source_commit": "8" * 40,
+            "harness_source_commit": "a" * 40,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -804,7 +804,7 @@ for item in release["images"]:
         assert item["source_commit"] == "8" * 40
 PY
 
-tampered_seed=$test_root/tampered-v3
+tampered_seed=$test_root/tampered-v5
 python3 - "$seed" "$tampered_seed" <<'PY'
 from pathlib import Path
 import shutil
