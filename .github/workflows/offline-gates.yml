@@ -27,11 +27,6 @@ jobs:
           python-version: 3.12.11
           cache: "false"
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version: 1.24.3
-          cache: false
-
       - name: Verify Python and provider contracts
         run: |
           python3 -m compileall -q milk_harness deploy
@@ -44,11 +39,12 @@ jobs:
           python3 deploy/adapter_train/test_contract.py
           python3 deploy/adapter_train/test_sft_entrypoint.py
 
-      - name: Verify Go and release scripts
+      - name: Verify release scripts
         run: |
-          go test ./...
           sh deploy/student-job.test.sh
           sh deploy/build-images.test.sh
+          sh tools/exo/milk-managed.test.sh
+          node --test tools/exo/index.test.mjs
 
       - name: Write content-free CI receipt
         if: always()

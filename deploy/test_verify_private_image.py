@@ -673,7 +673,6 @@ class PrivateHarnessVerifierTests(unittest.TestCase):
             "student-train": "deploy/student-train/Dockerfile",
             "student-branch": "deploy/student-branch/Dockerfile",
             "teacher-gpt-oss": "deploy/teacher/gpt-oss-120b/Dockerfile",
-            "planner": "Dockerfile.planner",
             "jobs": "Dockerfile.jobs",
         }
         for artifact, relative in dockerfiles.items():

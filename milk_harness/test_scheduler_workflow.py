@@ -50,12 +50,25 @@ class SchedulerWorkflowTest(unittest.TestCase):
             ["gateway-tick", "provider-jobs", "route-control"],
         )
 
-    def test_cron_is_reconcile_only_and_manual_create_is_exactly_confirmed(self):
+    def test_cron_and_manual_false_reconcile_while_manual_create_is_confirmed(self):
+        workflow_header, workflow_jobs = self.text.split("\njobs:\n", 1)
+        self.assertIn("managed_request_id:", workflow_header)
+        self.assertIn(
+            "format('Milk production loop [managed:{0}]', inputs.managed_request_id)",
+            workflow_header,
+        )
+        self.assertNotIn("managed_request_id", workflow_jobs)
         self.assertIn("github.event_name == 'schedule'", self.gateway)
         self.assertIn("github.event_name == 'workflow_dispatch'", self.gateway)
         self.assertIn("inputs.authorize_provider_creates == true", self.gateway)
         self.assertIn(
             "inputs.confirmed_run_config_sha256 == vars.MILK_CONFIRMED_RUN_CONFIG_SHA256",
+            self.gateway,
+        )
+        gateway_condition = self.gateway.split("    runs-on:", 1)[0]
+        self.assertNotIn("inputs.authorize_provider_creates", gateway_condition)
+        self.assertIn(
+            "github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && inputs.confirmed_run_config_sha256 || ''",
             self.gateway,
         )
         self.assertIn("needs: gateway-tick", self.provider)
@@ -297,6 +310,15 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertIn("inputs.authorize_provider_creates == true", self.route)
         route_condition = self.route.split("    runs-on:", 1)[0]
         self.assertNotIn("route_candidate_ready", route_condition)
+        self.assertNotIn("inputs.authorize_provider_creates", route_condition)
+        self.assertIn(
+            "inputs.confirmed_run_config_sha256 == vars.MILK_CONFIRMED_RUN_CONFIG_SHA256",
+            route_condition,
+        )
+        self.assertIn(
+            "MILK_ROUTE_PAID_PROOF_AUTHORIZED: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true }}",
+            self.route,
+        )
         self.assertIn("repository: milkinfrastructure/milk-gateway", self.route)
         self.assertIn("ref: ${{ vars.MILK_GATEWAY_SOURCE_COMMIT }}", self.route)
         self.assertIn("org.opencontainers.image.revision", self.route)
@@ -345,7 +367,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertNotIn("MILK_GATEWAY_CONTAINER_ADMIN_KEY", route_job_environment)
         self.assertNotIn("CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN", route_job_environment)
         self.assertIn(
-            "MILK_MODAL_CANDIDATE_API_KEY: ${{ github.event_name == 'workflow_dispatch'",
+            "MILK_MODAL_CANDIDATE_API_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true",
             self.route,
         )
         self.assertIn("prepare-modal-candidate-credential", self.route)
@@ -407,8 +429,12 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertLess(validate, self.route.index("prepare-modal-candidate-credential"))
         self.assertIn('--gateway-anchor-output "$gateway_anchor"', self.route)
 
-    def test_scheduled_restart_recovers_expired_or_live_canary_without_create(self):
-        start = self.route.index('if [ "$GITHUB_EVENT_NAME" = schedule ]; then')
+    def test_reconcile_restart_recovers_expired_or_live_canary_without_create(self):
+        self.assertIn(
+            '[ "$MILK_ROUTE_PAID_PROOF_AUTHORIZED" != true ] || recovery_only=false',
+            self.route,
+        )
+        start = self.route.index('if [ "$recovery_only" = true ]; then')
         end = self.route.index('\n          if [ "$canary_action" = done ]; then', start)
         branch = textwrap.dedent(self.route[start:end])
         self.assertNotIn("reconcile_candidate ready", branch)
@@ -440,7 +466,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
                     fail() {{ return "${{2:-64}}"; }}
                     events=$1
                     GITHUB_OUTPUT=$2
-                    GITHUB_EVENT_NAME=schedule
+                    recovery_only=true
                     canary_action={action}
                     canary_revision={'a' * 64}
                     zero_needed=false

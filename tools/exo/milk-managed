@@ -1,0 +1,363 @@
+#!/bin/sh
+set -eu
+umask 077
+
+repository=github.com/milkinfrastructure/milk-harness
+workflow=production-loop.yml
+workflow_ref=main
+state_file=${MILK_MANAGED_STATE_FILE:-/var/lib/milk/managed-dispatch.state}
+approval_file=${MILK_MANAGED_APPROVAL_FILE:-/var/lib/milk/run-confirmed.approval}
+lock_dir=$state_file.lock
+lock_acquired=false
+consumed_file=
+
+cleanup() {
+  if [ -n "$consumed_file" ]; then
+    rm -f -- "$consumed_file" >/dev/null 2>&1 || :
+  fi
+  if [ "$lock_acquired" = true ]; then
+    rmdir "$lock_dir" >/dev/null 2>&1 || :
+  fi
+}
+
+result() {
+  printf '{"ok":%s,"state":"%s","changed":%s,"approval_required":%s}\n' \
+    "$1" "$2" "$3" "$4"
+}
+
+mode_of() {
+  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+}
+
+owner_of() {
+  stat -f '%u' "$1" 2>/dev/null || stat -c '%u' "$1" 2>/dev/null
+}
+
+size_of() {
+  stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1" 2>/dev/null
+}
+
+valid_hex() {
+  [ "${#1}" -eq "$2" ] || return 1
+  case "$1" in
+    *[!0-9a-f]*) return 1 ;;
+  esac
+}
+
+private_parent() {
+  case "$1" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  private_dir=${1%/*}
+  [ -n "$private_dir" ] || private_dir=/
+  [ -d "$private_dir" ] && [ ! -L "$private_dir" ] && \
+    [ "$(owner_of "$private_dir" || true)" = "$(id -u)" ] && \
+    [ "$(mode_of "$private_dir" || true)" = 700 ]
+}
+
+state_action=
+state_request_id=
+state_database_id=
+state_sha256=
+load_state() {
+  if [ ! -e "$state_file" ] && [ ! -L "$state_file" ]; then
+    return 1
+  fi
+  [ -f "$state_file" ] && [ ! -L "$state_file" ] || return 2
+  [ "$(owner_of "$state_file" || true)" = "$(id -u)" ] || return 2
+  [ "$(mode_of "$state_file" || true)" = 600 ] || return 2
+  state_size=$(size_of "$state_file" || true)
+  case "$state_size" in
+    ''|*[!0-9]*) return 2 ;;
+  esac
+  [ "$state_size" -le 256 ] || return 2
+  [ "$(wc -l <"$state_file" 2>/dev/null | tr -d '[:space:]')" = 5 ] || return 2
+  state_version=$(sed -n '1p' "$state_file")
+  state_action=$(sed -n '2p' "$state_file")
+  state_request_id=$(sed -n '3p' "$state_file")
+  state_database_id=$(sed -n '4p' "$state_file")
+  state_sha256=$(sed -n '5p' "$state_file")
+  [ "$state_version" = milk-managed-state-v1 ] || return 2
+  case "$state_action" in
+    reconcile|run_confirmed) ;;
+    *) return 2 ;;
+  esac
+  valid_hex "$state_request_id" 32 || return 2
+  case "$state_database_id" in
+    pending) ;;
+    ''|0|*[!0-9]*) return 2 ;;
+  esac
+  valid_hex "$state_sha256" 64 || return 2
+}
+
+write_state() {
+  write_action=$1
+  write_request_id=$2
+  write_database_id=$3
+  write_sha256=$4
+  state_tmp=$state_file.tmp.$write_request_id
+  if [ -e "$state_tmp" ] || [ -L "$state_tmp" ]; then
+    return 1
+  fi
+  if ! printf 'milk-managed-state-v1\n%s\n%s\n%s\n%s\n' \
+    "$write_action" "$write_request_id" "$write_database_id" "$write_sha256" \
+    >"$state_tmp"; then
+    rm -f -- "$state_tmp" >/dev/null 2>&1 || :
+    return 1
+  fi
+  chmod 0600 "$state_tmp" || {
+    rm -f -- "$state_tmp" >/dev/null 2>&1 || :
+    return 1
+  }
+  if ! mv -- "$state_tmp" "$state_file"; then
+    rm -f -- "$state_tmp" >/dev/null 2>&1 || :
+    return 1
+  fi
+}
+
+correlated_database_id=
+correlate_once() {
+  correlated_database_id=$(gh run list \
+    --repo "$repository" \
+    --workflow "$workflow" \
+    --all \
+    --branch "$workflow_ref" \
+    --event workflow_dispatch \
+    --limit 100 \
+    --json databaseId,displayTitle \
+    --jq ".[] | select(.displayTitle == \"Milk production loop [managed:$state_request_id]\") | .databaseId" \
+    2>/dev/null) || return 2
+  case "$correlated_database_id" in
+    '') return 1 ;;
+    0|*[!0-9]*) return 2 ;;
+  esac
+}
+
+refresh_state() {
+  if [ "$state_database_id" = pending ]; then
+    if correlate_once; then
+      state_database_id=$correlated_database_id
+      write_state \
+        "$state_action" "$state_request_id" "$state_database_id" "$state_sha256" || \
+        return 2
+    else
+      correlate_result=$?
+      [ "$correlate_result" -eq 1 ] && return 1
+      return 2
+    fi
+  fi
+  observation=$(gh run view "$state_database_id" \
+    --repo "$repository" \
+    --json status,conclusion \
+    --jq '.status + ":" + (.conclusion // "")' \
+    2>/dev/null) || return 2
+  case "$observation" in
+    queued:|in_progress:|requested:|waiting:|pending:|completed:success|completed:action_required|completed:cancelled|completed:failure|completed:neutral|completed:skipped|completed:stale|completed:startup_failure|completed:timed_out) ;;
+    *) return 2 ;;
+  esac
+}
+
+read_managed_state() {
+  if load_state; then
+    return 0
+  else
+    state_result=$?
+  fi
+  [ "$state_result" -eq 1 ] && return 1
+  return 2
+}
+
+report_status() {
+  if read_managed_state; then
+    :
+  else
+    state_result=$?
+    if [ "$state_result" -eq 1 ]; then
+      result true idle false false
+    else
+      result false blocked false false
+    fi
+    exit 0
+  fi
+  if ! refresh_state; then
+    result false blocked false false
+    exit 0
+  fi
+  case "$observation" in
+    queued:|in_progress:|requested:|waiting:|pending:)
+      result true running false false
+      ;;
+    completed:success)
+      result true complete false false
+      ;;
+    completed:action_required)
+      result true blocked false true
+      ;;
+    completed:cancelled|completed:failure|completed:neutral|completed:skipped|completed:stale|completed:startup_failure|completed:timed_out)
+      result false failed false false
+      ;;
+  esac
+  exit 0
+}
+
+guard_previous_dispatch() {
+  if read_managed_state; then
+    :
+  else
+    state_result=$?
+    if [ "$state_result" -eq 1 ]; then
+      return 0
+    fi
+    result false blocked false false
+    exit 0
+  fi
+  if ! refresh_state; then
+    result false blocked false false
+    exit 0
+  fi
+  case "$observation" in
+    queued:|in_progress:|requested:|waiting:|pending:)
+      result true running false false
+      exit 0
+      ;;
+    completed:action_required)
+      result true blocked false true
+      exit 0
+      ;;
+    completed:success|completed:cancelled|completed:failure|completed:neutral|completed:skipped|completed:stale|completed:startup_failure|completed:timed_out)
+      return 0
+      ;;
+  esac
+}
+
+dispatch() {
+  gh workflow run "$workflow" \
+    --repo "$repository" \
+    --ref "$workflow_ref" \
+    --raw-field "authorize_provider_creates=$1" \
+    --raw-field "confirmed_run_config_sha256=$confirmed_sha256" \
+    --raw-field "managed_request_id=$state_request_id" \
+    >/dev/null 2>&1
+}
+
+start_dispatch() {
+  dispatch_authorized=$1
+  dispatch_action=$2
+  approval_consumed=$3
+  state_request_id=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d '[:space:]') || state_request_id=
+  if ! valid_hex "$state_request_id" 32; then
+    result false blocked "$approval_consumed" "$approval_consumed"
+    exit 0
+  fi
+  state_action=$dispatch_action
+  state_database_id=pending
+  state_sha256=$confirmed_sha256
+  if ! write_state "$state_action" "$state_request_id" pending "$state_sha256"; then
+    result false blocked "$approval_consumed" "$approval_consumed"
+    exit 0
+  fi
+
+  dispatch "$dispatch_authorized" || :
+  attempts=10
+  while [ "$attempts" -gt 0 ]; do
+    if correlate_once; then
+      state_database_id=$correlated_database_id
+      if write_state \
+        "$state_action" "$state_request_id" "$state_database_id" "$state_sha256"; then
+        result true running true false
+      else
+        result false blocked true false
+      fi
+      exit 0
+    else
+      correlate_result=$?
+    fi
+    if [ "$correlate_result" -eq 2 ]; then
+      result false blocked true false
+      exit 0
+    fi
+    attempts=$((attempts - 1))
+    [ "$attempts" -eq 0 ] || sleep 1
+  done
+  result false blocked true false
+  exit 0
+}
+
+[ "$#" -eq 1 ] || exit 64
+action=$1
+case "$action" in
+  status|reconcile|run_confirmed) ;;
+  *) exit 64 ;;
+esac
+
+private_parent "$state_file" || {
+  result false blocked false false
+  exit 0
+}
+command -v gh >/dev/null 2>&1 || {
+  result false blocked false false
+  exit 0
+}
+if ! mkdir -m 0700 "$lock_dir" 2>/dev/null; then
+  result false blocked false false
+  exit 0
+fi
+lock_acquired=true
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [ "$action" = status ]; then
+  report_status
+fi
+
+confirmed_sha256=${MILK_CONFIRMED_RUN_CONFIG_SHA256:-}
+if ! valid_hex "$confirmed_sha256" 64; then
+  result false blocked false false
+  exit 0
+fi
+guard_previous_dispatch
+
+if [ "$action" = reconcile ]; then
+  start_dispatch false reconcile false
+fi
+
+private_parent "$approval_file" || {
+  result false blocked false true
+  exit 0
+}
+if [ ! -e "$approval_file" ] && [ ! -L "$approval_file" ]; then
+  result true waiting_for_confirmation false true
+  exit 0
+fi
+
+approval_candidate=$approval_file.consumed.$$
+if [ -e "$approval_candidate" ] || [ -L "$approval_candidate" ]; then
+  result false blocked false true
+  exit 0
+fi
+consumed_file=$approval_candidate
+if ! mv -- "$approval_file" "$approval_candidate" 2>/dev/null; then
+  result true waiting_for_confirmation false true
+  exit 0
+fi
+
+valid=true
+[ -f "$consumed_file" ] && [ ! -L "$consumed_file" ] || valid=false
+[ "$(owner_of "$consumed_file" || true)" = "$(id -u)" ] || valid=false
+[ "$(mode_of "$consumed_file" || true)" = 600 ] || valid=false
+approval_size=$(size_of "$consumed_file" || true)
+[ "$approval_size" = 65 ] || valid=false
+approved_sha256=
+if [ "$valid" = true ]; then
+  IFS= read -r approved_sha256 <"$consumed_file" || valid=false
+fi
+[ "$approved_sha256" = "$confirmed_sha256" ] || valid=false
+if [ "$valid" != true ]; then
+  result false blocked true true
+  exit 0
+fi
+
+start_dispatch true run_confirmed true

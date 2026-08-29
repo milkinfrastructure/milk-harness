@@ -61,15 +61,6 @@ ARTIFACTS = {
         },
         "gateway": True,
     },
-    "planner": {
-        "repository": "ghcr.io/milkinfrastructure/milk-planner",
-        "dockerfile": "Dockerfile.planner",
-        "base_sha256": {
-            "b4f875e650466fa0fe62c6fd3f02517a392123eea85f1d7e69d85f780e4db1c1",
-            "14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce",
-        },
-        "gateway": False,
-    },
     "jobs": {
         "repository": "ghcr.io/milkinfrastructure/milk-jobs",
         "dockerfile": "Dockerfile.jobs",

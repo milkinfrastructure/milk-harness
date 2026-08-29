@@ -96,6 +96,39 @@ class ImageAdmissionTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 conflicting.get(f"{RELEASE_PREFIX}/{release['release_sha256']}.json")
 
+    def test_verified_v3_release_remains_publishable(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "release-v3"
+            release = load_local_private_image_release(
+                private_image_release(
+                    directory,
+                    schema_version="milk.private-harness-release.v3",
+                )
+            )
+            self.assertEqual(
+                set(release["images"]),
+                {
+                    "student-train",
+                    "student-branch",
+                    "teacher-gpt-oss",
+                    "planner",
+                    "jobs",
+                },
+            )
+            store = LocalEvidenceStore(Path(root) / "evidence")
+            receipt = publish_private_image_release(store, release)
+            self.assertEqual(
+                set(receipt["artifact_admission_sha256s"]),
+                set(release["images"]),
+            )
+            self.assertEqual(
+                load_published_private_image_release(
+                    store,
+                    release["release_sha256"],
+                ),
+                release,
+            )
+
     def test_local_bundle_must_be_canonical(self):
         with tempfile.TemporaryDirectory() as root:
             directory, unused_release = self.fixture(root)

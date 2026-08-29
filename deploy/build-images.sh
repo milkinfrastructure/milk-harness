@@ -83,7 +83,6 @@ for release_input in \
   deploy/student-train/Dockerfile \
   deploy/student-branch/Dockerfile \
   deploy/teacher/gpt-oss-120b/Dockerfile \
-  Dockerfile.planner \
   Dockerfile.jobs; do
   [ -f "$release_input" ] || fail "missing release input $release_input" 66
 done
@@ -232,7 +231,6 @@ targets = {
     "milk-student-train",
     "milk-student-branch",
     "milk-teacher-gpt-oss",
-    "milk-planner",
     "milk-jobs",
 }
 seen = {}
@@ -403,8 +401,6 @@ PY
   printf '%s\n' "$immutable"
 }
 
-build_one planner Dockerfile.planner \
-  ghcr.io/milkinfrastructure/milk-planner no
 build_one jobs Dockerfile.jobs \
   ghcr.io/milkinfrastructure/milk-jobs no
 build_one student-train deploy/student-train/Dockerfile \
@@ -428,7 +424,6 @@ expected = {
     "student-train": "ghcr.io/milkinfrastructure/milk-student-train",
     "student-branch": "ghcr.io/milkinfrastructure/milk-student-branch",
     "teacher-gpt-oss": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss",
-    "planner": "ghcr.io/milkinfrastructure/milk-planner",
     "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
 }
 digest = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -452,7 +447,7 @@ for line in Path(references_path).read_text(encoding="utf-8").splitlines():
 if set(images) != set(expected):
     raise SystemExit(1)
 Path(receipt_path).write_text(json.dumps({
-    "schema_version": "milk.private-harness-release.v3",
+    "schema_version": "milk.private-harness-release.v4",
     "source_commit": commit,
     "source_date_epoch": int(source_epoch),
     "source_repository": "https://github.com/milkinfrastructure/milk-harness",

@@ -7,7 +7,7 @@ import urllib.error
 from milk_harness.evidence import R2EvidenceStore, canonical_json, create_same
 from milk_harness.image_admission import (
     ARTIFACT_PREFIX,
-    PRIVATE_IMAGE_REPOSITORIES,
+    RELEASE_IMAGE_REPOSITORIES,
     RELEASE_PREFIX,
     _validate_release,
     load_local_private_image_release,
@@ -22,7 +22,10 @@ def publish_private_image_release(store, release):
     }:
         raise ValueError("private image release authority is invalid")
     images = release.get("images")
-    if not isinstance(images, dict) or set(images) != set(PRIVATE_IMAGE_REPOSITORIES):
+    if not isinstance(images, dict) or not any(
+        set(images) == set(repositories)
+        for repositories in RELEASE_IMAGE_REPOSITORIES.values()
+    ):
         raise ValueError("private image release authority is invalid")
 
     def admission(artifact, admission_sha256):
@@ -40,7 +43,7 @@ def publish_private_image_release(store, release):
         admission,
         release.get("release_sha256"),
     )
-    for artifact in PRIVATE_IMAGE_REPOSITORIES:
+    for artifact in validated["images"]:
         item = validated["images"][artifact]
         create_same(
             store,
@@ -59,7 +62,7 @@ def publish_private_image_release(store, release):
         "release_sha256": validated["release_sha256"],
         "artifact_admission_sha256s": {
             artifact: validated["images"][artifact]["admission_sha256"]
-            for artifact in PRIVATE_IMAGE_REPOSITORIES
+            for artifact in validated["images"]
         },
         "state": "published",
     }

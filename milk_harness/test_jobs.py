@@ -100,7 +100,7 @@ for _artifact, _repository, _digit in (
     }
 TEST_IMAGE_RELEASE_RAW = canonical_json(
     {
-        "schema_version": "milk.private-harness-release.v3",
+        "schema_version": "milk.private-harness-release.v4",
         "images": [
             {
                 "admission_sha256": TEST_IMAGE_ADMISSIONS[artifact]["sha256"],
@@ -733,15 +733,27 @@ def control_launch(
     }
 
 
-def private_image_release(root):
+def private_image_release(
+    root, schema_version="milk.private-harness-release.v4"
+):
     root = Path(root)
-    repositories = {
-        "student-train": "ghcr.io/milkinfrastructure/milk-student-train",
-        "student-branch": "ghcr.io/milkinfrastructure/milk-student-branch",
-        "teacher-gpt-oss": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss",
-        "planner": "ghcr.io/milkinfrastructure/milk-planner",
-        "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
-    }
+    if schema_version == "milk.private-harness-release.v3":
+        repositories = {
+            "student-train": "ghcr.io/milkinfrastructure/milk-student-train",
+            "student-branch": "ghcr.io/milkinfrastructure/milk-student-branch",
+            "teacher-gpt-oss": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss",
+            "planner": "ghcr.io/milkinfrastructure/milk-planner",
+            "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
+        }
+    elif schema_version == "milk.private-harness-release.v4":
+        repositories = {
+            "student-train": "ghcr.io/milkinfrastructure/milk-student-train",
+            "student-branch": "ghcr.io/milkinfrastructure/milk-student-branch",
+            "teacher-gpt-oss": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss",
+            "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
+        }
+    else:
+        raise ValueError("test private image release schema is invalid")
     digests = {
         "student-train": "1" * 64,
         "student-branch": "f" * 64,
@@ -840,7 +852,7 @@ def private_image_release(root):
     (root / "release.json").write_bytes(
         canonical_json(
             {
-                "schema_version": "milk.private-harness-release.v3",
+                "schema_version": schema_version,
                 "source_commit": "8" * 40,
                 "source_date_epoch": 1_777_777_777,
                 "source_repository": "https://github.com/milkinfrastructure/milk-harness",

@@ -19,8 +19,17 @@ PRIVATE_IMAGE_REPOSITORIES = {
     "student-train": "ghcr.io/milkinfrastructure/milk-student-train",
     "student-branch": "ghcr.io/milkinfrastructure/milk-student-branch",
     "teacher-gpt-oss": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss",
-    "planner": "ghcr.io/milkinfrastructure/milk-planner",
     "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
+}
+RELEASE_IMAGE_REPOSITORIES = {
+    "milk.private-harness-release.v3": {
+        "student-train": "ghcr.io/milkinfrastructure/milk-student-train",
+        "student-branch": "ghcr.io/milkinfrastructure/milk-student-branch",
+        "teacher-gpt-oss": "ghcr.io/milkinfrastructure/milk-teacher-gpt-oss",
+        "planner": "ghcr.io/milkinfrastructure/milk-planner",
+        "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
+    },
+    "milk.private-harness-release.v4": PRIVATE_IMAGE_REPOSITORIES,
 }
 STUDENT_TRAIN_IMAGE_REPOSITORY = PRIVATE_IMAGE_REPOSITORIES["student-train"]
 STUDENT_BRANCH_IMAGE_REPOSITORY = PRIVATE_IMAGE_REPOSITORIES["student-branch"]
@@ -85,6 +94,7 @@ def _validate_release(
         raise ValueError("private image release SHA-256 differs from its authority key")
     release = _strict_object(release_raw)
     images = release.get("images")
+    repositories = RELEASE_IMAGE_REPOSITORIES.get(release.get("schema_version"))
     if (
         set(release)
         != {
@@ -101,7 +111,7 @@ def _validate_release(
             "started_at",
             "completed_at",
         }
-        or release.get("schema_version") != "milk.private-harness-release.v3"
+        or repositories is None
         or re.fullmatch(r"[0-9a-f]{40}", release.get("source_commit", "")) is None
         or type(release.get("source_date_epoch")) is not int
         or release["source_date_epoch"] <= 0
@@ -110,7 +120,7 @@ def _validate_release(
         or release.get("build_authority") != "local-socket"
         or release.get("platform") != "linux/amd64"
         or not isinstance(images, list)
-        or len(images) != len(PRIVATE_IMAGE_REPOSITORIES)
+        or len(images) != len(repositories)
     ):
         raise ValueError("private image release receipt is invalid")
     started = _utc(release.get("started_at"), "image release started_at")
@@ -123,7 +133,7 @@ def _validate_release(
     buildkit = adapter.immutable_image(release.get("buildkit_image_reference"))
     frontend = adapter.immutable_image(release.get("dockerfile_frontend_reference"))
     admissions = {}
-    for expected_artifact, release_item in zip(PRIVATE_IMAGE_REPOSITORIES, images):
+    for expected_artifact, release_item in zip(repositories, images):
         if (
             not isinstance(release_item, dict)
             or set(release_item)
@@ -193,7 +203,7 @@ def _validate_release(
             release_item["admission_sha256"],
         )
         admission = _strict_object(admission_raw)
-        repository = PRIVATE_IMAGE_REPOSITORIES[expected_artifact]
+        repository = repositories[expected_artifact]
         image_reference = adapter.immutable_ghcr_image(release_item.get("image_reference"))
         if (
             hashlib.sha256(admission_raw).hexdigest() != release_item["admission_sha256"]
@@ -241,7 +251,9 @@ def _validate_release(
             or admission.get("visibility") != "private"
         ):
             raise ValueError("private image admission is invalid")
-        expected_gateway = None if expected_artifact in {"planner", "jobs"} else gateway
+        expected_gateway = (
+            None if expected_artifact in {"planner", "jobs"} else gateway
+        )
         if admission.get("gateway_image_reference") != expected_gateway:
             raise ValueError("private image gateway binding is invalid")
         admission_ops_log = admission.get("ops_log_reference")

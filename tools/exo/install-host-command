@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+
+[ "$#" -eq 1 ] || {
+  printf 'usage: %s SERVICE_USER\n' "$0" >&2
+  exit 64
+}
+[ "$(id -u)" -eq 0 ] || {
+  printf 'install-host-command must run as root\n' >&2
+  exit 77
+}
+
+service_user=$1
+case "$service_user" in
+  ''|-*|*[!A-Za-z0-9_.-]*)
+    printf 'service user is invalid\n' >&2
+    exit 64
+    ;;
+esac
+service_uid=$(id -u "$service_user")
+service_gid=$(id -g "$service_user")
+source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+source_command=$source_dir/milk-managed
+[ -f "$source_command" ] && [ ! -L "$source_command" ] || {
+  printf 'milk-managed source is invalid\n' >&2
+  exit 66
+}
+
+for path in /opt/milk /opt/milk/bin /var/lib/milk; do
+  if [ -L "$path" ]; then
+    printf 'refusing symbolic-link install path: %s\n' "$path" >&2
+    exit 73
+  fi
+done
+
+install -d -o root -g root -m 0755 /opt/milk /opt/milk/bin
+install -o root -g root -m 0755 "$source_command" /opt/milk/bin/milk-managed
+install -d -o "$service_uid" -g "$service_gid" -m 0700 /var/lib/milk
+
+printf 'installed /opt/milk/bin/milk-managed; state directory owner uid=%s gid=%s\n' \
+  "$service_uid" "$service_gid"

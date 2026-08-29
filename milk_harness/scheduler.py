@@ -106,8 +106,6 @@ GATEWAY_DEPLOYMENT_FIELDS = (
     "worker_version_id",
 )
 RUN_ARTIFACTS = (
-    "prompts/iterate.txt",
-    "decision.schema.json",
     "contracts/snapshot-analyzer.json",
     "deploy/teacher/gpt-oss-120b/profile.json",
     "deploy/teacher/gpt-oss-120b/model.manifest.json",

@@ -2,7 +2,7 @@
 
 `.github/workflows/production-loop.yml` is the only scheduler. Its fixed concurrency group queues overlapping scheduled, manual, and rerun attempts instead of cancelling them. That GitHub setting is defense in depth, not the singleton authority.
 
-The `2/5 * * * *` schedule runs gateway state recovery, provider reconciliation, and teardown with create authority fixed false. It may adopt an existing canary, publish its signed zero successor, and remove an already-installed candidate credential; it cannot prepare or publish a new canary, install a missing credential, or create paid provider work. A manual dispatch can create work only when all three checks pass:
+The `2/5 * * * *` schedule and a hash-bound manual dispatch with `authorize_provider_creates: false` run gateway state recovery, provider reconciliation, and teardown with create authority fixed false. Either may adopt an existing canary, publish its signed zero successor, and remove an already-installed candidate credential; neither can prepare or publish a new canary, install a missing credential, or create paid provider work. A manual dispatch can create work only when all three checks pass:
 
 1. `authorize_provider_creates` is true;
 2. `confirmed_run_config_sha256` exactly matches the reviewed `MILK_CONFIRMED_RUN_CONFIG_SHA256` environment value;
@@ -12,7 +12,7 @@ The input hash alone is insufficient. `MILK_CONFIRMED_RUN_CONFIG_JSON` must be c
 
 Modal 1.5.4 does not expose a stable workspace object ID. Live preflight therefore verifies the authenticated workspace name and exact environment and app IDs; the confirmed config and create authorization still bind the reviewed workspace ID. Any exposed identity mismatch fails closed.
 
-The fixed artifact inventory is `prompts/iterate.txt`, `decision.schema.json`, `contracts/snapshot-analyzer.json`, the teacher profile and model manifest, both student image provenance records, the shared chat template, Qwen profile, and Qwen model manifest. The Prime-only student-train image receives the pinned Qwen base as a read-only mount. The vLLM-only student-branch image receives only gateway-materialized merged candidate files. The worker verifies the committed 13-file Qwen manifest before any training work. The manifest stores hashes only, never prompt text or gateway secrets.
+The fixed artifact inventory is `contracts/snapshot-analyzer.json`, the teacher profile and model manifest, both student image provenance records, the shared chat template, Qwen profile, and Qwen model manifest. The Prime-only student-train image receives the pinned Qwen base as a read-only mount. The vLLM-only student-branch image receives only gateway-materialized merged candidate files. The worker verifies the committed 13-file Qwen manifest before any training work. The manifest stores hashes only, never prompt text or gateway secrets.
 
 Each confirmed campaign owns its teacher through the exact teacher runtime image, committed provider/model/profile artifacts, the positive `max_decisions` ceiling bounded at 4,096, generation-call and GPU-time limits, parallelism, spend limits, data partitions, and deployment/terms hashes. This first production proof remains pinned to GPT-OSS on the existing GPU path. A hosted GLM teacher is the next typed profile through the same campaign and gateway contracts, not a separate scheduler or research framework; its image and admission changes require a separately reviewed confirmed config.
 

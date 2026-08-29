@@ -35,6 +35,7 @@ from milk_harness.evidence import (
 from milk_harness.image_admission import (
     JOBS_IMAGE_REPOSITORY,
     PRIVATE_IMAGE_REPOSITORIES,
+    RELEASE_IMAGE_REPOSITORIES,
     STUDENT_BRANCH_IMAGE_REPOSITORY,
     STUDENT_TRAIN_IMAGE_REPOSITORY,
     TEACHER_IMAGE_REPOSITORY,
@@ -6775,7 +6776,7 @@ class BasetenJobs:
             or admission.get("repository") != PRIVATE_IMAGE_REPOSITORIES[artifact]
             or admission.get("image_reference", "").rpartition("@sha256:")[0]
             != PRIVATE_IMAGE_REPOSITORIES[artifact]
-            or release.get("schema_version") != "milk.private-harness-release.v3"
+            or release.get("schema_version") not in RELEASE_IMAGE_REPOSITORIES
             or not isinstance(release.get("images"), list)
             or not any(
                 isinstance(item, dict)

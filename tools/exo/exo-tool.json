@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "id": "tool:milk/managed",
+  "module": "index.mjs"
+}
