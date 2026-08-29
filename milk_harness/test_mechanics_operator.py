@@ -84,7 +84,7 @@ class MechanicsOperatorTests(unittest.TestCase):
         self.home.mkdir()
         self.store = LocalEvidenceStore(self.root / "evidence")
         self.manifest = {
-            "schema_version": "milk.confirmed-production-run-config.v6",
+            "schema_version": "milk.confirmed-production-run-config.v7",
             "campaign_id": MECHANICS_EVAL_ID,
             "scope_prefix": (
                 f"dt/v3/{MECHANICS_EVAL_ID}/"

@@ -168,7 +168,7 @@ def _manifest(raw, confirmed_sha256):
     stores = value.get("store_identity_sha256s")
     proof = value.get("proof_budget")
     if (
-        value.get("schema_version") != "milk.confirmed-production-run-config.v6"
+        value.get("schema_version") != "milk.confirmed-production-run-config.v7"
         or value.get("campaign_id") != MECHANICS_EVAL_ID
         or not isinstance(value.get("scope_prefix"), str)
         or value["scope_prefix"].split("/")[2:3] != [MECHANICS_EVAL_ID]

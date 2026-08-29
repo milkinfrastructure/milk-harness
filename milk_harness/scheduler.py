@@ -24,7 +24,7 @@ from milk_harness.evidence import (
     canonical_json,
     create_same,
 )
-from milk_harness.provider_acceptance import OPAQUE, TEAM_NAME
+from milk_harness.provider_acceptance import TEAM_NAME
 
 
 MAX_STREAM_BYTES = 1024 * 1024
@@ -80,26 +80,6 @@ STORE_IDENTITIES = (
 PROVIDER_RUNTIME_FIELDS = (
     "baseten_team_name",
     "winner_model_alias",
-    "modal_workspace_id",
-    "modal_workspace_name",
-    "modal_environment_id",
-    "modal_environment_name",
-    "modal_app_id",
-    "modal_app_name",
-    "modal_registry_secret_name",
-    "modal_registry_secret_id",
-    "modal_config_secret_name",
-    "modal_config_secret_id",
-    "modal_control_secret_name",
-    "modal_control_secret_id",
-    "modal_capture_secret_name",
-    "modal_capture_secret_id",
-    "modal_candidate_secret_name",
-    "modal_candidate_secret_id",
-    "modal_teacher_volume_name",
-    "modal_teacher_volume_id",
-    "modal_student_train_volume_name",
-    "modal_student_train_volume_id",
 )
 GATEWAY_DEPLOYMENT_FIELDS = (
     "source_commit",
@@ -1043,44 +1023,8 @@ def _provider_runtime(values):
         or TEAM_NAME.fullmatch(values["baseten_team_name"]) is None
         or not isinstance(values["winner_model_alias"], str)
         or MODEL_ALIAS.fullmatch(values["winner_model_alias"]) is None
-        or any(
-            not isinstance(values[name], str) or OPAQUE.fullmatch(values[name]) is None
-            for name in PROVIDER_RUNTIME_FIELDS
-            if name not in {
-                "baseten_team_name",
-                "winner_model_alias",
-            }
-        )
     ):
         raise ValueError("provider runtime setting is invalid")
-    resource_names = [
-        values[name]
-        for name in (
-            "modal_registry_secret_name",
-            "modal_config_secret_name",
-            "modal_control_secret_name",
-            "modal_capture_secret_name",
-            "modal_candidate_secret_name",
-            "modal_teacher_volume_name",
-            "modal_student_train_volume_name",
-        )
-    ]
-    resource_ids = [
-        values[name]
-        for name in (
-            "modal_registry_secret_id",
-            "modal_config_secret_id",
-            "modal_control_secret_id",
-            "modal_capture_secret_id",
-            "modal_candidate_secret_id",
-            "modal_teacher_volume_id",
-            "modal_student_train_volume_id",
-        )
-    ]
-    if len(resource_names) != len(set(resource_names)) or len(resource_ids) != len(
-        set(resource_ids)
-    ):
-        raise ValueError("Modal resource identities must be pairwise distinct")
     return values
 
 
@@ -1194,9 +1138,8 @@ def _validated_run_manifest(raw, confirmed_sha256, harness_source_commit, root):
     }
     if (
         set(manifest) != expected_keys
-        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v6"
-        or manifest.get("provider_policy")
-        != {"primary": "baseten", "fallback": "modal"}
+        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v7"
+        or manifest.get("provider_policy") != {"only": "baseten"}
         or not isinstance(harness_source_commit, str)
         or SOURCE_COMMIT.fullmatch(harness_source_commit) is None
         or manifest.get("harness_source_commit") != harness_source_commit
@@ -1448,9 +1391,8 @@ def verify_gateway_ingest_run_config(
         manifest_raw not in {canonical_manifest, canonical_manifest.removesuffix(b"\n")}
         or not isinstance(confirmed_sha256, str)
         or hashlib.sha256(canonical_manifest).hexdigest() != confirmed_sha256
-        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v6"
-        or manifest.get("provider_policy")
-        != {"primary": "baseten", "fallback": "modal"}
+        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v7"
+        or manifest.get("provider_policy") != {"only": "baseten"}
         or not isinstance(manifest.get("images"), dict)
         or not isinstance(manifest.get("scope_prefix"), str)
         or not isinstance(manifest["images"].get("gateway"), str)
@@ -1677,9 +1619,8 @@ def stage_gateway_ingest(
     ):
         raise ValueError("provider jobs result is not canonical")
     if (
-        value.get("schema_version") != "milk.jobs-pass.v3"
-        or value.get("provider_policy")
-        != {"fallback": "modal", "primary": "baseten"}
+        value.get("schema_version") != "milk.jobs-pass.v4"
+        or value.get("provider_policy") != {"only": "baseten"}
         or value.get("scope_prefix") != scope_prefix
         or type(value.get("provider_creates_authorized")) is not bool
         or HEX64.fullmatch(value.get("provider_pass_claim_sha256", "")) is None
@@ -1771,9 +1712,8 @@ def _accepted_fields(source, raw):
         return {"schema_version": schema, "action": None, "state": state}
     if source == "provider_jobs":
         if (
-            value.get("schema_version") != "milk.jobs-pass.v3"
-            or value.get("provider_policy")
-            != {"fallback": "modal", "primary": "baseten"}
+            value.get("schema_version") != "milk.jobs-pass.v4"
+            or value.get("provider_policy") != {"only": "baseten"}
             or type(value.get("provider_creates_authorized")) is not bool
             or not isinstance(value.get("winner_result_references"), list)
             or len(value["winner_result_references"]) > MAX_GATEWAY_INGEST_REFERENCES
@@ -1785,8 +1725,8 @@ def _accepted_fields(source, raw):
         ):
             raise ValueError("provider jobs result is invalid")
         return {
-            "schema_version": "milk.jobs-pass.v3",
-            "provider_policy": "baseten_primary_modal_fallback",
+            "schema_version": "milk.jobs-pass.v4",
+            "provider_policy": "baseten_only",
             "provider_creates_authorized": value["provider_creates_authorized"],
             "winner_result_count": len(value["winner_result_references"]),
             "candidate_key_delivery_count": len(
@@ -1924,8 +1864,8 @@ def _validate_summary(value, source, *, allow_missing=False):
                 raise ValueError("gateway accepted fields are invalid")
         elif source == "provider_jobs":
             if fields != {
-                "schema_version": "milk.jobs-pass.v3",
-                "provider_policy": "baseten_primary_modal_fallback",
+                "schema_version": "milk.jobs-pass.v4",
+                "provider_policy": "baseten_only",
                 "provider_creates_authorized": fields.get("provider_creates_authorized"),
                 "winner_result_count": fields.get("winner_result_count"),
                 "candidate_key_delivery_count": fields.get(

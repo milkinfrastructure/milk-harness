@@ -69,26 +69,6 @@ def eval_document():
     provider_runtime = {
         "baseten_team_name": "milk-production",
         "winner_model_alias": "gpt-5.4",
-        "modal_workspace_id": "ws-1",
-        "modal_workspace_name": "milk-workspace",
-        "modal_environment_id": "en-1",
-        "modal_environment_name": "milk-production",
-        "modal_app_id": "ap-1",
-        "modal_app_name": "milk-gpu",
-        "modal_registry_secret_name": "modal-registry",
-        "modal_registry_secret_id": "st-registry",
-        "modal_config_secret_name": "modal-config",
-        "modal_config_secret_id": "st-config",
-        "modal_control_secret_name": "modal-control",
-        "modal_control_secret_id": "st-control",
-        "modal_capture_secret_name": "modal-capture",
-        "modal_capture_secret_id": "st-capture",
-        "modal_candidate_secret_name": "modal-candidate",
-        "modal_candidate_secret_id": "st-candidate",
-        "modal_teacher_volume_name": "modal-teacher",
-        "modal_teacher_volume_id": "vo-teacher",
-        "modal_student_train_volume_name": "modal-student",
-        "modal_student_train_volume_id": "vo-student",
     }
     provider_secret_names = {
         "registry": "registry-secret",
@@ -135,8 +115,8 @@ def eval_document():
         "worker_version_id": "00000000-0000-4000-8000-000000000021",
     }
     manifest = {
-        "schema_version": "milk.confirmed-production-run-config.v6",
-        "provider_policy": {"primary": "baseten", "fallback": "modal"},
+        "schema_version": "milk.confirmed-production-run-config.v7",
+        "provider_policy": {"only": "baseten"},
         "harness_source_commit": "d" * 40,
         "campaign_id": eval_id,
         "provider_project_id": "project_1",
@@ -350,6 +330,9 @@ class EvalConfigTest(unittest.TestCase):
             )
             self.assertEqual(env["MILK_GATEWAY_IMAGE"], value["manifest"]["images"]["gateway"])
             self.assertEqual(env["MILK_GATEWAY_SOURCE_COMMIT"], "9" * 40)
+            self.assertEqual(env["MILK_BASETEN_TEAM_NAME"], "milk-production")
+            self.assertEqual(env["MILK_WINNER_MODEL_ALIAS"], "gpt-5.4")
+            self.assertFalse(any(name.startswith("MILK_MODAL_") for name in env))
             self.assertEqual(
                 env["MILK_EVAL_CONFIG_SHA256"], hashlib.sha256(raw).hexdigest()
             )
@@ -426,6 +409,29 @@ class EvalConfigTest(unittest.TestCase):
         ).hexdigest()
         rejected(cross_gateway, "eval ID")
         rejected({**value, "manifest_sha256": "0" * 64}, "manifest SHA-256")
+        old_schema = copy.deepcopy(value)
+        old_schema["manifest"]["schema_version"] = (
+            "milk.confirmed-production-run-config.v6"
+        )
+        old_schema["manifest_sha256"] = hashlib.sha256(
+            canonical_json(old_schema["manifest"])
+        ).hexdigest()
+        rejected(old_schema, "confirmed run config is invalid")
+        fallback = copy.deepcopy(value)
+        fallback["manifest"]["provider_policy"] = {
+            "primary": "baseten",
+            "fallback": "modal",
+        }
+        fallback["manifest_sha256"] = hashlib.sha256(
+            canonical_json(fallback["manifest"])
+        ).hexdigest()
+        rejected(fallback, "confirmed run config is invalid")
+        modal_runtime = copy.deepcopy(value)
+        modal_runtime["manifest"]["provider_runtime"]["modal_app_id"] = "ap-1"
+        modal_runtime["manifest_sha256"] = hashlib.sha256(
+            canonical_json(modal_runtime["manifest"])
+        ).hexdigest()
+        rejected(modal_runtime, "provider runtime settings")
         drifted_gateway = {**value["gateway_config"], "tenant_id": "0" * 36}
         rejected({**value, "gateway_config": drifted_gateway}, "gateway config SHA-256")
         shared = {

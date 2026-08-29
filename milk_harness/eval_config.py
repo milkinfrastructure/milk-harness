@@ -9,7 +9,6 @@ from milk_harness.evidence import HEX64, canonical_json
 from milk_harness.scheduler import (
     GATEWAY_DEPLOYMENT_FIELDS,
     IMAGE_REPOSITORIES,
-    PROVIDER_RUNTIME_FIELDS,
     PROVIDER_SECRET_FIELDS,
     _strict_object,
     _validated_run_manifest,
@@ -198,8 +197,8 @@ def materialized_environment(
     )
     env.update(
         {
-            f"MILK_{name.upper()}": runtime[name]
-            for name in PROVIDER_RUNTIME_FIELDS
+            "MILK_BASETEN_TEAM_NAME": runtime["baseten_team_name"],
+            "MILK_WINNER_MODEL_ALIAS": runtime["winner_model_alias"],
         }
     )
     env.update(
