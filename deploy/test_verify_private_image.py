@@ -690,11 +690,17 @@ class PrivateHarnessVerifierTests(unittest.TestCase):
                 )
                 self.assertEqual(pinned, VERIFY.ARTIFACTS[artifact]["base_sha256"])
 
-    def test_build_script_streams_registry_credentials_only_on_stdin(self):
+    def test_build_script_isolates_registry_credentials(self):
         script = ROOT.joinpath("deploy/build-images.sh").read_text(encoding="utf-8")
         self.assertIn('"$python" "$@" <"$github_token_file"', script)
-        self.assertIn('<"$github_token_file" >/dev/null', script)
+        self.assertIn('"$docker_config/config.json"', script)
+        self.assertIn('{"auths": {"ghcr.io": {"auth": auth}}}', script)
+        self.assertIn('base64.b64encode(b"ShantanuJoshi:" + token)', script)
+        self.assertIn("os.fchmod(descriptor, 0o600)", script)
+        self.assertIn('rm -rf -- "$scratch"', script)
         self.assertIn('"$repo/deploy/verify-private-image.py"', script)
+        self.assertNotIn(" login ghcr.io", script)
+        self.assertNotIn("password-stdin", script)
         self.assertNotRegex(script, r"(?:token|password)=\$\(")
         self.assertNotRegex(script, r"\bgh\b")
 

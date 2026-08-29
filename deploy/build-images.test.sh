@@ -21,6 +21,13 @@ assert_absent() {
   [ "$grep_status" -eq 1 ]
 }
 
+assert_docker_config_cleaned() {
+  docker_config_path=$(sed -n \
+    's/^docker|--config|\([^|]*\)|.*/\1/p' "$test_root/commands.log" | sed -n '1p')
+  [ -n "$docker_config_path" ]
+  [ ! -e "$docker_config_path" ]
+}
+
 python3 - "$root" <<'PY'
 import ast
 import re
@@ -437,16 +444,30 @@ if [ "${1:-}" = --config ]; then
   config=$2
   [ -x "$config/cli-plugins/docker-buildx" ]
   [ "$(readlink "$config/cli-plugins/docker-buildx")" = "$HOME/.docker/cli-plugins/docker-buildx" ]
+  "$TEST_REAL_PYTHON" - "$config/config.json" <<'PY'
+import base64
+import json
+import stat
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+expected = (json.dumps(
+    {"auths": {"ghcr.io": {"auth": base64.b64encode(
+        b"ShantanuJoshi:ephemeral-test-password"
+    ).decode("ascii")}}},
+    sort_keys=True,
+    separators=(",", ":"),
+) + "\n").encode("ascii")
+assert path.read_bytes() == expected
+assert stat.S_IMODE(path.stat().st_mode) == 0o600
+PY
   shift 2
 fi
 case "${1:-} ${2:-}" in
   'context show') printf '%s\n' 'desktop-linux' ;;
   'context inspect') printf '%s\n' 'unix:///tmp/docker.sock' ;;
   'buildx version') printf '%s\n' 'github.com/docker/buildx v0.25.0' ;;
-  'login ghcr.io')
-    read -r password
-    [ "$password" = ephemeral-test-password ]
-    ;;
   'buildx create') printf '%s\n' 'test-builder' ;;
   'buildx inspect')
     printf '%s\n' \
@@ -574,6 +595,8 @@ for artifact in student-train student-branch teacher-gpt-oss jobs; do
 done
 [ -z "$(find "$output" -type f -name '*.log' -print)" ]
 assert_absent -R -Fq 'ephemeral-test-password' "$output" "$test_root/commands.log"
+assert_absent -Fq '|login|ghcr.io' "$test_root/commands.log"
+assert_docker_config_cleaned
 
 [ "$(grep -c '^docker|.*buildx|build|' "$test_root/commands.log")" -eq 4 ]
 [ "$(grep -c '^docker|.*buildx|imagetools|inspect|--raw|' "$test_root/commands.log")" -eq 12 ]
@@ -1045,6 +1068,7 @@ assert failure["stage"] == "verify-jobs"
 PY
 assert_absent -R -Fq 'ephemeral-test-password' \
   "$test_root/verify-failure" "$test_root/commands.log"
+assert_docker_config_cleaned
 
 for dockerfile in \
   "$root/deploy/student-train/Dockerfile" \
@@ -1061,6 +1085,8 @@ assert_absent -Eq '^(ADD|RUN)[[:space:]]' "$teacher_dockerfile"
 grep -Fq -- '--sbom=true' "$builder"
 assert_absent -Fq 'command -v gh' "$builder"
 assert_absent -Fq "\"\$gh\"" "$builder"
+assert_absent -Fq ' login ghcr.io' "$builder"
+assert_absent -Fq 'password-stdin' "$builder"
 grep -Fq 'MILK_GITHUB_TOKEN_FILE' "$builder"
 grep -Fq 'deploy/github_rest.py' "$builder"
 grep -Fxq 'USER 65532:65532' "$root/Dockerfile.jobs"

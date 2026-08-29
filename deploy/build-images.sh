@@ -292,6 +292,39 @@ mkdir -m 0700 -- "$docker_config" || fail 'cannot create isolated Docker configu
 mkdir -m 0700 -- "$docker_config/cli-plugins" || fail 'cannot create isolated Docker plugin directory' 73
 ln -s -- "$buildx_plugin" "$docker_config/cli-plugins/docker-buildx" || \
   fail 'cannot install docker buildx into the isolated configuration' 73
+failure_stage=registry-auth
+"$python" - "$github_token_file" "$docker_config/config.json" <<'PY' || \
+  fail 'cannot materialize isolated GHCR authentication' 77
+import base64
+import json
+import os
+import stat
+import sys
+
+from deploy.github_rest import read_token_file
+
+token_path, config_path = sys.argv[1:]
+token = read_token_file(token_path).encode("ascii")
+auth = base64.b64encode(b"ShantanuJoshi:" + token).decode("ascii")
+raw = (json.dumps(
+    {"auths": {"ghcr.io": {"auth": auth}}},
+    sort_keys=True,
+    separators=(",", ":"),
+) + "\n").encode("ascii")
+flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+descriptor = os.open(config_path, flags, 0o600)
+try:
+    os.fchmod(descriptor, 0o600)
+    with os.fdopen(descriptor, "wb", closefd=False) as output:
+        output.write(raw)
+        output.flush()
+        os.fsync(output.fileno())
+finally:
+    os.close(descriptor)
+metadata = os.stat(config_path, follow_symlinks=False)
+if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
+    raise ValueError("isolated Docker authentication has invalid permissions")
+PY
 "$docker" --config "$docker_config" buildx version >/dev/null 2>&1 || \
   fail 'docker buildx is unavailable in the isolated configuration' 69
 builder=milk-harness-$(printf '%s' "$commit" | cut -c1-12)-$$
@@ -459,13 +492,6 @@ for artifact in artifacts:
     )))
 references.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
-fi
-
-failure_stage=registry-login
-if ! "$docker" --config "$docker_config" login ghcr.io \
-  --username ShantanuJoshi --password-stdin \
-  <"$github_token_file" >/dev/null; then
-  fail 'private GHCR login failed' 77
 fi
 
 failure_stage='package-preflight'
