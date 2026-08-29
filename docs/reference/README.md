@@ -1,9 +1,5 @@
 # Run evidence
 
-[`baseline-builds.json`](baseline-builds.json) is the content-free manifest for the two pre-Milk Modal image builds. They are retained only as engineering evidence and are not releasable Milk artifacts.
-
-The two recorded raw Modal build streams are held locally under ignored `evidence-local/baseline/modal/`; their current byte counts and SHA-256 digests match the manifest. They have not been copied to a private Milk bucket and are not committed to Git.
-
 Baseten job evidence uses bounded typed records under:
 
 ```text
