@@ -254,13 +254,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
         for name in PROVIDER_RUNTIME_FIELDS:
             argument = f"--{name.replace('_', '-')}"
             self.assertGreaterEqual(self.provider.count(argument), 2, argument)
-            if name == "gpu_provider":
-                self.assertIn(
-                    '["provider_runtime"]["gpu_provider"]',
-                    self.provider,
-                )
-            else:
-                self.assertIn(f"MILK_{name.upper()}", self.provider)
+            self.assertIn(f"MILK_{name.upper()}", self.provider)
         self.assertIn(
             "BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}",
             self.provider,
@@ -273,16 +267,15 @@ class SchedulerWorkflowTest(unittest.TestCase):
             "MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}",
             self.provider,
         )
-        self.assertIn('case "$confirmed_gpu_provider" in', self.provider)
-        self.assertLess(
-            self.provider.index('confirmed_gpu_provider=$(python3 -c'),
-            self.provider.index('case "$confirmed_gpu_provider" in'),
-        )
-        self.assertIn('provider_credential_env=(-e BASETEN_API_KEY)', self.provider)
-        self.assertIn(
-            'provider_credential_env=(-e MODAL_TOKEN_ID -e MODAL_TOKEN_SECRET)',
-            self.provider,
-        )
+        self.assertNotIn("confirmed_gpu_provider", self.provider)
+        self.assertNotIn("--gpu-provider", self.provider)
+        credentials = self.provider.split("provider_credential_env=(", 1)[1].split(
+            "          )", 1
+        )[0]
+        self.assertIn("-e BASETEN_API_KEY", credentials)
+        self.assertIn("-e MODAL_TOKEN_ID", credentials)
+        self.assertIn("-e MODAL_TOKEN_SECRET", credentials)
+        self.assertIn('[ -n "$BASETEN_API_KEY" ] || fail', self.provider)
         self.assertIn('[ -n "$MODAL_TOKEN_ID" ] || fail', self.provider)
         self.assertIn('[ -n "$MODAL_TOKEN_SECRET" ] || fail', self.provider)
 

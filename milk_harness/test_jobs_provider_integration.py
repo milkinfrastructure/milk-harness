@@ -552,11 +552,14 @@ class LaterLeaseModalWinnerLifecycle:
 
 
 class ModalFallbackWinnerLifecycle:
-    def __init__(self):
+    def __init__(self, events=None):
         self.calls = 0
+        self.events = events
 
     def preflight(self):
         self.calls += 1
+        if self.events is not None:
+            self.events.append(("baseten-winner-preflight", None))
         return baseten_winner.baseten_unavailable_preflight_receipt(
             TEAM,
             "capability_unavailable",
@@ -825,6 +828,28 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 hashlib.sha256(provider_pass_raw).hexdigest(),
             )
 
+    def test_ready_baseten_training_skips_modal_preflight(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = LocalEvidenceStore(root)
+            source = workload("b", "student_train_merge")
+            selection = select_baseten_primary_modal_fallback(
+                store=store,
+                campaign_id=CAMPAIGN,
+                run_id=_workload_run_id(CAMPAIGN, source),
+                launch_source=source["launch_source"],
+                baseten_team_name=TEAM,
+                baseten_project_id=PROJECT,
+                modal_identity=modal_identity(),
+                baseten_preflight=lambda: baseten_preflight("ready"),
+                modal_preflight=lambda: self.fail(
+                    "ready Baseten selection ran Modal preflight"
+                ),
+            )
+            self.assertEqual(
+                selection["selection"]["selected_provider"],
+                "baseten",
+            )
+
     def test_modal_fallback_is_forbidden_after_any_baseten_budget_intent(self):
         with tempfile.TemporaryDirectory() as root:
             store = LocalEvidenceStore(root)
@@ -849,6 +874,42 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                     modal_preflight=lambda: called.append(True) or modal_preflight(),
                 )
             self.assertEqual(called, [])
+
+    def test_modal_winner_fallback_is_forbidden_after_baseten_create_intent(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = LocalEvidenceStore(f"{root}/evidence")
+            control = LocalEvidenceStore(f"{root}/control")
+            launch = self._winner_launch(control, 71)
+            run_id = _winner_run_from_launch(
+                CAMPAIGN,
+                launch,
+                TEST_IMAGE_RELEASE_SHA256,
+                TEST_IMAGE_ADMISSIONS["student-branch"]["sha256"],
+            )
+            store.create(
+                f"campaigns/v1/{CAMPAIGN}/winner-jobs/{run_id}/create-intent.json",
+                b"{}",
+                "application/json",
+            )
+            modal_calls = []
+            unavailable = baseten_winner.baseten_unavailable_preflight_receipt(
+                TEAM,
+                "server_unavailable",
+                503,
+                NOW,
+            )
+            with self.assertRaisesRegex(RuntimeError, "fallback is forbidden"):
+                select_winner_baseten_primary_modal_fallback(
+                    store=store,
+                    campaign_id=CAMPAIGN,
+                    run_id=run_id,
+                    launch_source=launch["launch_source"],
+                    baseten_team_name=TEAM,
+                    modal_identity=modal_identity(),
+                    baseten_preflight=lambda: unavailable,
+                    modal_preflight=lambda: modal_calls.append(True),
+                )
+            self.assertEqual(modal_calls, [])
 
     def test_baseten_winner_orders_authority_and_emits_content_free_handoff(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1505,6 +1566,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
 
             def unavailable_training(team_name):
                 ordinary_preflights.append(team_name)
+                events.append(("baseten-training-preflight", None))
                 return {
                     **baseten_preflight(),
                     "observed_at": NOW.isoformat().replace("+00:00", "Z"),
@@ -1632,7 +1694,15 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                         ],
                     }
             provider_pass_raw, authorization_raw = create_authorities()
-            winner_lifecycle = ModalFallbackWinnerLifecycle()
+            winner_lifecycle = ModalFallbackWinnerLifecycle(events)
+
+            def ready_modal():
+                events.append(("modal-preflight", None))
+                return {
+                    **modal_preflight(),
+                    "observed_at": NOW.isoformat().replace("+00:00", "Z"),
+                }
+
             result = dispatch_cross_provider_outboxes(
                 jobs,
                 ModalLifecycle(store, events),
@@ -1642,23 +1712,39 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 settings=settings,
                 baseten_team_name=TEAM,
                 modal_identity=modal_identity(),
-                modal_preflight=lambda: {
-                    **modal_preflight(),
-                    "observed_at": NOW.isoformat().replace("+00:00", "Z"),
-                },
+                modal_preflight=ready_modal,
                 provider_pass_claim_raw=provider_pass_raw,
                 create_authorization_raw=authorization_raw,
                 modal_plans_by_run_id=plans,
                 winner_values_by_run_id=winner_values,
-                gpu_provider="modal",
-                allow_modal_winner_fallback=True,
             )
             self.assertEqual(result["verified"], 2)
             self.assertEqual(result["dispatched"], 2)
-            self.assertEqual(result["gpu_provider"], "modal")
+            self.assertEqual(
+                result["provider_policy"],
+                {"primary": "baseten", "fallback": "modal"},
+            )
             self.assertEqual(len(result["winner_result_references"]), 1)
-            self.assertEqual(ordinary_preflights, [])
-            self.assertEqual(winner_lifecycle.calls, 0)
+            self.assertEqual(ordinary_preflights, [TEAM])
+            self.assertEqual(winner_lifecycle.calls, 1)
+            preflight_events = [
+                event[0]
+                for event in events
+                if event[0]
+                in {
+                    "baseten-training-preflight",
+                    "baseten-winner-preflight",
+                    "modal-preflight",
+                }
+            ]
+            self.assertEqual(len(preflight_events), 4)
+            self.assertEqual(preflight_events[1::2], ["modal-preflight"] * 2)
+            self.assertTrue(
+                all(
+                    event.startswith("baseten-")
+                    for event in preflight_events[::2]
+                )
+            )
             selection_indexes = [
                 index
                 for index, event in enumerate(events)
@@ -1675,26 +1761,6 @@ class JobsProviderIntegrationTest(unittest.TestCase):
             self.assertEqual(len(selection_indexes), 2)
             self.assertEqual(len(reservation_indexes), 2)
             self.assertLess(max(selection_indexes), min(reservation_indexes))
-            with self.assertRaisesRegex(
-                RuntimeError,
-                "stored provider selection differs",
-            ):
-                dispatch_cross_provider_outboxes(
-                    jobs,
-                    ModalLifecycle(store, events),
-                    winner_lifecycle,
-                    control_store=ReadOnlyControlStore(control),
-                    scope_prefix=SCOPE_PREFIX,
-                    settings=settings,
-                    baseten_team_name=TEAM,
-                    modal_identity=modal_identity(),
-                    modal_preflight=lambda: modal_preflight(),
-                    provider_pass_claim_raw=provider_pass_raw,
-                    create_authorization_raw=authorization_raw,
-                    modal_plans_by_run_id=plans,
-                    winner_values_by_run_id=winner_values,
-                    gpu_provider="baseten",
-                )
 
     def test_winner_result_reference_embeds_full_canonical_acceptance(self):
         with tempfile.TemporaryDirectory() as root:

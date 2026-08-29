@@ -56,7 +56,6 @@ def eval_document():
         },
     }
     provider_runtime = {
-        "gpu_provider": "modal",
         "baseten_team_name": "milk-production",
         "winner_model_alias": "milk-student",
         "modal_workspace_id": "ws-1",

@@ -737,7 +737,6 @@ class SchedulerTest(unittest.TestCase):
             "control_session": None,
         }
         provider_runtime = {
-            "gpu_provider": "modal",
             "baseten_team_name": "milk-production",
             "winner_model_alias": "milk-student",
             "modal_workspace_id": "ws-1",
@@ -1108,7 +1107,7 @@ class SchedulerTest(unittest.TestCase):
                     )
                 },
             )
-        invalid_provider_runtime = {**provider_runtime, "gpu_provider": "fallback"}
+        invalid_provider_runtime = {**provider_runtime, "gpu_provider": "baseten"}
         with self.assertRaisesRegex(ValueError, "provider runtime setting"):
             verify_provider_run_config(
                 manifest_raw,

@@ -367,24 +367,14 @@ jobs:
             --harness-source-commit "$GITHUB_SHA" \
             --gateway-config "$provider_gateway_config" \
             --gateway-image "$MILK_GATEWAY_IMAGE"
-          confirmed_gpu_provider=$(python3 -c \
-            'import json,sys; print(json.load(open(sys.argv[1]))["provider_runtime"]["gpu_provider"])' \
-            "$provider_gateway_run_config")
-          provider_credential_env=()
-          case "$confirmed_gpu_provider" in
-            baseten)
-              [ -n "$BASETEN_API_KEY" ] || fail 'Baseten credential is missing'
-              unset MODAL_TOKEN_ID MODAL_TOKEN_SECRET
-              provider_credential_env=(-e BASETEN_API_KEY)
-              ;;
-            modal)
-              [ -n "$MODAL_TOKEN_ID" ] || fail 'Modal credential is missing'
-              [ -n "$MODAL_TOKEN_SECRET" ] || fail 'Modal credential is missing'
-              unset BASETEN_API_KEY
-              provider_credential_env=(-e MODAL_TOKEN_ID -e MODAL_TOKEN_SECRET)
-              ;;
-            *) fail 'confirmed eval GPU provider is invalid' ;;
-          esac
+          [ -n "$BASETEN_API_KEY" ] || fail 'Baseten credential is missing'
+          [ -n "$MODAL_TOKEN_ID" ] || fail 'Modal credential is missing'
+          [ -n "$MODAL_TOKEN_SECRET" ] || fail 'Modal credential is missing'
+          provider_credential_env=(
+            -e BASETEN_API_KEY
+            -e MODAL_TOKEN_ID
+            -e MODAL_TOKEN_SECRET
+          )
 
           if ! printf '%s' "$MILK_GHCR_PULL_TOKEN" | docker --config "$docker_config" login \
             ghcr.io --username "$MILK_GHCR_PULL_USERNAME" --password-stdin >/dev/null 2>&1; then
@@ -423,7 +413,6 @@ jobs:
             --campaign-id "$MILK_CAMPAIGN_ID"
             --project-id "$MILK_BASETEN_PROJECT_ID"
             --baseten-team-name "$MILK_BASETEN_TEAM_NAME"
-            --gpu-provider "$confirmed_gpu_provider"
             --candidate-key-socket "$candidate_container_socket"
             --winner-model-alias "$MILK_WINNER_MODEL_ALIAS"
             --scope-prefix "$MILK_SCOPE_PREFIX"
@@ -487,7 +476,6 @@ jobs:
               --harness-source-commit "$GITHUB_SHA" \
               --campaign-id "$MILK_CAMPAIGN_ID" \
               --provider-project-id "$MILK_BASETEN_PROJECT_ID" \
-              --gpu-provider "$confirmed_gpu_provider" \
               --baseten-team-name "$MILK_BASETEN_TEAM_NAME" \
               --winner-model-alias "$MILK_WINNER_MODEL_ALIAS" \
               --scope-prefix "$MILK_SCOPE_PREFIX" \

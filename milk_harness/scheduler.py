@@ -76,7 +76,6 @@ STORE_IDENTITIES = (
     "route_evidence",
 )
 PROVIDER_RUNTIME_FIELDS = (
-    "gpu_provider",
     "baseten_team_name",
     "winner_model_alias",
     "modal_workspace_id",
@@ -1005,9 +1004,7 @@ def _provider_runtime(values):
     if not isinstance(values, dict) or set(values) != set(PROVIDER_RUNTIME_FIELDS):
         raise ValueError("provider runtime settings are invalid")
     if (
-        not isinstance(values["gpu_provider"], str)
-        or values["gpu_provider"] not in {"baseten", "modal"}
-        or not isinstance(values["baseten_team_name"], str)
+        not isinstance(values["baseten_team_name"], str)
         or TEAM_NAME.fullmatch(values["baseten_team_name"]) is None
         or not isinstance(values["winner_model_alias"], str)
         or MODEL_ALIAS.fullmatch(values["winner_model_alias"]) is None
@@ -1015,7 +1012,6 @@ def _provider_runtime(values):
             not isinstance(values[name], str) or OPAQUE.fullmatch(values[name]) is None
             for name in PROVIDER_RUNTIME_FIELDS
             if name not in {
-                "gpu_provider",
                 "baseten_team_name",
                 "winner_model_alias",
             }
@@ -2368,20 +2364,13 @@ def main(argv=None):
                 os.environ.get("MILK_GATEWAY_INGEST_ROUTE_R2_ACCESS_KEY_ID"),
             )
         elif arguments.phase == "provider_base":
-            confirmed_manifest = _validated_run_manifest(
-                manifest_raw,
-                arguments.confirmed_sha256,
-                arguments.harness_source_commit,
-                arguments.root,
-            )
             runtime_environment = {
                 "baseten_team_name": "MILK_BASETEN_TEAM_NAME",
                 "winner_model_alias": "MILK_WINNER_MODEL_ALIAS",
                 **{
                     name: f"MILK_{name.upper()}"
                     for name in PROVIDER_RUNTIME_FIELDS
-                    if name
-                    not in {"gpu_provider", "baseten_team_name", "winner_model_alias"}
+                    if name not in {"baseten_team_name", "winner_model_alias"}
                 },
             }
             secret_environment = {
@@ -2408,13 +2397,8 @@ def main(argv=None):
                 },
                 image_release_sha256=os.environ.get("MILK_IMAGE_RELEASE_SHA256"),
                 provider_runtime={
-                    "gpu_provider": confirmed_manifest["provider_runtime"][
-                        "gpu_provider"
-                    ],
-                    **{
-                        name: os.environ.get(environment)
-                        for name, environment in runtime_environment.items()
-                    },
+                    name: os.environ.get(environment)
+                    for name, environment in runtime_environment.items()
                 },
                 provider_secret_names={
                     name: os.environ.get(environment) or None

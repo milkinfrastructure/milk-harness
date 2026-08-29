@@ -126,7 +126,6 @@ def materialized_environment(value, manifest_sha256, manifest_path, gateway_path
         {
             f"MILK_{name.upper()}": runtime[name]
             for name in PROVIDER_RUNTIME_FIELDS
-            if name != "gpu_provider"
         }
     )
     env.update(
