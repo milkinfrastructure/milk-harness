@@ -199,7 +199,7 @@ exit 0
 EOF
 chmod 0700 "$test_root/home/.docker/cli-plugins/docker-buildx"
 revision=1111111111111111111111111111111111111111
-gateway=ghcr.io/milkinfrastructure/milk-gateway@sha256:$(python3 -c 'print("5" * 64)')
+gateway=ghcr.io/milkinfrastructure/milk-carton@sha256:$(python3 -c 'print("5" * 64)')
 source_context=$test_root/source-context.tar
 python3 - "$source_context" <<'PY'
 import io
@@ -527,7 +527,7 @@ if [ "${1:-} ${2:-}" = "$TEST_REPO/deploy/github_rest.py packages" ]; then
   IFS= read -r token <"$token_file"
   [ "$token" = ephemeral-test-password ]
   printf '%s\n' 'github-rest|list-container-packages' >>"$TEST_COMMAND_LOG"
-  printf 'milk-gateway\tprivate\n'
+  printf 'milk-carton\tprivate\n'
   if [ "${TEST_PUBLIC_PACKAGE:-0}" -eq 0 ]; then
     printf 'milk-student-train\tprivate\n'
   else
@@ -942,9 +942,9 @@ assert_rejected() {
 assert_rejected source-revision test_env \
   "$builder" "$gateway" "$revision" "$test_root/rejected-source-revision"
 assert_rejected mutable-gateway test_env \
-  "$builder" ghcr.io/milkinfrastructure/milk-gateway:latest "$test_root/rejected-mutable-gateway"
+  "$builder" ghcr.io/milkinfrastructure/milk-carton:latest "$test_root/rejected-mutable-gateway"
 assert_rejected wrong-gateway test_env \
-  "$builder" "ghcr.io/shantanujoshi/milk-gateway@sha256:$(printf '%064d' 8)" "$test_root/rejected-wrong-gateway"
+  "$builder" "ghcr.io/shantanujoshi/milk-carton@sha256:$(printf '%064d' 8)" "$test_root/rejected-wrong-gateway"
 assert_rejected dirty test_env TEST_GIT_DIRTY=1 \
   "$builder" "$gateway" "$test_root/rejected-dirty"
 assert_rejected origin test_env TEST_ORIGIN=https://github.com/example/milk-harness.git \
@@ -1099,7 +1099,7 @@ grep -Fq 'milk_harness/provider_acceptance.py' "$root/Dockerfile.jobs"
 grep -Fq 'deploy/baseten/winner.py' "$root/Dockerfile.jobs"
 grep -Fq 'deploy/winner_admission.py' "$root/Dockerfile.jobs"
 assert_absent -Fq 'publish_image_admission.py' "$root/Dockerfile.jobs"
-assert_absent -Eq 'MILK_GATEWAY_IMAGE|dragontales-gateway|--from=gateway|/usr/share/licenses/dragontales|gpt-oss-120b/profile' \
+assert_absent -Eq 'MILK_GATEWAY_IMAGE|/usr/local/bin/milk-carton|--from=gateway|/usr/share/licenses/milk-carton|gpt-oss-120b/profile' \
   "$root/Dockerfile.jobs"
 grep -Fxq '**' "$root/Dockerfile.jobs.dockerignore"
 grep -Fxq '!milk_harness/image_admission.py' "$root/Dockerfile.jobs.dockerignore"

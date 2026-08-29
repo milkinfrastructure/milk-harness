@@ -12,8 +12,8 @@ COPY --link --chmod=0555 deploy/teacher/gpt-oss-120b/job.sh /opt/dragontales/job
 COPY --link --chmod=0444 deploy/teacher/gpt-oss-120b/profile.json /opt/dragontales/profile.json
 COPY --link --chmod=0444 deploy/teacher/gpt-oss-120b/model.manifest.json /opt/dragontales/model.manifest.json
 COPY --link --chmod=0444 deploy/teacher/gpt-oss-120b/provenance.json /opt/dragontales/provenance.json
-COPY --from=gateway --link --chmod=0555 /usr/local/bin/dragontales-gateway /usr/local/bin/dragontales-gateway
-COPY --from=gateway --link --chmod=0444 /usr/share/licenses/dragontales/ /usr/share/licenses/dragontales/
+COPY --from=gateway --link --chmod=0555 /usr/local/bin/milk-carton /usr/local/bin/milk-carton
+COPY --from=gateway --link --chmod=0444 /usr/share/licenses/milk-carton/ /usr/share/licenses/milk-carton/
 
 ENV VLLM_SYSTEM_START_DATE=2025-08-05 \
     HF_HUB_OFFLINE=1 \

@@ -740,7 +740,7 @@ class SchedulerTest(unittest.TestCase):
         ids = [f"00000000-0000-4000-8000-0000000000{value:02d}" for value in range(10, 14)]
         scope = "dt/v3/" + "/".join((campaign_id, *ids))
         images = {
-            "gateway": "ghcr.io/milkinfrastructure/milk-gateway@sha256:" + HEX,
+            "gateway": "ghcr.io/milkinfrastructure/milk-carton@sha256:" + HEX,
             "jobs": "ghcr.io/milkinfrastructure/milk-jobs@sha256:" + HEX,
             "student_train": (
                 "ghcr.io/milkinfrastructure/milk-student-train@sha256:" + "a" * 64
@@ -769,7 +769,7 @@ class SchedulerTest(unittest.TestCase):
             "official_openai_sdk_baseline_receipt_sha256": "6" * 64,
             "application_id": "00000000-0000-4000-8000-000000000020",
             "application_version": 7,
-            "container_image": "registry.cloudflare.com/milk-gateway@sha256:" + "5" * 64,
+            "container_image": "registry.cloudflare.com/milk-carton@sha256:" + "5" * 64,
             "worker_version_id": "00000000-0000-4000-8000-000000000021",
         }
         gateway_config = {
@@ -1535,7 +1535,7 @@ class SchedulerTest(unittest.TestCase):
             "event": "schedule",
             "gateway_summary": self.gateway_summary(),
             "provider_summary": self.provider_summary(),
-            "gateway_image": "ghcr.io/milkinfrastructure/milk-gateway@sha256:" + HEX,
+            "gateway_image": "ghcr.io/milkinfrastructure/milk-carton@sha256:" + HEX,
             "jobs_image": "ghcr.io/milkinfrastructure/milk-jobs@sha256:" + HEX,
             "student_train_image": (
                 "ghcr.io/milkinfrastructure/milk-student-train@sha256:" + "a" * 64

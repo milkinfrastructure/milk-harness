@@ -56,7 +56,7 @@ case ${MILK_CONTROL_STORE_SESSION_TOKEN+set}:${MILK_CONTROL_STORE_SESSION_TOKEN-
   *) exit 72 ;;
 esac
 [ -z "${MILK_CAPTURE_STORE_ACCESS_KEY_ID+x}" ] || exit 73
-[ -z "${DRAGONTALES_CONFIG_JSON+x}" ] || exit 72
+[ -z "${MILK_CARTON_CONFIG_JSON+x}" ] || exit 72
 [ -z "${TEST_RUNNER_BEHAVIOR+x}" ] || exit 73
 printf 'gateway' >>"$log"
 for argument do printf '|%s' "$argument" >>"$log"; done
@@ -95,7 +95,7 @@ cat >"$fake_runner" <<'EOF'
 #!/bin/sh
 set -eu
 [ "${SET_PRIV_CALLED:-}" = 1 ] || exit 74
-for secret in DRAGONTALES_CONFIG_JSON MILK_CAPTURE_STORE_ACCESS_KEY_ID \
+for secret in MILK_CARTON_CONFIG_JSON MILK_CAPTURE_STORE_ACCESS_KEY_ID \
   MILK_CAPTURE_STORE_SECRET_ACCESS_KEY MILK_CAPTURE_STORE_SESSION_TOKEN \
   MILK_CONTROL_STORE_ACCESS_KEY_ID MILK_CONTROL_STORE_SECRET_ACCESS_KEY \
   MILK_CONTROL_STORE_SESSION_TOKEN MILK_ROUTE_STORE_ACCESS_KEY_ID \
@@ -172,7 +172,7 @@ exec "$@"
 EOF
 
 sed -e "s|/usr/bin/setpriv|$fake_privilege|" \
-  -e "s|/usr/local/bin/dragontales-gateway|$fake_gateway|" \
+  -e "s|/usr/local/bin/milk-carton|$fake_gateway|" \
   -e "s|role_path=/usr/share/milk/student-artifact-role|role_path=$role_file|" \
   -e "s/^worker_uid=65532$/worker_uid=$worker_uid/" \
   -e "s/^worker_gid=65532$/worker_gid=$worker_gid/" \
@@ -182,7 +182,7 @@ chmod 0700 "$fake_gateway" "$fake_runner" "$fake_privilege" \
   "$wrapper" "$image_root/student-run.sh"
 
 run_wrapper() {
-  DRAGONTALES_CONFIG_JSON=config-secret \
+  MILK_CARTON_CONFIG_JSON=config-secret \
   MILK_CAPTURE_STORE_ACCESS_KEY_ID=capture-poison \
   MILK_CAPTURE_STORE_SECRET_ACCESS_KEY=capture-poison \
   MILK_CAPTURE_STORE_SESSION_TOKEN=capture-poison \
@@ -200,7 +200,7 @@ run_wrapper() {
 }
 
 run_branch() {
-  DRAGONTALES_CONFIG_JSON=config-secret \
+  MILK_CARTON_CONFIG_JSON=config-secret \
   MILK_CONTROL_STORE_ACCESS_KEY_ID=control-access \
   MILK_CONTROL_STORE_SECRET_ACCESS_KEY=control-secret \
   MILK_CONTROL_STORE_SESSION_TOKEN=control-session \
@@ -230,7 +230,7 @@ gateway|--config|$config|ingest-student-train-execution|--result|$success_work/w
 
 without_session_work=$test_root/without-session
 : >"$log"
-receipt=$(DRAGONTALES_CONFIG_JSON=config-secret \
+receipt=$(MILK_CARTON_CONFIG_JSON=config-secret \
   MILK_CONTROL_STORE_ACCESS_KEY_ID=control-access \
   MILK_CONTROL_STORE_SECRET_ACCESS_KEY=control-secret \
   TEST_LOG=$log TEST_CONFIG=$config TEST_RUNNER_BEHAVIOR=success \
@@ -242,7 +242,7 @@ receipt=$(DRAGONTALES_CONFIG_JSON=config-secret \
 empty_session_work=$test_root/empty-session
 : >"$log"
 set +e
-DRAGONTALES_CONFIG_JSON=config-secret MILK_CONTROL_STORE_ACCESS_KEY_ID=control-access \
+MILK_CARTON_CONFIG_JSON=config-secret MILK_CONTROL_STORE_ACCESS_KEY_ID=control-access \
 MILK_CONTROL_STORE_SECRET_ACCESS_KEY=control-secret MILK_CONTROL_STORE_SESSION_TOKEN='' \
 TEST_LOG=$log TEST_CONFIG=$config TEST_RUNNER_BEHAVIOR=success \
 TEST_WORKER_UID=$worker_uid TEST_WORKER_GID=$worker_gid \
@@ -319,7 +319,7 @@ for auth in key trusted; do
   else
     set -- --trusted-ingress-auth
   fi
-  DRAGONTALES_CONFIG_JSON=config-secret \
+  MILK_CARTON_CONFIG_JSON=config-secret \
   MILK_CONTROL_STORE_ACCESS_KEY_ID=control-access \
   MILK_CONTROL_STORE_SECRET_ACCESS_KEY=control-secret \
   MILK_CONTROL_STORE_SESSION_TOKEN=control-session \

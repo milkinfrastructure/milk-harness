@@ -1,0 +1,50 @@
+{
+  "schema_version": "milk.harness-run-config.v1",
+  "scope_id": "8111652a-9640-495f-b53f-351c21abc799",
+  "profile": "mechanics",
+  "store": {
+    "kind": "r2",
+    "environment_prefix": "MILK_CONTROL_R2_"
+  },
+  "source": {
+    "close_delay_seconds": 0,
+    "max_windows": 2,
+    "max_stats_shards": 999,
+    "max_traces": 400,
+    "max_trace_object_bytes": 16777216,
+    "max_total_trace_bytes": 67108864,
+    "teacher_trace_bytes": 64,
+    "classifier_sample_sessions": 100
+  },
+  "teacher": {
+    "api_url": "https://inference.baseten.co/v1/chat/completions",
+    "model": "zai-org/GLM-5.3-Flash",
+    "reasoning_effort": "low",
+    "api_key_env": "BASETEN_API_KEY",
+    "timeout_seconds": 60,
+    "max_calls_per_run": 2,
+    "max_input_tokens_per_call": 100000,
+    "max_output_tokens_per_call": 4096,
+    "max_total_tokens_per_run": 208192,
+    "input_rate_microusd_per_million": 150000,
+    "output_rate_microusd_per_million": 500000
+  },
+  "budget": {
+    "starting_spend_microusd": 0,
+    "stop_new_spend_microusd": 20000000,
+    "absolute_spend_microusd": 25000000
+  },
+  "eval": {
+    "series_id": "gateway-mechanics-v1",
+    "representative_cases": 24,
+    "tail_cases": 8,
+    "max_source_traces": 128
+  },
+  "route_proposal": {
+    "enabled": true,
+    "candidate_id": "baseten-zai-glm-5.3-flash",
+    "api_base_url": "https://inference.baseten.co/v1/",
+    "model": "zai-org/GLM-5.3-Flash",
+    "candidate_basis_points": 500
+  }
+}

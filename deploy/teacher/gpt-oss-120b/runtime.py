@@ -35,7 +35,7 @@ MODEL_ROOT = Path(PROFILE["model"]["mount"])
 API_KEY_ENV = PROFILE["ingress"]["api_key_environment"]
 READINESS_BODY = json.dumps(
     {
-        "schema_version": "dragontales.teacher-readiness.v1",
+        "schema_version": "milk.teacher-readiness.v1",
         "model": PROFILE["model"]["served_name"],
         "profile_sha256": hashlib.sha256(PROFILE_RAW).hexdigest(),
         "state": "ready",
@@ -106,7 +106,7 @@ def _exact_keys(value, expected, description):
 
 
 def prepare_forward(raw):
-    """Validate the exact Dragontales teacher request and add one privacy control."""
+    """Validate the exact Milk Carton teacher request and add one privacy control."""
     if not isinstance(raw, bytes) or not 0 < len(raw) <= MAX_REQUEST_BYTES:
         raise RequestRejected("invalid request size")
     try:

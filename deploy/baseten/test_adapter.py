@@ -217,6 +217,7 @@ class AdapterTest(unittest.TestCase):
                 if key.startswith("MILK_")
             },
             {
+                "MILK_CARTON_CONFIG_JSON": {"name": "dragontales_config"},
                 "MILK_CONTROL_STORE_ACCOUNT_ID": "gateway-account",
                 "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": "6" * 64,
                 "MILK_CONTROL_STORE_ACCESS_KEY_ID": {"name": "control_access"},
@@ -307,6 +308,7 @@ class AdapterTest(unittest.TestCase):
                 if key.startswith("MILK_")
             },
             {
+                "MILK_CARTON_CONFIG_JSON": {"name": "dragontales_config"},
                 "MILK_CAPTURE_STORE_ACCOUNT_ID": "gateway-account",
                 "MILK_EXPECTED_CAPTURE_STORE_IDENTITY_SHA256": "5" * 64,
                 "MILK_CAPTURE_STORE_ACCESS_KEY_ID": {"name": "capture_access"},
@@ -319,7 +321,7 @@ class AdapterTest(unittest.TestCase):
                 "MILK_CONTROL_STORE_SESSION_TOKEN": {"name": "control_session"},
             },
         )
-        self.assertNotIn("DRAGONTALES_TEACHER_API_KEY", environment)
+        self.assertNotIn("MILK_CARTON_TEACHER_API_KEY", environment)
         command = job["runtime"]["start_commands"][0]
         self.assertLess(
             command.index("hashlib.sha256(raw).hexdigest()"),

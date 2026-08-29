@@ -696,11 +696,11 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
                     "dev_receipt_sha256": DEV_RECEIPT,
                     "previous_route_revision": previous,
                     "candidate_basis_points": basis_points,
-                    "manifest_object_key": f"{prefix}/routes/manifests/{revision}.json",
+                    "manifest_object_key": f"{prefix}/routes/versions/{revision}.json",
                     "signature_object_key": (
                         f"{prefix}/routes/signatures/{revision}/{'9' * 64}.ed25519"
                     ),
-                    "live_pointer_object_key": f"{prefix}/routes/live.json",
+                    "live_pointer_object_key": f"{prefix}/routes/current.json",
                     "state": "active",
                 },
                 newline=True,
@@ -720,7 +720,7 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
         self.assertEqual(hashlib.sha256(raw).hexdigest(), acceptance_sha256(self.acceptance))
         self.assertEqual(
             hashlib.sha256(raw).hexdigest(),
-            "294826abe3d05ac510fe263b8530e257ed929a9f1ca9d1654e84523ea2e8ed5d",
+            "559eab9eb3debbda1935cffcdd4d71b5cb17444c214c8887b688821e1206e789",
         )
         self.assertEqual(
             self.acceptance["provider_pass_claim_sha256"],

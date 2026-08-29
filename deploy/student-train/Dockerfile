@@ -36,8 +36,8 @@ assert PeftModel
 PY
 
 WORKDIR /opt/dragontales/deploy
-COPY --from=gateway --chmod=0555 /usr/local/bin/dragontales-gateway /usr/local/bin/dragontales-gateway
-COPY --from=gateway --chmod=0444 /usr/share/licenses/dragontales/ /usr/share/licenses/dragontales/
+COPY --from=gateway --chmod=0555 /usr/local/bin/milk-carton /usr/local/bin/milk-carton
+COPY --from=gateway --chmod=0444 /usr/share/licenses/milk-carton/ /usr/share/licenses/milk-carton/
 COPY --chmod=0444 LICENSE /usr/share/licenses/milk-harness/LICENSE
 COPY --chmod=0444 deploy/licenses/prime-rl-v0.9.0.LICENSE /usr/share/licenses/prime-rl/LICENSE
 COPY --chmod=0444 deploy/student-train/provenance.json /usr/share/milk/student-train-provenance.json
@@ -57,7 +57,7 @@ COPY deploy/models/qwen3-4b-instruct-2507/profile.json \
 RUN test -x /usr/bin/setpriv && \
     printf '%s\n' student-train > /usr/share/milk/student-artifact-role && \
     chmod 0444 /usr/share/milk/student-artifact-role && \
-    chmod 0555 /usr/local/bin/dragontales-gateway ./student-job.sh ./student-run.sh && \
+    chmod 0555 /usr/local/bin/milk-carton ./student-job.sh ./student-run.sh && \
     find ./student ./student-train ./student-branch ./adapter_train \
       ./h100-fp8-runtime ./licenses ./models -type f -exec chmod 0444 {} + && \
     python3 models/qwen3-4b-instruct-2507/verify.py >/dev/null
