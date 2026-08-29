@@ -218,7 +218,7 @@ def _route_receipt(raw, claim, basis_points, previous_revision):
         or value.get("candidate_basis_points") != basis_points
         or value.get("previous_route_revision") != previous_revision
         or value.get("manifest_object_key")
-        != f"{scope_prefix}/routes/manifests/{revision}.json"
+        != f"{scope_prefix}/routes/versions/{revision}.json"
         or not isinstance(signature_key, str)
         or not signature_key.startswith(signature_prefix)
         or re.fullmatch(
@@ -227,7 +227,7 @@ def _route_receipt(raw, claim, basis_points, previous_revision):
         )
         is None
         or value.get("live_pointer_object_key")
-        != f"{scope_prefix}/routes/live.json"
+        != f"{scope_prefix}/routes/current.json"
         or value.get("state") != "active"
     ):
         raise ValueError("gateway signed route publication is invalid")

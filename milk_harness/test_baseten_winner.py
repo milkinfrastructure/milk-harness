@@ -696,11 +696,11 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
                     "dev_receipt_sha256": DEV_RECEIPT,
                     "previous_route_revision": previous,
                     "candidate_basis_points": basis_points,
-                    "manifest_object_key": f"{prefix}/routes/manifests/{revision}.json",
+                    "manifest_object_key": f"{prefix}/routes/versions/{revision}.json",
                     "signature_object_key": (
                         f"{prefix}/routes/signatures/{revision}/{'9' * 64}.ed25519"
                     ),
-                    "live_pointer_object_key": f"{prefix}/routes/live.json",
+                    "live_pointer_object_key": f"{prefix}/routes/current.json",
                     "state": "active",
                 },
                 newline=True,
