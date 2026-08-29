@@ -256,7 +256,7 @@ failure_stage=builder-create
   --name "$builder" \
   --driver docker-container \
   --driver-opt "image=$BUILDKIT_IMAGE" \
-  "$context" >/dev/null || fail 'cannot create the pinned local BuildKit builder' 70
+  "$endpoint" >/dev/null || fail 'cannot create the pinned local BuildKit builder' 70
 builder_created=1
 bootstrap_log=$scratch/builder.log
 failure_stage=builder-bootstrap
@@ -269,7 +269,7 @@ builder_driver=$(sed -n 's/^Driver:[[:space:]]*//p' "$bootstrap_log")
 builder_endpoint=$(sed -n 's/^Endpoint:[[:space:]]*//p' "$bootstrap_log")
 builder_version=$(sed -n 's/^BuildKit version:[[:space:]]*//p' "$bootstrap_log")
 [ "$builder_driver" = docker-container ] || fail 'builder driver is not docker-container' 70
-[ "$builder_endpoint" = "$context" ] || fail 'builder endpoint differs from the local Docker context' 70
+[ "$builder_endpoint" = "$endpoint" ] || fail 'builder endpoint differs from the local Docker socket' 70
 [ "$builder_version" = "$BUILDKIT_VERSION" ] || fail "builder version differs from $BUILDKIT_VERSION" 70
 "$python" - "$bootstrap_log" "$evidence_dir/builder.json" "$BUILDKIT_IMAGE" \
   "$BUILDKIT_VERSION" <<'PY'

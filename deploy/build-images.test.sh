@@ -441,7 +441,7 @@ case "${1:-} ${2:-}" in
     printf '%s\n' \
       'Name: test-builder' \
       'Driver: docker-container' \
-      'Endpoint: desktop-linux' \
+      'Endpoint: unix:///tmp/docker.sock' \
       'BuildKit version: v0.23.2'
     ;;
   'buildx build')
@@ -545,6 +545,7 @@ build_order=$(grep '^docker|.*buildx|build|' "$test_root/commands.log" | \
 [ "$(grep -o -- "--build-arg|MILK_GATEWAY_IMAGE=$gateway" "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 3 ]
 grep -Fq -- "--driver-opt|image=moby/buildkit@sha256:ddd1ca44b21eda906e81ab14a3d467fa6c39cd73b9a39df1196210edcb8db59e" "$test_root/commands.log"
 grep -Fq -- '--driver|docker-container' "$test_root/commands.log"
+grep -Eq '^docker\|--config\|[^|]+\|buildx\|create\|.*\|unix:///tmp/docker\.sock$' "$test_root/commands.log"
 grep -Fq -- '--push' "$test_root/commands.log"
 grep -Fq -- "--tag|ghcr.io/milkinfrastructure/milk-student-train:source-$revision" "$test_root/commands.log"
 grep -Fq -- "--tag|ghcr.io/milkinfrastructure/milk-student-branch:source-$revision" "$test_root/commands.log"
