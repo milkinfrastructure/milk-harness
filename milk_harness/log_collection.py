@@ -24,10 +24,28 @@ TERMINAL_STATUSES = {
 }
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 ATTEMPT_FILE = re.compile(r"([0-9]{3})-(intent|result)\.json\Z")
+_OOM_CLASSIFIER = {
+    "schema_version": "milk.baseten-oom-classifier.v1",
+    "normalization": "utf8_bytes_ascii_lower",
+    "matching": "contains_any",
+    "needles": [
+        "out of memory",
+        "outofmemoryerror",
+        "cuda_error_out_of_memory",
+        "cuda oom",
+        "gpu oom",
+        "killed (oom)",
+        "oomkilled",
+        "oom-kill",
+    ],
+}
+OOM_CLASSIFIER_SHA256 = hashlib.sha256(canonical_json(_OOM_CLASSIFIER)).hexdigest()
+_OOM_NEEDLES = tuple(item.encode("ascii") for item in _OOM_CLASSIFIER["needles"])
 DECISION_KEYS = {
     "schema_version", "run_id", "ordinal", "start_epoch_millis",
     "end_epoch_millis", "state", "response_bytes", "response_sha256",
     "record_count", "children", "gap", "archive", "redaction_profile_sha256",
+    "oom_classifier_sha256", "oom_matched_record_count",
 }
 ARCHIVE_KEYS = {
     "schema_version", "run_id", "source", "stream_id", "redaction_profile_sha256",
@@ -215,6 +233,28 @@ def _response_fields(value):
     )
 
 
+def _oom_fields(records):
+    count = 0
+    for record in records:
+        encoded = record[1].encode("utf-8")
+        if any(needle in encoded.lower() for needle in _OOM_NEEDLES):
+            count += 1
+    return {
+        "oom_classifier_sha256": OOM_CLASSIFIER_SHA256,
+        "oom_matched_record_count": count,
+    }
+
+
+def _check_oom_fields(value, maximum):
+    count = value.get("oom_matched_record_count")
+    if (
+        value.get("oom_classifier_sha256") != OOM_CLASSIFIER_SHA256
+        or type(count) is not int
+        or not 0 <= count <= maximum
+    ):
+        raise ValueError("stored Baseten OOM evidence is invalid")
+
+
 def _check_archive(archive, run_id, stream_id, records, complete):
     if (
         not isinstance(archive, dict)
@@ -243,7 +283,7 @@ def _check_decision(value, run_id, window):
         or not 0 <= start <= end <= MAX_EPOCH_MILLISECONDS
         or not isinstance(value, dict)
         or set(value) != DECISION_KEYS
-        or value.get("schema_version") != "milk.baseten-log-window.v1"
+        or value.get("schema_version") != "milk.baseten-log-window.v2"
         or value.get("run_id") != run_id
         or value.get("ordinal") != ordinal
         or value.get("start_epoch_millis") != start
@@ -252,6 +292,10 @@ def _check_decision(value, run_id, window):
         or value.get("redaction_profile_sha256") != REDACTION_PROFILE_SHA256
     ):
         raise ValueError("stored log window decision is invalid")
+    _check_oom_fields(
+        value,
+        value["record_count"] if type(value["record_count"]) is int else 0,
+    )
     state = value["state"]
     if state == "split":
         middle = (start + end) // 2
@@ -360,7 +404,7 @@ def _success(evidence, run_id, window, raw, records):
     ordinal, start, end = window
     response_sha256 = hashlib.sha256(raw).hexdigest()
     common = {
-        "schema_version": "milk.baseten-log-window.v1",
+        "schema_version": "milk.baseten-log-window.v2",
         "run_id": run_id,
         "ordinal": ordinal,
         "start_epoch_millis": start,
@@ -369,6 +413,7 @@ def _success(evidence, run_id, window, raw, records):
         "response_sha256": response_sha256,
         "record_count": len(records),
         "redaction_profile_sha256": REDACTION_PROFILE_SHA256,
+        **_oom_fields(records),
     }
     if len(records) == MAX_RECORDS and start < end:
         middle = (start + end) // 2
@@ -402,7 +447,7 @@ def _success(evidence, run_id, window, raw, records):
 def _gap(run_id, window, reason):
     ordinal, start, end = window
     return {
-        "schema_version": "milk.baseten-log-window.v1",
+        "schema_version": "milk.baseten-log-window.v2",
         "run_id": run_id,
         "ordinal": ordinal,
         "start_epoch_millis": start,
@@ -415,6 +460,7 @@ def _gap(run_id, window, reason):
         "gap": {"reason": reason, "observed_records": None, "missing_records": None},
         "archive": None,
         "redaction_profile_sha256": REDACTION_PROFILE_SHA256,
+        **_oom_fields([]),
     }
 
 
@@ -468,7 +514,7 @@ def _attempt_evidence(evidence, run_id):
                 "schema_version", "run_id", "slot", "state", "response_bytes",
                 "response_sha256", "failure_type", "failure_sha256", "decision",
             }
-            or result.get("schema_version") != "milk.baseten-log-attempt-result.v1"
+            or result.get("schema_version") != "milk.baseten-log-attempt-result.v2"
             or result.get("run_id") != run_id
             or result.get("slot") != slot
             or result.get("state") not in {"success", "failed"}
@@ -512,6 +558,7 @@ def _frontier(evidence, plan, run_id, cache):
         for root in plan["executions"]
     )
     leaves, unresolved = [], []
+    oom_matched_record_count = 0
     while queue:
         ordinal, start, end, not_before = queue.pop(0)
         window = (ordinal, start, end)
@@ -521,7 +568,9 @@ def _frontier(evidence, plan, run_id, cache):
         decision = cache[window]
         if decision is None:
             unresolved.append((ordinal, start, end, not_before))
-        elif decision["state"] == "split":
+            continue
+        oom_matched_record_count += decision["oom_matched_record_count"]
+        if decision["state"] == "split":
             queue.extend(
                 (ordinal, child["start_epoch_millis"], child["end_epoch_millis"], not_before)
                 for child in decision["children"]
@@ -530,7 +579,7 @@ def _frontier(evidence, plan, run_id, cache):
         else:
             leaves.append(decision)
     key = lambda item: (item["ordinal"], item["start_epoch_millis"], item["end_epoch_millis"])
-    return sorted(leaves, key=key), sorted(unresolved)
+    return sorted(leaves, key=key), sorted(unresolved), oom_matched_record_count
 
 
 def _execution_summaries(plan, leaves):
@@ -550,17 +599,19 @@ def _execution_summaries(plan, leaves):
     return values
 
 
-def _check_summary(value, plan, run_id):
+def _check_summary(evidence, value, plan, run_id):
     keys = {
         "schema_version", "campaign_id", "run_id", "project_id", "plan_sha256",
-        "attempts_used", "attempts_without_known_response", "pessimistic_provider_bytes",
+        "attempts_used", "attempts_without_known_response",
+        "attempts_without_oom_classification", "pessimistic_provider_bytes",
         "actual_response_bytes", "actual_response_bytes_complete", "records_hashed",
-        "executions", "leaf_decisions", "source_complete",
+        "executions", "leaf_decisions", "source_complete", "oom_classifier_sha256",
+        "oom_matched_record_count", "oom_source_complete",
     }
     if (
         not isinstance(value, dict)
         or set(value) != keys
-        or value.get("schema_version") != "milk.baseten-log-collection-summary.v1"
+        or value.get("schema_version") != "milk.baseten-log-collection-summary.v2"
         or value.get("campaign_id") != plan["campaign_id"]
         or value.get("run_id") != run_id
         or value.get("project_id") != plan["project_id"]
@@ -569,6 +620,10 @@ def _check_summary(value, plan, run_id):
         or not 0 <= value["attempts_used"] <= MAX_RUN_ATTEMPTS
         or type(value.get("attempts_without_known_response")) is not int
         or not 0 <= value["attempts_without_known_response"] <= value["attempts_used"]
+        or type(value.get("attempts_without_oom_classification")) is not int
+        or not 0
+        <= value["attempts_without_oom_classification"]
+        <= value["attempts_used"]
         or value.get("pessimistic_provider_bytes") != value["attempts_used"] * MAX_PROVIDER_BYTES
         or type(value.get("actual_response_bytes")) is not int
         or not 0 <= value["actual_response_bytes"] <= value["pessimistic_provider_bytes"]
@@ -577,6 +632,12 @@ def _check_summary(value, plan, run_id):
         != (value["attempts_without_known_response"] == 0)
         or not isinstance(value.get("leaf_decisions"), list)
         or type(value.get("source_complete")) is not bool
+        or type(value.get("oom_source_complete")) is not bool
+        or value["oom_source_complete"]
+        != (
+            value["source_complete"]
+            and value["attempts_without_oom_classification"] == 0
+        )
     ):
         raise ValueError("stored Baseten log summary is invalid")
     leaves = [
@@ -592,29 +653,65 @@ def _check_summary(value, plan, run_id):
     records_hashed = sum(
         item["archive"]["stored_records"] for item in leaves if item["archive"] is not None
     )
+    attempts, results, unused_per_window = _attempt_evidence(evidence, run_id)
+    del unused_per_window
+    unknown = sum(
+        slot not in results or results[slot]["response_bytes"] is None for slot in attempts
+    )
+    unclassified = sum(
+        slot not in results or results[slot]["state"] != "success" for slot in attempts
+    )
+    actual_response_bytes = sum(
+        result["response_bytes"]
+        for result in results.values()
+        if result["response_bytes"] is not None
+    )
+    stored_leaves, unresolved, matched_record_count = _frontier(
+        evidence, plan, run_id, {}
+    )
+    _check_oom_fields(value, value["attempts_used"] * MAX_RECORDS)
     if (
         len(leaves) != len(value["leaf_decisions"])
         or leaves != sorted(leaves, key=key)
+        or unresolved
+        or stored_leaves != leaves
         or value.get("executions") != _execution_summaries(plan, leaves)
+        or value["attempts_used"] != len(attempts)
+        or value["attempts_without_known_response"] != unknown
+        or value["attempts_without_oom_classification"] != unclassified
+        or value["actual_response_bytes"] != actual_response_bytes
         or value.get("records_hashed") != records_hashed
+        or value["oom_matched_record_count"] != matched_record_count
         or value["source_complete"] != all(item["state"] == "complete" for item in leaves)
     ):
         raise ValueError("stored Baseten log summary is inconsistent")
     return value
 
 
-def _summary(evidence, plan, run_id, attempts, results, leaves):
+def _summary(
+    evidence,
+    plan,
+    run_id,
+    attempts,
+    results,
+    leaves,
+    oom_matched_record_count,
+):
     unknown = sum(
         slot not in results or results[slot]["response_bytes"] is None for slot in attempts
     )
+    unclassified = sum(
+        slot not in results or results[slot]["state"] != "success" for slot in attempts
+    )
     value = {
-        "schema_version": "milk.baseten-log-collection-summary.v1",
+        "schema_version": "milk.baseten-log-collection-summary.v2",
         "campaign_id": plan["campaign_id"],
         "run_id": run_id,
         "project_id": plan["project_id"],
         "plan_sha256": hashlib.sha256(canonical_json(plan)).hexdigest(),
         "attempts_used": len(attempts),
         "attempts_without_known_response": unknown,
+        "attempts_without_oom_classification": unclassified,
         "pessimistic_provider_bytes": len(attempts) * MAX_PROVIDER_BYTES,
         "actual_response_bytes": sum(
             result["response_bytes"]
@@ -628,10 +725,16 @@ def _summary(evidence, plan, run_id, attempts, results, leaves):
         "executions": _execution_summaries(plan, leaves),
         "leaf_decisions": leaves,
         "source_complete": all(item["state"] == "complete" for item in leaves),
+        "oom_classifier_sha256": OOM_CLASSIFIER_SHA256,
+        "oom_matched_record_count": oom_matched_record_count,
+        "oom_source_complete": (
+            all(item["state"] == "complete" for item in leaves)
+            and unclassified == 0
+        ),
     }
     stored, unused_created = _put(evidence, "log-collections/summary.json", value)
     del unused_created
-    return _check_summary(stored, plan, run_id)
+    return _check_summary(evidence, stored, plan, run_id)
 
 
 def collect_baseten_terminal_logs(
@@ -651,17 +754,27 @@ def collect_baseten_terminal_logs(
     plan = _plan(evidence, campaign_id, run_id, project_id, executions, observed_at)
     existing = _maybe(evidence, "log-collections/summary.json")
     if existing is not None:
-        return _check_summary(existing, plan, run_id)
+        return _check_summary(evidence, existing, plan, run_id)
 
     current_millis = _current_millis(now)
     attempts, results, per_window = _attempt_evidence(evidence, run_id)
     decisions = {}
     while True:
-        leaves, unresolved = _frontier(evidence, plan, run_id, decisions)
+        leaves, unresolved, oom_matched_record_count = _frontier(
+            evidence, plan, run_id, decisions
+        )
         if not unresolved:
             attempts, results, per_window = _attempt_evidence(evidence, run_id)
             del per_window
-            return _summary(evidence, plan, run_id, attempts, results, leaves)
+            return _summary(
+                evidence,
+                plan,
+                run_id,
+                attempts,
+                results,
+                leaves,
+                oom_matched_record_count,
+            )
         ordinal, start, end, not_before = unresolved[0]
         if current_millis < not_before:
             return {
@@ -746,7 +859,7 @@ def collect_baseten_terminal_logs(
             if not failure_type or len(failure_type) > 128:
                 failure_type = "Exception"
             result = {
-                "schema_version": "milk.baseten-log-attempt-result.v1",
+                "schema_version": "milk.baseten-log-attempt-result.v2",
                 "run_id": run_id,
                 "slot": slot,
                 "state": "failed",
@@ -763,7 +876,7 @@ def collect_baseten_terminal_logs(
         else:
             decision = _success(evidence, run_id, window, raw, records)
             result = {
-                "schema_version": "milk.baseten-log-attempt-result.v1",
+                "schema_version": "milk.baseten-log-attempt-result.v2",
                 "run_id": run_id,
                 "slot": slot,
                 "state": "success",

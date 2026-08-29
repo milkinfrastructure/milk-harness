@@ -30,20 +30,20 @@ The pilot is single tenant: one gateway deployment owns one tenant, project, env
 
 Milk Infrastructure is the hosted operator and owns the admitted eval document, storage credentials, provider credentials, route authority, and release evidence. The harness watches that admitted document and completed captured traffic. It stops creating teacher work at the eval's `max_decisions` limit while continuing bounded reconciliation and teardown. Scheduled runs cannot authorize provider creates.
 
-Two paid runs are planned but not yet executed. First, separately authorize exactly one Baseten job under eval ID `5e73ad7bb8fc8cc9689c121dc4d09eecc27094bfba7a77075df992f8409d4bba` to prove the exact private teacher image can be pulled, the job terminates, and compute returns to zero. Failure stops before the larger run and does not authorize fallback. Second, the synthetic cloud-mechanics eval uses ID `959caacb397004bf3e60f13613da50f4ed3160a65d18b178c3d996398e29b5a0`, 320 decisions partitioned as 63 TRAIN, 91 DEV, and 166 CALIBRATION, `max_calls=10`, `max_gpu_seconds=3600`, and `max_parallel_runs=1`. Its pessimistic GPU ceiling is `$262.50`, plus `$7.50` for the qualifier. This proves cloud mechanics only; generated traffic and results do not satisfy real-traffic production qualification. The existing `$1,000` ceiling and `$850` new-work cutoff govern both runs.
+One paid eval is planned but not yet executed. The synthetic cloud-mechanics eval uses ID `959caacb397004bf3e60f13613da50f4ed3160a65d18b178c3d996398e29b5a0`, 320 decisions partitioned as 63 TRAIN, 91 DEV, and 166 CALIBRATION, `max_calls=20`, `max_gpu_seconds=3600`, and `max_parallel_runs=1`. No later create is authorized until a Baseten-selected 20-call job proves the exact private image and profile, 20 ready calls within the live target, `logs_source_complete=true`, `oom_source_complete=true`, `oom_matched_record_count=0`, terminal zero compute, and no ambiguous or not-started call. A Modal-selected result cannot pass the Baseten gate. With a 3,600-second winner bound, the eval's pessimistic GPU reservation is `$160`. This proves cloud mechanics only; generated traffic and results do not satisfy real-traffic production qualification. The existing `$1,000` ceiling and `$850` new-work cutoff govern the run.
 
 ## Work required before activation
 
 1. Publish and read back the exact release, admissions, and eval documents in production evidence storage.
 2. Finish least-privilege production storage credentials, retention/privacy controls, provider resources, and deployment receipts.
-3. Materialize the exact one-job Baseten qualification eval and bounded cloud-mechanics eval above, each with its own outer-document approval digest, limits, and budget.
+3. Materialize the exact bounded cloud-mechanics eval above with its outer-document approval digest, 3,600-second winner bound, limits, admission gate, and budget.
 4. Deploy the admitted gateway and enable the scheduler only after every secret, resource identity, and configuration digest is verified.
 
 ## Remaining live gates
 
 1. The Cloudflare Worker and Container run the newly admitted gateway image on the production hostname.
 2. An official OpenAI SDK request returns a valid completion through the gateway and its immutable completed trace is present.
-3. The separately authorized Baseten qualification pulls the exact private image, produces one terminal result, and returns to zero compute without fallback.
+3. The first Baseten-selected 20-call job pulls the exact private image, passes the committed live teacher profile, and returns to zero compute before another create is authorized.
 4. The student eval retains at least 251 usable results: 50 TRAIN, 73 DEV, and 128 CALIBRATION. The current partition should plan for roughly 1,280 eligible captures; skipped traffic may require more. Generated traffic and local fixtures do not count.
 5. One train/merge job and the BF16, dynamic-FP8, and static-FP8 branches complete against the same ordered DEV set.
 6. A deterministic winner receives an authenticated 100-bps canary, and genuine candidate saturation falls back to the baseline.
