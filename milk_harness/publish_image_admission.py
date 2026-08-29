@@ -9,7 +9,9 @@ from milk_harness.image_admission import (
     ARTIFACT_PREFIX,
     RELEASE_IMAGE_REPOSITORIES,
     RELEASE_PREFIX,
+    _validate_gateway_release,
     _validate_release,
+    load_local_private_gateway_release,
     load_local_private_image_release,
 )
 
@@ -45,18 +47,24 @@ def publish_private_image_release(store, release):
     )
     for artifact in validated["images"]:
         item = validated["images"][artifact]
+        key = f"{ARTIFACT_PREFIX}/{item['admission_sha256']}.json"
         create_same(
             store,
-            f"{ARTIFACT_PREFIX}/{item['admission_sha256']}.json",
+            key,
             item["raw"],
             "application/json",
         )
+        if store.get(key) != item["raw"]:
+            raise ValueError("published private image admission failed full-body readback")
+    release_key = f"{RELEASE_PREFIX}/{validated['release_sha256']}.json"
     create_same(
         store,
-        f"{RELEASE_PREFIX}/{validated['release_sha256']}.json",
+        release_key,
         validated["release_raw"],
         "application/json",
     )
+    if store.get(release_key) != validated["release_raw"]:
+        raise ValueError("published private image release failed full-body readback")
     return {
         "schema_version": "milk.private-image-release-published.v1",
         "release_sha256": validated["release_sha256"],
@@ -68,7 +76,56 @@ def publish_private_image_release(store, release):
     }
 
 
+def publish_private_gateway_release(store, release):
+    if not isinstance(release, dict) or set(release) != {
+        "release_sha256",
+        "release_raw",
+        "image",
+    }:
+        raise ValueError("private gateway release authority is invalid")
+    image = release.get("image")
+
+    def admission(admission_sha256):
+        if (
+            not isinstance(image, dict)
+            or set(image) != {"image_reference", "admission_sha256", "raw"}
+            or image.get("admission_sha256") != admission_sha256
+        ):
+            raise ValueError("private gateway admission authority is invalid")
+        return image.get("raw")
+
+    validated = _validate_gateway_release(
+        release.get("release_raw"),
+        admission,
+        release.get("release_sha256"),
+    )
+    image = validated["image"]
+    admission_key = f"{ARTIFACT_PREFIX}/{image['admission_sha256']}.json"
+    create_same(store, admission_key, image["raw"], "application/json")
+    if store.get(admission_key) != image["raw"]:
+        raise ValueError("published private gateway admission failed full-body readback")
+    release_key = f"{RELEASE_PREFIX}/{validated['release_sha256']}.json"
+    create_same(store, release_key, validated["release_raw"], "application/json")
+    if store.get(release_key) != validated["release_raw"]:
+        raise ValueError("published private gateway release failed full-body readback")
+    return {
+        "schema_version": "milk.private-image-release-published.v1",
+        "release_sha256": validated["release_sha256"],
+        "artifact_admission_sha256s": {
+            "gateway": image["admission_sha256"],
+        },
+        "state": "published",
+    }
+
+
 def _reject_ambient_authorities(environ):
+    evidence_names = {
+        "MILK_EVIDENCE_R2_ACCOUNT_ID",
+        "MILK_EVIDENCE_R2_BUCKET",
+        "MILK_EVIDENCE_R2_ACCESS_KEY_ID",
+        "MILK_EVIDENCE_R2_SECRET_ACCESS_KEY",
+        "MILK_EVIDENCE_R2_SESSION_TOKEN",
+    }
     forbidden_prefixes = (
         "AWS_",
         "AZURE_",
@@ -105,11 +162,15 @@ def _reject_ambient_authorities(environ):
     }
     if any(
         value
-        and (name in forbidden_names or name.startswith(forbidden_prefixes))
+        and (
+            name in forbidden_names
+            or name.startswith(forbidden_prefixes)
+            or (name.startswith("MILK_") and name not in evidence_names)
+        )
         for name, value in environ.items()
     ):
         raise ValueError(
-            "image admission publisher must receive only its evidence authority, not builder, provider, or other store credentials"
+            "publisher must receive only its evidence authority, not builder, provider, or other store credentials"
         )
 
 
@@ -117,14 +178,23 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Publish one immutable private Milk image release to evidence R2"
     )
-    parser.add_argument("--release-dir", required=True)
+    release = parser.add_mutually_exclusive_group(required=True)
+    release.add_argument("--release-dir")
+    release.add_argument("--gateway-release-dir")
     arguments = parser.parse_args(argv)
     try:
         _reject_ambient_authorities(os.environ)
-        receipt = publish_private_image_release(
-            R2EvidenceStore.from_environment(),
-            load_local_private_image_release(arguments.release_dir),
-        )
+        store = R2EvidenceStore.from_environment()
+        if arguments.gateway_release_dir is not None:
+            receipt = publish_private_gateway_release(
+                store,
+                load_local_private_gateway_release(arguments.gateway_release_dir),
+            )
+        else:
+            receipt = publish_private_image_release(
+                store,
+                load_local_private_image_release(arguments.release_dir),
+            )
     except (
         OSError,
         RuntimeError,
