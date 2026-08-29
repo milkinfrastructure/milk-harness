@@ -7,26 +7,17 @@ RUN test "$(python3 -c 'import platform; print(platform.python_version())')" = 3
 
 WORKDIR /opt/milk-harness
 COPY --chmod=0444 LICENSE /usr/share/licenses/milk-harness/LICENSE
-COPY --chmod=0444 third_party/modal/THIRD_PARTY_NOTICES.md \
-  /usr/share/licenses/milk-harness/JOBS-PYTHON-THIRD-PARTY-NOTICES.md
-COPY --chmod=0444 third_party/modal/requirements-linux-amd64-cp312.lock /tmp/jobs.lock
-RUN python3 -m pip --isolated install \
-      --disable-pip-version-check \
-      --no-cache-dir \
-      --index-url https://pypi.org/simple \
-      --only-binary=:all: \
-      --require-hashes \
-      --requirement /tmp/jobs.lock && \
-    rm -f -- /tmp/jobs.lock
 COPY --chmod=0444 milk_harness/__init__.py milk_harness/evidence.py milk_harness/budget.py \
   milk_harness/image_admission.py \
   milk_harness/logs.py milk_harness/log_collection.py milk_harness/metrics_collection.py \
   milk_harness/provider_acceptance.py milk_harness/baseten_winner.py \
-  milk_harness/modal_jobs.py milk_harness/scheduler.py milk_harness/jobs.py ./milk_harness/
+  milk_harness/scheduler.py milk_harness/jobs.py ./milk_harness/
 COPY --chmod=0444 deploy/baseten/adapter.py deploy/baseten/winner.py ./deploy/baseten/
-COPY --chmod=0444 deploy/modal/admit.py ./deploy/modal/admit.py
+COPY --chmod=0444 deploy/winner_admission.py ./deploy/
+RUN chmod 0555 ./milk_harness ./deploy ./deploy/baseten
+USER 65532:65532
 RUN PYTHONDONTWRITEBYTECODE=1 python3 -c \
-  'from importlib.metadata import version; import modal; import deploy.baseten.adapter, deploy.baseten.winner, deploy.modal.admit; import milk_harness.baseten_winner, milk_harness.jobs, milk_harness.modal_jobs, milk_harness.provider_acceptance, milk_harness.scheduler; assert modal.__version__ == version("modal") == "1.5.4"'
+  'import deploy.baseten.adapter, deploy.baseten.winner, deploy.winner_admission; import milk_harness.baseten_winner, milk_harness.jobs, milk_harness.provider_acceptance, milk_harness.scheduler'
 
 ENV HOME=/tmp \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -34,5 +25,4 @@ ENV HOME=/tmp \
 LABEL org.opencontainers.image.title="Milk jobs executor" \
       org.opencontainers.image.source="https://github.com/milkinfrastructure/milk-harness" \
       org.opencontainers.image.licenses="MIT"
-USER 65532:65532
 ENTRYPOINT ["python3", "-m", "milk_harness.jobs"]

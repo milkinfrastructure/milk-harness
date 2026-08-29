@@ -17,7 +17,7 @@ from milk_harness.jobs import (
     _workload_run_id,
     _workload_and_entries,
     BasetenJobs,
-    dispatch_cross_provider_outboxes,
+    dispatch_baseten_outboxes,
     dispatch_provider_teardowns,
     discover_provider_teardown_authorizations,
     build_provider_teardown_result,
@@ -1218,22 +1218,17 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                     {},
                     None,
                 )
-                pending = dispatch_provider_teardowns(
-                    object(),
-                    later,
-                    store=store,
-                    control_store=missing_ack,
-                    campaign_id=CAMPAIGN,
-                    scope_prefix=SCOPE_PREFIX,
-                    evidence_store_identity_sha256="d" * 64,
-                    baseten_values_by_run_id={},
-                    now=lambda: NOW,
-                )
-            self.assertEqual(pending["state"], "hold")
-            self.assertEqual(pending["verified"], 1)
-            self.assertEqual(pending["completed"], 0)
-            self.assertEqual(pending["results"], [])
-            self.assertEqual(pending["teardown_result_references"], [])
+                with self.assertRaisesRegex(ValueError, "must select Baseten"):
+                    dispatch_provider_teardowns(
+                        object(),
+                        store=store,
+                        control_store=missing_ack,
+                        campaign_id=CAMPAIGN,
+                        scope_prefix=SCOPE_PREFIX,
+                        evidence_store_identity_sha256="d" * 64,
+                        baseten_values_by_run_id={},
+                        now=lambda: NOW,
+                    )
             self.assertEqual(later.calls, [])
             unsafe_ack = json.loads(modal_absence_ack(record))
             self.assertNotEqual(
@@ -1334,7 +1329,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 "student_winner_deployment",
             )
 
-    def test_teardown_authority_is_read_only_and_emits_only_evidence_reference(self):
+    def test_production_teardown_discovery_rejects_modal_authority(self):
         with tempfile.TemporaryDirectory() as root:
             control = LocalEvidenceStore(f"{root}/control")
             evidence = LocalEvidenceStore(f"{root}/evidence")
@@ -1436,92 +1431,22 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 json.dumps(frontier, separators=(",", ":")).encode(),
                 "application/json",
             )
-            discovered = discover_provider_teardown_authorizations(
-                ReadOnlyControlStore(control),
-                SCOPE_PREFIX,
-                dt.datetime(2026, 8, 27, 20, 18, tzinfo=UTC),
-            )
-            self.assertEqual(len(discovered), 1)
-            store_identity = "d" * 64
-            keys = {
-                "zero": (
-                    f"campaigns/v1/{acceptance['campaign_id']}/winner-jobs/"
-                    f"{acceptance['run_id']}/zero-gpu.json"
-                ),
-                "logs": (
-                    f"campaigns/v1/{acceptance['campaign_id']}/winner-jobs/"
-                    f"{acceptance['run_id']}/logs/private-index.json"
-                ),
-                "settlement": (
-                    f"campaigns/v1/{acceptance['campaign_id']}/settlements/"
-                    f"{acceptance['run_id']}.json"
-                ),
-            }
-            for label, key in keys.items():
-                evidence.create(
-                    key,
-                    canonical_json({"evidence": label}),
-                    "application/json",
+            with self.assertRaisesRegex(ValueError, "teardown authorization"):
+                discover_provider_teardown_authorizations(
+                    ReadOnlyControlStore(control),
+                    SCOPE_PREFIX,
+                    dt.datetime(2026, 8, 27, 20, 18, tzinfo=UTC),
                 )
-            result = build_provider_teardown_result(
-                discovered[0],
-                accounted_microusd=1234,
-                provider_zero_evidence=_provider_evidence_reference(
-                    evidence,
-                    store_identity,
-                    keys["zero"],
-                ),
-                private_log_artifact=_provider_evidence_reference(
-                    evidence,
-                    store_identity,
-                    keys["logs"],
-                ),
-                budget_settlement=_provider_evidence_reference(
-                    evidence,
-                    store_identity,
-                    keys["settlement"],
-                ),
-                terminated_at=dt.datetime(
-                    2026,
-                    8,
-                    27,
-                    20,
-                    18,
-                    tzinfo=UTC,
-                ),
-                verified_zero_at=dt.datetime(
-                    2026,
-                    8,
-                    27,
-                    20,
-                    19,
-                    tzinfo=UTC,
-                ),
-            )
-            raw = provider_teardown_result_bytes(result)
-            self.assertTrue(raw.endswith(b"\n"))
-            reference = store_gateway_teardown_result_handoff(
-                evidence,
-                campaign_id=acceptance["campaign_id"],
-                result=result,
-            )
-            self.assertEqual(
-                validate_teardown_result_references(
-                    acceptance["campaign_id"],
-                    [reference],
-                ),
-                [reference],
-            )
-            self.assertNotIn("execution_id", reference)
-            self.assertNotIn("provider", reference)
 
-    def test_cross_provider_dispatch_selects_every_run_before_any_reservation(self):
+    def test_baseten_hold_is_side_effect_free_then_dispatches_all_operations(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
             store = RecordingStore(f"{root}/evidence", events)
             control = LocalEvidenceStore(f"{root}/control")
             authorize(store)
+            control_launch(control, "teacher_run", 79)
             control_launch(control, "student_train_merge", 80)
+            control_launch(control, "student_fanout", 82)
             control_launch(control, "student_winner_deployment", 81)
             settings = {
                 "student_train_image": TEST_IMAGE_ADMISSIONS["student-train"][
@@ -1594,162 +1519,40 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 }
 
             jobs.preflight = unavailable_training
-            launches = discover_gpu_launches(control, SCOPE_PREFIX, NOW)
-            plans = {}
-            winner_values = {}
-            for launch in launches:
-                if (
-                    launch["operation"]["kind"]
-                    == "student_winner_deployment"
-                ):
-                    run_id = _winner_run_from_launch(
-                        CAMPAIGN,
-                        launch,
-                        TEST_IMAGE_RELEASE_SHA256,
-                        TEST_IMAGE_ADMISSIONS["student-branch"]["sha256"],
-                    )
-                    student_job_id = launch["operation"]["student_job_id"]
-                    command = [
-                        "/bin/sh",
-                        "-c",
-                        (
-                            "set -eu; umask 077; mkdir -m 0700 -p "
-                            "/tmp/dragontales /tmp/dragontales-winner; "
-                            "printf %s \"$DRAGONTALES_CONFIG_JSON\" >"
-                            "/tmp/dragontales/gateway.json; chmod 0400 "
-                            "/tmp/dragontales/gateway.json; printf %s "
-                            "\"$DRAGONTALES_CANDIDATE_API_KEY\" >"
-                            "/tmp/dragontales-candidate.key; chmod 0400 "
-                            "/tmp/dragontales-candidate.key; "
-                            "/usr/local/bin/dragontales-gateway --config "
-                            "/tmp/dragontales/gateway.json "
-                            "materialize-student-winner --student-job-id "
-                            "\"$DRAGONTALES_STUDENT_JOB_ID\" --stage-dir "
-                            "/tmp/dragontales-winner >"
-                            "/tmp/dragontales/materialize.stdout; unset "
-                            "DRAGONTALES_CONFIG_JSON "
-                            "DRAGONTALES_CANDIDATE_API_KEY "
-                            "MILK_CONTROL_STORE_ACCESS_KEY_ID "
-                            "MILK_CONTROL_STORE_SECRET_ACCESS_KEY; cat "
-                            "/tmp/dragontales/materialize.stdout; exec "
-                            "/opt/dragontales/deploy/student-job.sh serve "
-                            "--model /tmp/dragontales-winner/model "
-                            "--model-manifest /tmp/dragontales-winner/"
-                            "model-manifest.json --model-alias "
-                            "\"$DRAGONTALES_MODEL_ALIAS\" --api-key-file "
-                            "/tmp/dragontales-candidate.key"
-                        ),
-                    ]
-                    plans[run_id] = {
-                        "schema_version": "milk.modal-execution-plan.v1",
-                        "campaign_id": CAMPAIGN,
-                        "run_id": run_id,
-                        "executions": [
-                            {
-                                "ordinal": 0,
-                                "command": command,
-                                "environment": {
-                                    "DRAGONTALES_MODEL_ALIAS": "milk-student",
-                                    "DRAGONTALES_STUDENT_JOB_ID": student_job_id,
-                                },
-                                "resources": {
-                                    "registry_secret": resources()[
-                                        "registry_secret"
-                                    ],
-                                    "secrets": [
-                                        {
-                                            "name": "milk-config",
-                                            "object_id": "st-config",
-                                            "required_keys": [
-                                                "DRAGONTALES_CONFIG_JSON"
-                                            ],
-                                        },
-                                        {
-                                            "name": "milk-control",
-                                            "object_id": "st-control",
-                                            "required_keys": [
-                                                "MILK_CONTROL_STORE_ACCESS_KEY_ID",
-                                                "MILK_CONTROL_STORE_SECRET_ACCESS_KEY",
-                                            ],
-                                        },
-                                        {
-                                            "name": "milk-winner-candidate",
-                                            "object_id": "st-winner-candidate",
-                                            "required_keys": [
-                                                "DRAGONTALES_CANDIDATE_API_KEY"
-                                            ],
-                                        },
-                                    ],
-                                    "volumes": [],
-                                },
-                            }
-                        ],
-                    }
-                    winner_values[run_id] = winner_contract.settings(
-                        launch["runtime_image_reference"],
-                        student_job_id,
-                        "milk-student",
-                        "DOCKER_REGISTRY_ghcr.io",
-                        "gateway_config",
-                        "control-account",
-                        "6" * 64,
-                        "control_access",
-                        "control_secret",
-                    )
-                else:
-                    workload_value, unused_entries = _workload_and_entries(
-                        launch,
-                        settings,
-                    )
-                    del unused_entries
-                    run_id = _workload_run_id(CAMPAIGN, workload_value)
-                    plans[run_id] = {
-                        "schema_version": "milk.modal-execution-plan.v1",
-                        "campaign_id": CAMPAIGN,
-                        "run_id": run_id,
-                        "executions": [
-                            {
-                                "ordinal": 0,
-                                "command": ["/bin/true"],
-                                "environment": {},
-                                "resources": resources(),
-                            }
-                        ],
-                    }
             provider_pass_raw, authorization_raw = create_authorities()
             winner_lifecycle = ModalFallbackWinnerLifecycle(events)
 
-            def ready_modal():
-                events.append(("modal-preflight", None))
-                return {
-                    **modal_preflight(),
-                    "observed_at": NOW.isoformat().replace("+00:00", "Z"),
-                }
-
-            result = dispatch_cross_provider_outboxes(
+            result = dispatch_baseten_outboxes(
                 jobs,
-                ModalLifecycle(store, events),
                 winner_lifecycle,
                 control_store=ReadOnlyControlStore(control),
                 scope_prefix=SCOPE_PREFIX,
                 settings=settings,
                 baseten_team_name=TEAM,
-                modal_identity=modal_identity(),
-                modal_preflight=ready_modal,
+                winner_model_alias="milk-student",
                 provider_pass_claim_raw=provider_pass_raw,
                 create_authorization_raw=authorization_raw,
-                modal_plans_by_run_id=plans,
-                winner_values_by_run_id=winner_values,
             )
-            self.assertEqual(result["verified"], 2)
-            self.assertEqual(result["dispatched"], 2)
+            self.assertEqual(result["verified"], 4)
+            self.assertEqual(result["dispatched"], 0)
+            self.assertEqual(result["held"], 4)
+            self.assertEqual(result["state"], "hold")
             self.assertEqual(
                 result["provider_policy"],
-                {"primary": "baseten", "fallback": "modal"},
+                {"only": "baseten"},
             )
-            self.assertEqual(len(result["winner_result_references"]), 1)
-            self.assertEqual(ordinary_preflights, [TEAM])
+            self.assertEqual(result["winner_result_references"], [])
+            self.assertEqual(ordinary_preflights, [TEAM, TEAM, TEAM])
             self.assertEqual(winner_lifecycle.calls, 1)
+            self.assertEqual(
+                {hold["operation"] for hold in result["holds"]},
+                {
+                    "teacher_run",
+                    "student_train_merge",
+                    "student_fanout",
+                    "student_winner_deployment",
+                },
+            )
             preflight_events = [
                 event[0]
                 for event in events
@@ -1760,14 +1563,9 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                     "modal-preflight",
                 }
             ]
-            self.assertEqual(len(preflight_events), 4)
-            self.assertEqual(preflight_events[1::2], ["modal-preflight"] * 2)
-            self.assertTrue(
-                all(
-                    event.startswith("baseten-")
-                    for event in preflight_events[::2]
-                )
-            )
+            self.assertEqual(preflight_events.count("baseten-training-preflight"), 3)
+            self.assertEqual(preflight_events.count("baseten-winner-preflight"), 1)
+            self.assertNotIn("modal-preflight", preflight_events)
             selection_indexes = [
                 index
                 for index, event in enumerate(events)
@@ -1781,9 +1579,76 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 if event[0] == "store-create"
                 and "/reservation-intents/" in event[1]
             ]
-            self.assertEqual(len(selection_indexes), 2)
-            self.assertEqual(len(reservation_indexes), 2)
-            self.assertLess(max(selection_indexes), min(reservation_indexes))
+            self.assertEqual(selection_indexes, [])
+            self.assertEqual(reservation_indexes, [])
+
+            ready_events = []
+            ordinary_kinds = []
+
+            def ready_training(unused_team_name, unused_secret_names):
+                ready_events.append("preflight")
+                return {
+                    **baseten_preflight("ready"),
+                    "observed_at": NOW.isoformat().replace("+00:00", "Z"),
+                }
+
+            def ready_launch(workload_value, unused_entries, **unused):
+                ready_events.append("launch")
+                ordinary_kinds.append(workload_value["type"])
+                return {
+                    "schema_version": "milk.test-baseten-launch.v1",
+                    "operation": workload_value["type"],
+                    "state": "created",
+                }
+
+            def ready_winner_launch(*unused, **unused_keywords):
+                ready_events.append("launch")
+                return {
+                    "schema_version": "milk.test-baseten-winner-launch.v1",
+                    "state": "admitted",
+                    "winner_result_references": [],
+                    "candidate_key_delivery_references": [],
+                }
+
+            jobs.preflight = ready_training
+            jobs.launch = ready_launch
+            ready_winner = mock.Mock()
+            ready_winner.preflight.side_effect = lambda: (
+                ready_events.append("preflight")
+                or baseten_winner.baseten_preflight_receipt(
+                    TEAM,
+                    "team_1",
+                    "1" * 64,
+                    "2" * 64,
+                    "3" * 64,
+                    NOW,
+                )
+            )
+            with mock.patch(
+                "milk_harness.jobs.launch_baseten_winner",
+                side_effect=ready_winner_launch,
+            ):
+                ready = dispatch_baseten_outboxes(
+                    jobs,
+                    ready_winner,
+                    control_store=ReadOnlyControlStore(control),
+                    scope_prefix=SCOPE_PREFIX,
+                    settings=settings,
+                    baseten_team_name=TEAM,
+                    winner_model_alias="milk-student",
+                    provider_pass_claim_raw=provider_pass_raw,
+                    create_authorization_raw=authorization_raw,
+                )
+            self.assertEqual(ready["verified"], 4)
+            self.assertEqual(ready["dispatched"], 4)
+            self.assertEqual(ready["held"], 0)
+            self.assertEqual(ready["state"], "complete")
+            self.assertEqual(
+                set(ordinary_kinds),
+                {"teacher_run", "student_train_merge", "student_fanout"},
+            )
+            self.assertEqual(ready_events[:4], ["preflight"] * 4)
+            self.assertEqual(ready_events[4:], ["launch"] * 4)
 
     def test_winner_result_reference_embeds_full_canonical_acceptance(self):
         with tempfile.TemporaryDirectory() as root:

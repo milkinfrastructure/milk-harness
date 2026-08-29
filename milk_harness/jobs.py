@@ -46,16 +46,20 @@ from milk_harness.log_collection import (
     collect_baseten_terminal_logs,
 )
 from milk_harness.metrics_collection import collect_baseten_terminal_metrics
-from milk_harness.modal_jobs import (
-    ModalJobs,
-    acceptance_key as modal_acceptance_key,
-    definition_key as modal_definition_key,
-    validate_definition as validate_modal_definition,
-)
+try:
+    from milk_harness.modal_jobs import (
+        ModalJobs,
+        acceptance_key as modal_acceptance_key,
+        definition_key as modal_definition_key,
+        validate_definition as validate_modal_definition,
+    )
+except ImportError:  # Legacy Modal code is intentionally absent from production images.
+    ModalJobs = None
 from milk_harness.provider_acceptance import (
     OPAQUE,
     TEAM_NAME,
     encode as encode_provider_acceptance,
+    encode_baseten as encode_baseten_provider_acceptance,
     sha256 as provider_acceptance_sha256,
     validate_route_retirement,
     winner_run_id as provider_neutral_winner_run_id,
@@ -511,10 +515,8 @@ def _validate_gpu_operation(operation):
             or not _is_hex64(operation.get("student_result_sha256"))
             or operation.get("winner") not in STUDENT_VARIANTS
             or not _is_hex64(operation.get("provider_binding_sha256"))
-            or operation.get("provider_policy")
-            != {"primary": "baseten", "fallback": "modal"}
-            or tuple(operation.get("provider_policy", ()))
-            != ("primary", "fallback")
+            or operation.get("provider_policy") != {"only": "baseten"}
+            or tuple(operation.get("provider_policy", ())) != ("only",)
             or type(operation.get("max_wall_seconds")) is not int
             or not 60
             <= operation["max_wall_seconds"]
@@ -768,10 +770,9 @@ def _verify_winner_authority(authority, operation, outbox):
             "winner_admission_schema_version",
         )
         or authority.get("schema_version")
-        != "dragontales.winner-deployment-authority.v2"
+        != "dragontales.winner-deployment-authority.v3"
         or authority.get("provider_policy") != operation["provider_policy"]
-        or tuple(authority.get("provider_policy", ()))
-        != ("primary", "fallback")
+        or tuple(authority.get("provider_policy", ())) != ("only",)
         or not _is_hex64(authority.get("provider_terms_sha256"))
         or authority.get("student_branch_runtime_image_reference")
         != outbox["runtime_image_reference"]
@@ -1172,8 +1173,7 @@ def discover_provider_teardown_authorizations(
                 authorization.get("provider_acceptance_sha256")
             )
             or not _is_hex64(authorization.get("run_id"))
-            or authorization.get("selected_provider")
-            not in {"baseten", "modal"}
+            or authorization.get("selected_provider") != "baseten"
             or not isinstance(authorization.get("execution_id"), str)
             or OPAQUE.fullmatch(authorization["execution_id"]) is None
         ):
@@ -2256,6 +2256,184 @@ def select_winner_baseten_primary_modal_fallback(
     return value
 
 
+def select_baseten_only(
+    *,
+    store,
+    campaign_id,
+    run_id,
+    launch_source,
+    baseten_team_name,
+    baseten_project_id,
+    baseten_preflight,
+):
+    """Persist a Baseten selection only when the live training preflight is ready."""
+    if not callable(baseten_preflight):
+        raise ValueError("Baseten preflight callback is required")
+    if not _is_hex64(campaign_id) or not _is_hex64(run_id):
+        raise ValueError("Baseten selection identity is invalid")
+    _validate_launch_source(launch_source)
+    if launch_source["scope"]["eval_id"] != campaign_id:
+        raise ValueError("provider selection eval differs from its campaign")
+    try:
+        return _load_selection(
+            store,
+            campaign_id,
+            run_id,
+            launch_source,
+            baseten_team_name,
+            baseten_project_id,
+            None,
+        )
+    except FileNotFoundError:
+        pass
+    primary = _baseten_training_preflight(
+        baseten_preflight(),
+        baseten_team_name,
+        baseten_project_id,
+    )
+    primary_sha256 = _digest(primary)
+    create_same(
+        store,
+        _preflight_key(campaign_id, run_id, primary),
+        canonical_json(primary),
+        "application/json",
+    )
+    if primary["outcome"] != "ready":
+        return {
+            "schema_version": "milk.baseten-selection-hold.v1",
+            "campaign_id": campaign_id,
+            "run_id": run_id,
+            "claim_sha256": launch_source["claim_sha256"],
+            "outbox_sha256": launch_source["outbox_sha256"],
+            "preflight_sha256": primary_sha256,
+            "state": "hold",
+        }
+    value = {
+        "schema_version": "milk.provider-selection.v1",
+        "campaign_id": campaign_id,
+        "run_id": run_id,
+        "claim_sha256": launch_source["claim_sha256"],
+        "outbox_sha256": launch_source["outbox_sha256"],
+        "selection": {
+            "selected_provider": "baseten",
+            "provider_identity": {
+                "provider": "baseten",
+                "team_name": baseten_team_name,
+            },
+            "primary_preflight": {
+                "provider": "baseten",
+                "outcome": "ready",
+                "evidence_sha256": primary_sha256,
+                "observed_at": primary["observed_at"],
+            },
+        },
+        "state": "selected",
+    }
+    key = _selection_key(campaign_id, run_id)
+    if not store.create(key, canonical_json(value), "application/json"):
+        existing = _load_selection(
+            store,
+            campaign_id,
+            run_id,
+            launch_source,
+            baseten_team_name,
+            baseten_project_id,
+            None,
+        )
+        if existing != value:
+            raise RuntimeError("Baseten provider selection is already immutable")
+        return existing
+    return value
+
+
+def select_winner_baseten_only(
+    *,
+    store,
+    campaign_id,
+    run_id,
+    launch_source,
+    baseten_team_name,
+    baseten_preflight,
+):
+    """Persist a Baseten winner selection only when management is live."""
+    if (
+        not _is_hex64(campaign_id)
+        or not _is_hex64(run_id)
+        or not callable(baseten_preflight)
+    ):
+        raise ValueError("Baseten winner selection is invalid")
+    _validate_launch_source(launch_source)
+    if launch_source["scope"]["eval_id"] != campaign_id:
+        raise ValueError("winner selection eval differs from its campaign")
+    try:
+        return _load_winner_selection(
+            store,
+            campaign_id,
+            run_id,
+            launch_source,
+            baseten_team_name,
+            None,
+        )
+    except FileNotFoundError:
+        pass
+    primary = _baseten_winner_preflight(
+        baseten_preflight(),
+        baseten_team_name,
+    )
+    primary_sha256 = _digest(primary)
+    create_same(
+        store,
+        _preflight_key(campaign_id, run_id, primary),
+        canonical_json(primary),
+        "application/json",
+    )
+    if primary["outcome"] != "ready":
+        return {
+            "schema_version": "milk.baseten-selection-hold.v1",
+            "campaign_id": campaign_id,
+            "run_id": run_id,
+            "claim_sha256": launch_source["claim_sha256"],
+            "outbox_sha256": launch_source["outbox_sha256"],
+            "preflight_sha256": primary_sha256,
+            "state": "hold",
+        }
+    value = {
+        "schema_version": "milk.provider-selection.v1",
+        "campaign_id": campaign_id,
+        "run_id": run_id,
+        "claim_sha256": launch_source["claim_sha256"],
+        "outbox_sha256": launch_source["outbox_sha256"],
+        "selection": {
+            "selected_provider": "baseten",
+            "provider_identity": {
+                "provider": "baseten",
+                "team_name": baseten_team_name,
+            },
+            "primary_preflight": {
+                "provider": "baseten",
+                "outcome": "ready",
+                "evidence_sha256": primary_sha256,
+                "observed_at": primary["observed_at"],
+            },
+        },
+        "state": "selected",
+    }
+    key = _selection_key(campaign_id, run_id)
+    if not store.create(key, canonical_json(value), "application/json"):
+        existing = _load_winner_selection(
+            store,
+            campaign_id,
+            run_id,
+            launch_source,
+            baseten_team_name,
+            None,
+        )
+        if existing != value:
+            raise RuntimeError("Baseten winner selection is already immutable")
+        return existing
+    return value
+
+
 def _creation_authorities(
     provider_pass_claim_raw,
     create_authorization_raw,
@@ -2541,6 +2719,26 @@ def gpu_provider_acceptance(
         "state": "accepted",
     }
     encode_provider_acceptance(value)
+    return value
+
+
+def baseten_gpu_provider_acceptance(**arguments):
+    selection_record = arguments.get("selection_record")
+    selection = (
+        selection_record.get("selection")
+        if isinstance(selection_record, dict)
+        else None
+    )
+    budget_identity = arguments.get("expected_budget_provider_identity")
+    if (
+        not isinstance(selection, dict)
+        or selection.get("selected_provider") != "baseten"
+        or not isinstance(budget_identity, dict)
+        or budget_identity.get("provider") != "baseten"
+    ):
+        raise ValueError("production GPU acceptance requires Baseten authority")
+    value = gpu_provider_acceptance(**arguments)
+    encode_baseten_provider_acceptance(value)
     return value
 
 
@@ -2884,7 +3082,7 @@ def launch_baseten_winner(
         else:
             acceptance = _strict_object(acceptance_raw)
             if (
-                encode_provider_acceptance(acceptance) != acceptance_raw
+                encode_baseten_provider_acceptance(acceptance) != acceptance_raw
                 or acceptance.get("selection") != selection
             ):
                 raise ValueError("stored Baseten winner acceptance differs")
@@ -3127,7 +3325,7 @@ def recover_pending_baseten_winner_admissions(
         acceptance = _strict_object(acceptance_raw)
         if (
             canonical_json(selection_record) != selection_raw
-            or encode_provider_acceptance(acceptance) != acceptance_raw
+            or encode_baseten_provider_acceptance(acceptance) != acceptance_raw
             or acceptance.get("run_id") != run_id
             or acceptance.get("selection") != selection_record.get("selection")
             or selection_record.get("selection", {}).get("selected_provider")
@@ -3206,7 +3404,7 @@ def teardown_baseten_winner(
     )
     acceptance = _strict_object(raw)
     if (
-        encode_provider_acceptance(acceptance) != raw
+        encode_baseten_provider_acceptance(acceptance) != raw
         or acceptance.get("campaign_id") != campaign_id
         or acceptance.get("run_id") != run_id
         or acceptance.get("selection", {}).get("selected_provider")
@@ -4949,7 +5147,6 @@ def _winner_teardown_evidence(
 
 def dispatch_provider_teardowns(
     baseten_winner_lifecycle,
-    modal_jobs,
     *,
     store,
     control_store,
@@ -4959,7 +5156,7 @@ def dispatch_provider_teardowns(
     baseten_values_by_run_id,
     now=lambda: dt.datetime.now(dt.timezone.utc).replace(microsecond=0),
 ):
-    """Execute the literal Baseten/Modal gateway teardown branches."""
+    """Execute gateway-authorized Baseten teardown and prove zero replicas."""
     if (
         not callable(now)
         or not isinstance(baseten_values_by_run_id, dict)
@@ -4972,10 +5169,13 @@ def dispatch_provider_teardowns(
         scope_prefix,
         now(),
     )
-    baseten_run_ids = {
-        record["authorization"]["run_id"]
+    if any(
+        record.get("authorization", {}).get("selected_provider") != "baseten"
         for record in records
-        if record["authorization"]["selected_provider"] == "baseten"
+    ):
+        raise ValueError("production teardown authority must select Baseten")
+    baseten_run_ids = {
+        record["authorization"]["run_id"] for record in records
     }
     if set(baseten_values_by_run_id) != baseten_run_ids:
         raise ValueError("every Baseten teardown needs its exact winner values")
@@ -5000,35 +5200,13 @@ def dispatch_provider_teardowns(
     results = []
     for record in records:
         authorization = record["authorization"]
-        if authorization["selected_provider"] == "baseten":
-            result = teardown_authorized_baseten_winner(
-                baseten_winner_lifecycle,
-                store=store,
-                campaign_id=campaign_id,
-                authorization_record=record,
-                values=baseten_values_by_run_id[authorization["run_id"]],
-            )
-        else:
-            absence_key = (
-                f"{scope_prefix}/jobs/student/"
-                f"{authorization['student_job_id']}/winner-deployment/"
-                "modal-candidate-credential/absent-ack.json"
-            )
-            try:
-                candidate_absence_raw = control_store.get(absence_key)
-            except FileNotFoundError:
-                continue
-            except urllib.error.HTTPError as error:
-                if error.code != 404:
-                    raise
-                continue
-            result = teardown_authorized_modal_winner(
-                modal_jobs,
-                store=store,
-                campaign_id=campaign_id,
-                authorization_record=record,
-                candidate_absence_raw=candidate_absence_raw,
-            )
+        result = teardown_authorized_baseten_winner(
+            baseten_winner_lifecycle,
+            store=store,
+            campaign_id=campaign_id,
+            authorization_record=record,
+            values=baseten_values_by_run_id[authorization["run_id"]],
+        )
         results.append(result)
         references.append(
             _winner_teardown_evidence(
@@ -6737,7 +6915,7 @@ class BasetenJobs:
 
         provider_acceptance = None
         if integrated:
-            provider_acceptance = gpu_provider_acceptance(
+            provider_acceptance = baseten_gpu_provider_acceptance(
                 campaign_id=self.campaign_id,
                 workload=workload,
                 selection_record=selection_record,
@@ -6750,7 +6928,9 @@ class BasetenJobs:
                 reserved_at=reserved_at,
                 accepted_at=self.now(),
             )
-            acceptance_raw = encode_provider_acceptance(provider_acceptance)
+            acceptance_raw = encode_baseten_provider_acceptance(
+                provider_acceptance
+            )
             create_same(
                 self.store,
                 f"claims/v1/{launch_source['claim_sha256']}.json",
@@ -8871,52 +9051,32 @@ def _winner_values(launch, values):
     return values
 
 
-def dispatch_cross_provider_outboxes(
+def dispatch_baseten_outboxes(
     baseten_jobs,
-    modal_jobs,
     baseten_winner_lifecycle,
     *,
     control_store,
     scope_prefix,
     settings,
     baseten_team_name,
-    modal_identity,
-    modal_preflight,
+    winner_model_alias,
     provider_pass_claim_raw,
     create_authorization_raw,
-    modal_plans_by_run_id,
-    winner_values_by_run_id,
 ):
-    """Verify, select, and dispatch one bounded cross-provider frontier pass."""
+    """Verify the full frontier, preflight Baseten, then dispatch ready runs."""
     if (
         not isinstance(baseten_jobs, BasetenJobs)
-        or not hasattr(modal_jobs, "launch")
-        or not callable(modal_preflight)
-        or not isinstance(modal_plans_by_run_id, dict)
-        or not isinstance(winner_values_by_run_id, dict)
-        or not isinstance(modal_identity, dict)
-        or tuple(modal_identity)
-        != (
-            "provider",
-            "workspace_id",
-            "workspace_name",
-            "environment_id",
-            "environment_name",
-            "app_id",
-            "app_name",
-        )
+        or not isinstance(winner_model_alias, str)
+        or winner_contract.MODEL_ALIAS.fullmatch(winner_model_alias) is None
     ):
-        raise ValueError("cross-provider dispatch configuration is invalid")
-    _modal_budget_identity(modal_identity)
+        raise ValueError("Baseten dispatch configuration is invalid")
     campaign_id = baseten_jobs.campaign_id
     store = baseten_jobs.store
-    if getattr(modal_jobs, "store", store) is not store:
-        raise ValueError("provider lifecycles must share one evidence store")
     if not isinstance(provider_pass_claim_raw, (bytes, bytearray)) or not isinstance(
         create_authorization_raw,
         (bytes, bytearray),
     ):
-        raise ValueError("cross-provider dispatch needs exact create authority bytes")
+        raise ValueError("Baseten dispatch needs exact create authority bytes")
     _creation_authorities(
         provider_pass_claim_raw,
         create_authorization_raw,
@@ -8931,6 +9091,7 @@ def dispatch_cross_provider_outboxes(
     )
     staged = []
     winner_ids = []
+    winner_values_by_run_id = {}
     run_ids = []
     for launch in launches:
         if launch["operation"]["kind"] == "student_winner_deployment":
@@ -8947,6 +9108,18 @@ def dispatch_cross_provider_outboxes(
                 settings.get("student_branch_image_admission_sha256"),
             )
             winner_ids.append(run_id)
+            winner_values_by_run_id[run_id] = winner_contract.settings(
+                launch["runtime_image_reference"],
+                launch["operation"]["student_job_id"],
+                winner_model_alias,
+                "DOCKER_REGISTRY_ghcr.io",
+                settings["config_secret"],
+                settings["control_store_account_id"],
+                settings["control_store_identity_sha256"],
+                settings["control_store_access_key_secret"],
+                settings["control_store_secret_key_secret"],
+                settings["control_store_session_token_secret"],
+            )
             staged.append(
                 {
                     "kind": "winner",
@@ -8974,30 +9147,14 @@ def dispatch_cross_provider_outboxes(
             )
         run_ids.append(run_id)
     if len(run_ids) != len(set(run_ids)):
-        raise ValueError("cross-provider frontier contains duplicate runs")
+        raise ValueError("Baseten frontier contains duplicate runs")
     if len(winner_ids) > MAX_CANDIDATE_KEY_DELIVERY_REFERENCES:
         raise ValueError("scope has more than one active winner deployment")
-    if set(modal_plans_by_run_id) != set(run_ids):
-        raise ValueError("every possible Modal fallback needs one exact plan")
-    if set(winner_values_by_run_id) != set(winner_ids):
-        raise ValueError("every winner needs one exact Baseten value set")
     for item in staged:
-        run_id = item["run_id"]
-        unit_count = (
-            1
-            if item["kind"] == "winner"
-            else len(_modal_units(item["workload"]))
-        )
-        _validate_modal_execution_plan(
-            modal_plans_by_run_id[run_id],
-            campaign_id,
-            run_id,
-            unit_count,
-        )
         if item["kind"] == "winner":
             _winner_values(
                 item["launch"],
-                winner_values_by_run_id[run_id],
+                winner_values_by_run_id[item["run_id"]],
             )
     for item in staged:
         run_id = item["run_id"]
@@ -9007,25 +9164,22 @@ def dispatch_cross_provider_outboxes(
                 "preflight",
             ):
                 raise ValueError("Baseten winner lifecycle is required")
-            item["selection"] = select_winner_baseten_primary_modal_fallback(
+            item["selection"] = select_winner_baseten_only(
                 store=store,
                 campaign_id=campaign_id,
                 run_id=run_id,
                 launch_source=item["launch"]["launch_source"],
                 baseten_team_name=baseten_team_name,
-                modal_identity=modal_identity,
                 baseten_preflight=baseten_winner_lifecycle.preflight,
-                modal_preflight=modal_preflight,
             )
         else:
-            item["selection"] = select_baseten_primary_modal_fallback(
+            item["selection"] = select_baseten_only(
                 store=store,
                 campaign_id=campaign_id,
                 run_id=run_id,
                 launch_source=item["workload"]["launch_source"],
                 baseten_team_name=baseten_team_name,
                 baseten_project_id=baseten_jobs.project_id,
-                modal_identity=modal_identity,
                 baseten_preflight=lambda: baseten_jobs.preflight(
                     baseten_team_name,
                     tuple(
@@ -9043,16 +9197,25 @@ def dispatch_cross_provider_outboxes(
                         if settings[name] is not None
                     ),
                 ),
-                modal_preflight=modal_preflight,
             )
 
     results = []
+    holds = []
     references = []
     delivery_references = []
     for item in staged:
         run_id = item["run_id"]
-        selected = item["selection"]["selection"]["selected_provider"]
-        if item["kind"] == "ordinary" and selected == "baseten":
+        if item["selection"]["state"] == "hold":
+            holds.append(
+                {
+                    "run_id": run_id,
+                    "operation": item["launch"]["operation"]["kind"],
+                    "preflight_sha256": item["selection"]["preflight_sha256"],
+                    "state": "hold",
+                }
+            )
+            continue
+        if item["kind"] == "ordinary":
             result = baseten_jobs.launch(
                 item["workload"],
                 item["entries"],
@@ -9060,22 +9223,7 @@ def dispatch_cross_provider_outboxes(
                 provider_pass_claim_raw=provider_pass_claim_raw,
                 create_authorization_raw=create_authorization_raw,
             )
-        elif item["kind"] == "ordinary":
-            result = launch_modal_gpu(
-                modal_jobs,
-                store=store,
-                campaign_id=campaign_id,
-                workload=item["workload"],
-                runtime_image_reference=item["launch"][
-                    "runtime_image_reference"
-                ],
-                selection_record=item["selection"],
-                execution_plan=modal_plans_by_run_id[run_id],
-                provider_pass_claim_raw=provider_pass_claim_raw,
-                create_authorization_raw=create_authorization_raw,
-                now=baseten_jobs.now,
-            )
-        elif selected == "baseten":
+        else:
             result = launch_baseten_winner(
                 baseten_winner_lifecycle,
                 store=store,
@@ -9089,22 +9237,6 @@ def dispatch_cross_provider_outboxes(
                 provider_pass_claim_raw=provider_pass_claim_raw,
                 create_authorization_raw=create_authorization_raw,
                 values=winner_values_by_run_id[run_id],
-                now=baseten_jobs.now,
-            )
-        else:
-            result = launch_modal_winner(
-                modal_jobs,
-                store=store,
-                campaign_id=campaign_id,
-                launch=item["launch"],
-                selection_record=item["selection"],
-                execution_plan=modal_plans_by_run_id[run_id],
-                image_release_sha256=settings["image_release_sha256"],
-                image_admission_sha256=settings[
-                    "student_branch_image_admission_sha256"
-                ],
-                provider_pass_claim_raw=provider_pass_claim_raw,
-                create_authorization_raw=create_authorization_raw,
                 now=baseten_jobs.now,
             )
         references.extend(result.get("winner_result_references", []))
@@ -9127,13 +9259,15 @@ def dispatch_cross_provider_outboxes(
     )
     validate_candidate_key_delivery_references(campaign_id, delivery_references)
     return {
-        "schema_version": "milk.jobs-cross-provider-dispatch.v1",
-        "provider_policy": {"primary": "baseten", "fallback": "modal"},
+        "schema_version": "milk.jobs-baseten-dispatch.v1",
+        "provider_policy": {"only": "baseten"},
         "scope_prefix": scope_prefix,
         "frontier_scan_limit": GPU_LAUNCH_SCAN_LIMIT,
         "verified": len(launches),
         "dispatched": len(results),
-        "state": "hold" if not results else "complete",
+        "held": len(holds),
+        "state": "hold" if holds or not results else "complete",
+        "holds": holds,
         "results": results,
         "winner_result_references": references,
         "candidate_key_delivery_references": delivery_references,
@@ -9794,11 +9928,9 @@ def _baseten_teardown_values(records, settings):
 def _required_provider_credentials():
     baseten_api_key = os.environ.get("BASETEN_API_KEY", "")
     if not baseten_api_key:
-        raise ValueError("BASETEN_API_KEY is required for the primary provider")
-    if not os.environ.get("MODAL_TOKEN_ID") or not os.environ.get(
-        "MODAL_TOKEN_SECRET"
-    ):
-        raise ValueError("Modal credentials are required for provider fallback")
+        raise ValueError("BASETEN_API_KEY is required")
+    if os.environ.get("MODAL_TOKEN_ID") or os.environ.get("MODAL_TOKEN_SECRET"):
+        raise ValueError("Modal credentials are forbidden in Baseten-only production")
     return baseten_api_key
 
 
@@ -9830,33 +9962,11 @@ def main(argv=None):
     parser.add_argument("--control-store-session-token-secret")
     parser.add_argument("--image-release-sha256")
     parser.add_argument("--winner-model-alias", required=True)
-    for name in (
-        "modal-workspace-id",
-        "modal-workspace-name",
-        "modal-environment-id",
-        "modal-environment-name",
-        "modal-app-id",
-        "modal-app-name",
-        "modal-registry-secret-name",
-        "modal-registry-secret-id",
-        "modal-config-secret-name",
-        "modal-config-secret-id",
-        "modal-control-secret-name",
-        "modal-control-secret-id",
-        "modal-capture-secret-name",
-        "modal-capture-secret-id",
-        "modal-candidate-secret-name",
-        "modal-candidate-secret-id",
-        "modal-teacher-volume-name",
-        "modal-teacher-volume-id",
-        "modal-student-train-volume-name",
-        "modal-student-train-volume-id",
-    ):
-        parser.add_argument(f"--{name}")
     parser.add_argument("--request-timeout-seconds", type=int, default=30)
     parser.add_argument("--reconcile-timeout-seconds", type=int, default=300)
     arguments = parser.parse_args(argv)
     try:
+        baseten_api_key = _required_provider_credentials()
         if (
             _scope_from_prefix(arguments.scope_prefix)["eval_id"]
             != arguments.campaign_id
@@ -9975,7 +10085,6 @@ def main(argv=None):
                 ).hexdigest(),
             }
 
-        baseten_api_key = _required_provider_credentials()
         transport = BasetenTransport(
             baseten_api_key,
             timeout_seconds=arguments.request_timeout_seconds,
@@ -10004,10 +10113,6 @@ def main(argv=None):
                 min(arguments.reconcile_timeout_seconds, 600),
             ),
         )
-        modal_jobs = ModalJobs(
-            store=store,
-            request_guard=live_request_guard,
-        )
         reconciliation = jobs.reconcile_all(arguments.reconcile_timeout_seconds)
         pending_winner_recovery = recover_pending_baseten_winner_admissions(
             winner_lifecycle,
@@ -10026,7 +10131,6 @@ def main(argv=None):
         )
         teardown = dispatch_provider_teardowns(
             winner_lifecycle,
-            modal_jobs,
             store=store,
             control_store=control_store,
             campaign_id=arguments.campaign_id,
@@ -10044,40 +10148,16 @@ def main(argv=None):
         )
         if provider_creates_authorized:
             if reconciliation["evidence_complete"] and not reconciliation["backlog"]:
-                modal_identity = _modal_identity_from_arguments(arguments)
-                modal_resources = _modal_resources_from_arguments(
-                    arguments,
-                    settings,
-                )
-                plans, winner_values = deterministic_cross_provider_inputs(
-                    control_store,
-                    campaign_id=arguments.campaign_id,
-                    scope_prefix=arguments.scope_prefix,
-                    settings=settings,
-                    modal_resources=modal_resources,
-                    winner_model_alias=arguments.winner_model_alias,
-                    current=dt.datetime.now(dt.timezone.utc).replace(
-                        microsecond=0
-                    ),
-                )
-                dispatched = dispatch_cross_provider_outboxes(
+                dispatched = dispatch_baseten_outboxes(
                     jobs,
-                    modal_jobs,
                     winner_lifecycle,
                     control_store=control_store,
                     scope_prefix=arguments.scope_prefix,
                     settings=settings,
                     baseten_team_name=arguments.team_name,
-                    modal_identity=modal_identity,
-                    modal_preflight=lambda: modal_ready_preflight(
-                        modal_jobs,
-                        modal_identity,
-                        plans,
-                    ),
+                    winner_model_alias=arguments.winner_model_alias,
                     provider_pass_claim_raw=provider_pass_claim_raw,
                     create_authorization_raw=create_authorization_raw,
-                    modal_plans_by_run_id=plans,
-                    winner_values_by_run_id=winner_values,
                 )
             else:
                 dispatched = {
@@ -10153,8 +10233,8 @@ def main(argv=None):
             teardown_result_references,
         )
         result = {
-            "schema_version": "milk.jobs-pass.v3",
-            "provider_policy": {"primary": "baseten", "fallback": "modal"},
+            "schema_version": "milk.jobs-pass.v4",
+            "provider_policy": {"only": "baseten"},
             "scope_prefix": arguments.scope_prefix,
             "provider_creates_authorized": provider_creates_authorized,
             "provider_pass_claim_sha256": hashlib.sha256(

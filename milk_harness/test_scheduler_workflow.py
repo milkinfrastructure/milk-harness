@@ -17,6 +17,9 @@ from milk_harness.scheduler import (
 ROOT = Path(__file__).parents[1]
 WORKFLOW = ROOT / ".github/workflows/production-loop.yml"
 OFFLINE_WORKFLOW = ROOT / ".github/workflows/offline-gates.yml"
+BASETEN_BOOTSTRAP_WORKFLOW = (
+    ROOT / ".github/workflows/bootstrap-baseten-registry.yml"
+)
 EXPECTED_WORKFLOW_SECRETS = {
     "BASETEN_API_KEY",
     "CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN",
@@ -49,7 +52,6 @@ EXPECTED_WORKFLOW_SECRETS = {
     "MILK_GHCR_PULL_TOKEN",
     "MILK_GHCR_PULL_USERNAME",
     "MILK_MECHANICS_CREDENTIAL_JSON",
-    "MILK_MODAL_CANDIDATE_API_KEY",
     "MILK_OPS_LOG_R2_ACCESS_KEY_ID",
     "MILK_OPS_LOG_R2_SECRET_ACCESS_KEY",
     "MILK_OPS_LOG_R2_SESSION_TOKEN",
@@ -67,8 +69,6 @@ EXPECTED_WORKFLOW_SECRETS = {
     "MILK_ROUTE_SECRET_HEX",
     "MILK_ROUTE_SIGNING_KEY_PEM",
     "MILK_ROUTE_SMOKE_CREDENTIAL_JSON",
-    "MODAL_TOKEN_ID",
-    "MODAL_TOKEN_SECRET",
 }
 
 
@@ -91,7 +91,10 @@ class SchedulerWorkflowTest(unittest.TestCase):
 
     def test_there_is_exactly_one_fixed_non_overlapping_production_workflow(self):
         workflows = sorted((ROOT / ".github/workflows").glob("*"))
-        self.assertEqual(workflows, [OFFLINE_WORKFLOW, WORKFLOW])
+        self.assertEqual(
+            workflows,
+            [BASETEN_BOOTSTRAP_WORKFLOW, OFFLINE_WORKFLOW, WORKFLOW],
+        )
         offline = OFFLINE_WORKFLOW.read_text(encoding="utf-8")
         self.assertNotIn("schedule:", offline)
         self.assertIn("group: milk-harness-offline-${{ github.ref }}", offline)
@@ -107,6 +110,28 @@ class SchedulerWorkflowTest(unittest.TestCase):
             ),
             ["gateway-tick", "provider-jobs", "route-control", "mechanics-traffic"],
         )
+
+    def test_baseten_registry_bootstrap_is_manual_scoped_and_value_silent(self):
+        bootstrap = BASETEN_BOOTSTRAP_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", bootstrap)
+        self.assertNotIn("schedule:", bootstrap)
+        self.assertIn("environment: milk-provider-jobs-prod", bootstrap)
+        self.assertIn("inputs.managed_eval_id == vars.MILK_EVAL_ID", bootstrap)
+        self.assertIn("MILK_BASETEN_REGISTRY_SECRET", bootstrap)
+        self.assertIn('winner_name = "DOCKER_REGISTRY_ghcr.io"', bootstrap)
+        self.assertIn('credential = f"{username}:{token}"', bootstrap)
+        self.assertEqual(bootstrap.count('"POST",'), 1)
+        self.assertIn('request("GET", "/secrets")', bootstrap)
+        self.assertIn('"Authorization": f"Api-Key {api_key}"', bootstrap)
+        self.assertIn("response.get(\"team_name\") != team_name", bootstrap)
+        self.assertNotIn("authorize_provider_creates", bootstrap)
+        self.assertNotIn("docker run", bootstrap)
+        self.assertNotIn("print(", bootstrap)
+        script = bootstrap.split("          python3 - <<'PY'\n", 1)[1].split(
+            "\n          PY",
+            1,
+        )[0]
+        compile(textwrap.dedent(script), "baseten-registry-bootstrap", "exec")
 
     def test_cron_and_manual_false_reconcile_while_manual_create_is_confirmed(self):
         workflow_header, workflow_jobs = self.text.split("\njobs:\n", 1)
@@ -484,7 +509,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
                 )
                 self.assertIn(f'"${{{array}[@]}}"', self.gateway_ingest)
 
-    def test_exact_cross_provider_runtime_is_bound_to_the_confirmed_config(self):
+    def test_exact_baseten_runtime_is_bound_to_the_confirmed_config(self):
         for name in PROVIDER_RUNTIME_FIELDS:
             argument = f"--{name.replace('_', '-')}"
             self.assertGreaterEqual(self.provider.count(argument), 2, argument)
@@ -493,25 +518,15 @@ class SchedulerWorkflowTest(unittest.TestCase):
             "BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}",
             self.provider,
         )
-        self.assertIn(
-            "MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}",
-            self.provider,
-        )
-        self.assertIn(
-            "MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}",
-            self.provider,
-        )
         self.assertNotIn("confirmed_gpu_provider", self.provider)
         self.assertNotIn("--gpu-provider", self.provider)
+        self.assertNotIn("MODAL_TOKEN_", self.provider)
+        self.assertNotIn("--modal-", self.provider)
         credentials = self.provider.split("provider_credential_env=(", 1)[1].split(
             "          )", 1
         )[0]
         self.assertIn("-e BASETEN_API_KEY", credentials)
-        self.assertIn("-e MODAL_TOKEN_ID", credentials)
-        self.assertIn("-e MODAL_TOKEN_SECRET", credentials)
         self.assertIn('[ -n "$BASETEN_API_KEY" ] || fail', self.provider)
-        self.assertIn('[ -n "$MODAL_TOKEN_ID" ] || fail', self.provider)
-        self.assertIn('[ -n "$MODAL_TOKEN_SECRET" ] || fail', self.provider)
 
     def test_gateway_handoffs_are_ingested_before_summary_and_archive(self):
         run_jobs = self.provider.index('"$MILK_JOBS_IMAGE" "${job_arguments[@]}"')
@@ -663,7 +678,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertIn("ref: ${{ steps.eval.outputs.gateway_source_commit }}", self.route)
         self.assertIn("org.opencontainers.image.revision", self.route)
         self.assertIn("npm ci --ignore-scripts --no-audit --no-fund", self.route)
-        self.assertIn('deploy/cloudflare/node_modules/.bin', self.route)
+        self.assertNotIn('deploy/cloudflare/node_modules/.bin', self.route)
         self.assertIn("openai-production-smoke.mjs", self.route)
         self.assertIn("https://api.dragontales.milkinfrastructure.com/v1", self.route)
         self.assertIn("milk.official-openai-sdk-route-smoke.v2", self.route)
@@ -733,56 +748,39 @@ class SchedulerWorkflowTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, self.route)
 
-    def test_modal_candidate_credential_is_gateway_owned_and_pipe_only(self):
+    def test_route_uses_baseten_delivery_proof_without_provider_credential_mutation(self):
         route_job_environment = self.route.split("\n    steps:", 1)[0]
         self.assertNotIn("MILK_MODAL_CANDIDATE_API_KEY", route_job_environment)
         self.assertNotIn("MILK_GATEWAY_CONTAINER_ADMIN_KEY", route_job_environment)
         self.assertNotIn("CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN", route_job_environment)
         self.assertIn(
-            "MILK_MODAL_CANDIDATE_API_KEY: ${{ steps.route_proof.outputs.authorized == 'true'",
-            self.route,
-        )
-        self.assertIn(
             "MILK_ROUTE_SMOKE_CREDENTIAL_JSON: ${{ steps.route_proof.outputs.authorized == 'true'",
             self.route,
         )
-        self.assertIn("prepare-modal-candidate-credential", self.route)
-        self.assertIn("ingest-modal-candidate-credential-ack", self.route)
-        self.assertNotIn("--recover-install", self.route)
-        self.assertIn("dragontales.modal-candidate-credential-preparation.v1", self.route)
-        self.assertIn("dragontales.modal-candidate-credential-ack-write.v1", self.route)
-        self.assertIn('reconcile_candidate ready', self.route)
-        self.assertIn('reconcile_candidate absent', self.route)
+        for removed in (
+            "MILK_MODAL_CANDIDATE_API_KEY",
+            "prepare-modal-candidate-credential",
+            "ingest-modal-candidate-credential-ack",
+            "dragontales.modal-candidate-credential-preparation.v1",
+            "dragontales.modal-candidate-credential-ack-write.v1",
+            "reconcile_candidate",
+            "run_candidate_helper",
+            "--candidate-key-fd",
+            "--admin-key-fd",
+            "CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN",
+            "MILK_GATEWAY_CONTAINER_ADMIN_KEY",
+        ):
+            self.assertNotIn(removed, self.route)
+        self.assertIn(
+            "MILK_ROUTE_CANDIDATE_READY: ${{ needs.provider-jobs.outputs.route_candidate_ready }}",
+            route_job_environment,
+        )
+        ready = self.route.rindex('[ "$MILK_ROUTE_CANDIDATE_READY" = true ]')
         self.assertLess(
             self.route.rindex('advance_phase canary'),
-            self.route.rindex('reconcile_candidate ready'),
+            ready,
         )
-        self.assertIn('[ "$zero_live" = true ] && [ "$candidate_absent" != true ]', self.route)
-        self.assertIn('[ "$MILK_ROUTE_CANDIDATE_READY" = true ]', self.route)
-        self.assertIn('[ "$prepared_provider" = baseten ]', self.route)
-        self.assertIn('"${action}-modal"', self.route)
-        self.assertIn("--admin-key-fd 3", self.route)
-        self.assertIn("--candidate-key-fd 4", self.route)
-        self.assertIn("3< <(printf '%s' \"$gateway_admin_key\")", self.route)
-        self.assertIn("4< <(printf '%s' \"$modal_candidate_key\")", self.route)
-        helper = self.route.split("run_candidate_helper() {", 1)[1].split(
-            "\n          reconcile_candidate() {", 1
-        )[0]
-        self.assertIn("env -i", helper)
-        self.assertNotIn("MILK_GATEWAY_CONTAINER_ADMIN_KEY=", helper)
-        self.assertNotIn("MILK_MODAL_CANDIDATE_API_KEY=", helper)
-        self.assertIn(': >"$helper_stderr"', helper)
-        self.assertIn(': >"$ack"', helper)
-        self.assertIn(': >"$ingest_stdout"', helper)
-        for field in (
-            "MILK_GATEWAY_IMAGE_ADMISSION_SHA256",
-            "MILK_GATEWAY_RELEASE_SHA256",
-            "MILK_GATEWAY_CONTAINER_APPLICATION_ID",
-            "MILK_GATEWAY_CONTAINER_APPLICATION_VERSION",
-            "MILK_GATEWAY_CONTAINER_IMAGE",
-            "MILK_GATEWAY_WORKER_VERSION_ID",
-        ):
-            self.assertIn(field, self.route)
+        self.assertLess(ready, self.route.index("proof_evidence candidate check", ready))
 
     def test_gateway_deployment_is_bound_before_provider_or_route_mutation(self):
         arguments = {
@@ -816,7 +814,10 @@ class SchedulerWorkflowTest(unittest.TestCase):
         )
         validate = self.route.index("--phase route")
         self.assertLess(validate, self.route.index("advance_phase canary"))
-        self.assertLess(validate, self.route.index("prepare-modal-candidate-credential"))
+        self.assertLess(
+            validate,
+            self.route.index('[ "$MILK_ROUTE_CANDIDATE_READY" = true ]'),
+        )
         self.assertIn('--gateway-anchor-output "$gateway_anchor"', self.route)
 
     def test_reconcile_restart_recovers_expired_or_live_canary_without_create(self):
@@ -827,31 +828,22 @@ class SchedulerWorkflowTest(unittest.TestCase):
         start = self.route.index('if [ "$recovery_only" = true ]; then')
         end = self.route.index('\n          if [ "$canary_action" = done ]; then', start)
         branch = textwrap.dedent(self.route[start:end])
-        self.assertNotIn("reconcile_candidate ready", branch)
+        self.assertNotIn("reconcile_candidate", branch)
         self.assertNotIn("publish_manifest", branch)
-        self.assertIn("reconcile_candidate absent", branch)
-        reconcile = self.route.split("reconcile_candidate() {", 1)[1].split(
-            "\n          advance_phase() {", 1
-        )[0]
-        self.assertIn('[[ "$candidate_action" =~ ^(remove|verify)$ ]]', reconcile)
 
         for action, expected in (
-            ("prepare", "ingest-absent-ack\n"),
-            ("observe", "signed-zero\ningest-absent-ack\n"),
+            ("prepare", ""),
+            ("observe", "signed-zero\n"),
         ):
             with self.subTest(action=action), tempfile.TemporaryDirectory() as directory:
                 events = Path(directory) / "events"
                 output = Path(directory) / "output"
                 script = textwrap.dedent(
                     f"""
+                    : >"$1"
                     force_zero() {{
                       printf 'signed-zero\\n' >>"$events"
                       zero_live=true
-                    }}
-                    reconcile_candidate() {{
-                      [ "$1" = absent ] || return 70
-                      printf 'ingest-absent-ack\\n' >>"$events"
-                      candidate_absent=true
                     }}
                     fail() {{ return "${{2:-64}}"; }}
                     events=$1
@@ -861,7 +853,6 @@ class SchedulerWorkflowTest(unittest.TestCase):
                     canary_revision={'a' * 64}
                     zero_needed=false
                     zero_live=false
-                    candidate_absent=false
                     {branch}
                     """
                 )
@@ -875,19 +866,22 @@ class SchedulerWorkflowTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(events.read_text(encoding="utf-8"), expected)
 
-    def test_modal_failure_after_ready_forces_zero_then_absence(self):
+    def test_failure_after_live_canary_forces_signed_zero(self):
         cleanup = self.route.split("\n          cleanup() {", 1)[1].split(
             "\n          trap cleanup EXIT", 1
         )[0]
-        self.assertLess(cleanup.index("force_zero"), cleanup.index("reconcile_candidate absent"))
-        ready = self.route.rindex("reconcile_candidate ready")
+        self.assertIn("force_zero", cleanup)
+        self.assertNotIn("reconcile_candidate", cleanup)
+        ready = self.route.rindex('[ "$MILK_ROUTE_CANDIDATE_READY" = true ]')
         self.assertLess(self.route.rindex("zero_needed=true", 0, ready), ready)
         self.assertLess(ready, self.route.index("proof_evidence candidate check", ready))
         done = self.route.index('\n          if [ "$canary_action" = done ]; then')
         done_end = self.route.index("\n          fi", done)
         done_branch = self.route[done:done_end]
-        self.assertLess(done_branch.index("zero_live=true"), done_branch.index("reconcile_candidate absent"))
-        self.assertLess(done_branch.index("reconcile_candidate absent"), done_branch.index("proof_evidence candidate require-any"))
+        self.assertLess(
+            done_branch.index("zero_live=true"),
+            done_branch.index("proof_evidence candidate require-any"),
+        )
 
         with tempfile.TemporaryDirectory() as directory:
             events = Path(directory) / "events"
@@ -897,24 +891,14 @@ class SchedulerWorkflowTest(unittest.TestCase):
                   printf 'signed-zero\n' >>"$events"
                   zero_live=true
                 }
-                reconcile_candidate() {
-                  [ "$1" = absent ] && [ "$zero_live" = true ] || return 70
-                  printf 'ingest-absent-ack\n' >>"$events"
-                  candidate_absent=true
-                }
                 docker() { :; }
                 sudo() { :; }
                 events=$1
                 zero_needed=true
                 zero_live=false
-                candidate_absent=false
-                candidate_provider=modal
                 gateway_container_id=
                 docker_config=unused
                 scratch="$RUNNER_TEMP/milk-route-control.injected"
-                modal_candidate_key=redacted
-                gateway_admin_key=redacted
-                cloudflare_candidate_token=redacted
                 false
                 cleanup
                 """
@@ -931,7 +915,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertEqual(
                 events.read_text(encoding="utf-8"),
-                "signed-zero\ningest-absent-ack\n",
+                "signed-zero\n",
             )
 
     def test_only_sanitized_summaries_cross_jobs_or_reach_ops_r2(self):

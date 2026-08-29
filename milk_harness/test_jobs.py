@@ -611,8 +611,8 @@ def control_launch(
     elif kind == "student_winner_deployment":
         identity = hashlib.sha256(f"winner-student-{nonce}".encode()).hexdigest()
         authority = {
-            "schema_version": "dragontales.winner-deployment-authority.v2",
-            "provider_policy": {"primary": "baseten", "fallback": "modal"},
+            "schema_version": "dragontales.winner-deployment-authority.v3",
+            "provider_policy": {"only": "baseten"},
             "provider_terms_sha256": hashlib.sha256(
                 f"winner-terms-{nonce}".encode()
             ).hexdigest(),
@@ -1274,42 +1274,49 @@ class BasetenJobsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pairwise distinct"):
             jobs_module._modal_resources_from_arguments(arguments, settings)
 
-    def test_cross_provider_policy_requires_both_provider_credentials(self):
+    def test_production_requires_baseten_and_rejects_ambient_modal(self):
         self.assertNotIn(
             "gpu_provider",
             inspect.signature(
-                jobs_module.dispatch_cross_provider_outboxes
+                jobs_module.dispatch_baseten_outboxes
             ).parameters,
         )
         self.assertNotIn(
-            "allow_modal_winner_fallback",
+            "modal_jobs",
             inspect.signature(
-                jobs_module.dispatch_cross_provider_outboxes
+                jobs_module.dispatch_baseten_outboxes
             ).parameters,
         )
         with mock.patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(ValueError, "primary provider"):
+            with self.assertRaisesRegex(ValueError, "BASETEN_API_KEY"):
                 jobs_module._required_provider_credentials()
         with mock.patch.dict(
             os.environ,
             {"BASETEN_API_KEY": "baseten-key"},
             clear=True,
         ):
-            with self.assertRaisesRegex(ValueError, "provider fallback"):
-                jobs_module._required_provider_credentials()
-        with mock.patch.dict(
-            os.environ,
-            {
-                "BASETEN_API_KEY": "baseten-key",
-                "MODAL_TOKEN_ID": "modal-id",
-                "MODAL_TOKEN_SECRET": "modal-secret",
-            },
-            clear=True,
-        ):
             self.assertEqual(
                 jobs_module._required_provider_credentials(),
                 "baseten-key",
             )
+        for ambient in (
+            {"MODAL_TOKEN_ID": "modal-id"},
+            {"MODAL_TOKEN_SECRET": "modal-secret"},
+            {
+                "MODAL_TOKEN_ID": "modal-id",
+                "MODAL_TOKEN_SECRET": "modal-secret",
+            },
+        ):
+            with (
+                self.subTest(ambient=tuple(ambient)),
+                mock.patch.dict(
+                    os.environ,
+                    {"BASETEN_API_KEY": "baseten-key", **ambient},
+                    clear=True,
+                ),
+                self.assertRaisesRegex(ValueError, "forbidden"),
+            ):
+                jobs_module._required_provider_credentials()
 
     def test_production_api_has_no_operator_candidate_key_escape_hatch(self):
         self.assertNotIn(
@@ -1319,8 +1326,16 @@ class BasetenJobsTests(unittest.TestCase):
         self.assertNotIn(
             "winner_candidate_keys_by_run_id",
             inspect.signature(
-                jobs_module.dispatch_cross_provider_outboxes
+                jobs_module.dispatch_baseten_outboxes
             ).parameters,
+        )
+        self.assertFalse(
+            any(
+                "modal" in name
+                for name in inspect.signature(
+                    jobs_module.dispatch_baseten_outboxes
+                ).parameters
+            )
         )
         self.assertNotIn(
             "needs_model_scoped_candidate_key",
@@ -1881,7 +1896,11 @@ class BasetenJobsTests(unittest.TestCase):
                     self.subTest(label=label),
                     mock.patch.dict(
                         os.environ,
-                        {**EVIDENCE_R2_ENVIRONMENT, **CREATE_AUTHORITY_R2_ENVIRONMENT},
+                        {
+                            **EVIDENCE_R2_ENVIRONMENT,
+                            **CREATE_AUTHORITY_R2_ENVIRONMENT,
+                            "BASETEN_API_KEY": "baseten-test-key",
+                        },
                         clear=True,
                     ),
                     mock.patch.object(

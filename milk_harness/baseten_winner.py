@@ -18,7 +18,7 @@ import urllib.request
 import uuid
 
 from deploy.baseten import winner as contract
-from deploy.modal import admit as admission_probe
+from deploy import winner_admission as admission_probe
 from milk_harness.budget import H100_RESERVATION_RATE_MICROUSD_PER_MINUTE
 from milk_harness.evidence import HEX64, canonical_json, create_same
 from milk_harness.image_admission import (
@@ -31,7 +31,7 @@ from milk_harness.provider_acceptance import (
     MAX_WALL_SECONDS,
     SCHEMA as ACCEPTANCE_SCHEMA,
     TEAM_NAME,
-    encode as provider_acceptance_bytes,
+    encode_baseten as provider_acceptance_bytes,
     sha256 as provider_acceptance_sha256,
     validate_route_retirement,
     winner_run_id as neutral_winner_run_id,
@@ -344,9 +344,8 @@ def _validate_authority(authority, claim):
         raise ValueError("winner deployment authority fields are invalid")
     if (
         authority.get("schema_version")
-        != "dragontales.winner-deployment-authority.v2"
-        or authority.get("provider_policy")
-        != {"primary": "baseten", "fallback": "modal"}
+        != "dragontales.winner-deployment-authority.v3"
+        or authority.get("provider_policy") != {"only": "baseten"}
         or any(
             not _matches(HEX64, authority.get(field))
             for field in (

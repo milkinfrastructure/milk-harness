@@ -18,7 +18,7 @@ from . import adapter as shared
 from milk_harness import provider_acceptance
 
 
-ADMISSION_PATH = Path(__file__).resolve().parents[1] / "modal/admit.py"
+ADMISSION_PATH = Path(__file__).resolve().parents[1] / "winner_admission.py"
 SERVING_AUTOSCALING = {
     "min_replica": 0,
     "max_replica": 1,

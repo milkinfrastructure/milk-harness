@@ -162,6 +162,8 @@ class ProviderAcceptanceTest(unittest.TestCase):
         self.assertEqual(raw[-1:], b"\n")
         self.assertEqual(raw.count(b"\n"), 1)
         self.assertEqual(provider_acceptance.validate(value), value)
+        self.assertEqual(provider_acceptance.validate_baseten(value), value)
+        self.assertEqual(provider_acceptance.encode_baseten(value), raw)
 
     def test_gpu_rejects_training_project_as_serving_identity(self):
         value = gpu_acceptance()
@@ -210,6 +212,8 @@ class ProviderAcceptanceTest(unittest.TestCase):
         }
 
         self.assertEqual(provider_acceptance.validate(value), value)
+        with self.assertRaisesRegex(ValueError, "must select Baseten"):
+            provider_acceptance.validate_baseten(value)
 
         value["selection"]["primary_preflight"]["status"] = 503
         with self.assertRaisesRegex(ValueError, "fallback-safe"):

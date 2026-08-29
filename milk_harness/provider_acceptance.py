@@ -523,5 +523,21 @@ def encode(value):
     return (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
 
 
+def validate_baseten(value):
+    validate(value)
+    selection = value.get("selection")
+    if (
+        not isinstance(selection, dict)
+        or selection.get("selected_provider") != "baseten"
+    ):
+        raise ValueError("production provider acceptance must select Baseten")
+    return value
+
+
+def encode_baseten(value):
+    validate_baseten(value)
+    return (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+
+
 def sha256(value):
     return hashlib.sha256(encode(value)).hexdigest()

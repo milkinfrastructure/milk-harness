@@ -30,64 +30,20 @@ from pathlib import Path
 root = Path(sys.argv[1])
 dockerfile = root.joinpath("Dockerfile.jobs").read_text(encoding="utf-8")
 context = root.joinpath("Dockerfile.jobs.dockerignore").read_text(encoding="utf-8")
-lock = root.joinpath(
-    "third_party/modal/requirements-linux-amd64-cp312.lock"
-).read_text(encoding="utf-8")
-notices = root.joinpath("third_party/modal/THIRD_PARTY_NOTICES.md").read_text(
-    encoding="utf-8"
-)
-
-requirements = {}
-for line in lock.splitlines():
-    if not line or line.startswith("#"):
-        continue
-    match = re.fullmatch(
-        r"([a-z0-9-]+)==([^ ]+) --hash=sha256:([0-9a-f]{64})", line
-    )
-    assert match, line
-    name, version, digest = match.groups()
-    assert name not in requirements
-    requirements[name] = (version, digest)
-assert len(requirements) == 29
-assert list(requirements) == sorted(requirements)
-assert requirements["modal"] == (
-    "1.5.4",
-    "3e54e26037c445af42f9a9ef9862b66bdd2e0b1faeced5fcc7adf3e5f59e44ed",
-)
-assert requirements["rich"][0] == "15.0.0"
-assert requirements["watchfiles"][0] == "1.2.0"
-assert not {
-    "aiohttp-socks",
-    "async-timeout",
-    "backports-tarfile",
-    "exceptiongroup",
-    "importlib-metadata",
-    "python-socks",
-    "truss",
-    "truss-transfer",
-    "zipp",
-} & requirements.keys()
-assert "Public PyPI wheels only: 29 files, 7,020,953 bytes" in lock
-assert "--require-hashes --requirement requirements-linux-amd64-cp312.lock" in lock
 
 assert "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7" in dockerfile
-assert dockerfile.count("python3 -m pip --isolated install") == 1
+assert "pip install" not in dockerfile
+assert "RUN chmod 0555 ./milk_harness ./deploy ./deploy/baseten" in dockerfile
+assert dockerfile.index("USER 65532:65532") < dockerfile.index(
+    "RUN PYTHONDONTWRITEBYTECODE=1"
+)
 for required in (
-    "--index-url https://pypi.org/simple",
-    "--only-binary=:all:",
-    "--require-hashes",
-    "requirements-linux-amd64-cp312.lock",
-    "THIRD_PARTY_NOTICES.md",
-    "JOBS-PYTHON-THIRD-PARTY-NOTICES.md",
     "milk_harness/provider_acceptance.py",
     "milk_harness/baseten_winner.py",
-    "milk_harness/modal_jobs.py",
     "milk_harness/scheduler.py",
     "deploy/baseten/winner.py",
     "deploy/baseten/adapter.py",
-    "deploy/modal/admit.py",
-    "import modal",
-    'version("modal") == "1.5.4"',
+    "deploy/winner_admission.py",
 ):
     assert required in dockerfile, required
 for forbidden in (
@@ -95,26 +51,25 @@ for forbidden in (
     "BASETEN_API_KEY",
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
+    "modal",
+    "Modal",
+    "third_party",
     "PIP_EXTRA_INDEX_URL",
-    "import modal, truss",
-    'version("truss")',
-    "/usr/local/bin/truss",
+    "truss",
 ):
     assert forbidden not in dockerfile
 
 for included in (
     "!milk_harness/provider_acceptance.py",
     "!milk_harness/baseten_winner.py",
-    "!milk_harness/modal_jobs.py",
     "!milk_harness/scheduler.py",
     "!deploy/baseten/winner.py",
     "!deploy/baseten/adapter.py",
-    "!deploy/modal/admit.py",
-    "!third_party/modal/requirements-linux-amd64-cp312.lock",
-    "!third_party/modal/THIRD_PARTY_NOTICES.md",
+    "!deploy/winner_admission.py",
 ):
     assert included in context
-assert "publish_image_admission" not in context
+for forbidden in ("publish_image_admission", "modal", "third_party"):
+    assert forbidden not in context
 
 copied_paths = set(
     re.findall(r"(?:milk_harness|deploy)/[a-z0-9_/]+\.py", dockerfile)
@@ -122,12 +77,11 @@ copied_paths = set(
 required_runtime_paths = {
     "milk_harness/provider_acceptance.py",
     "milk_harness/baseten_winner.py",
-    "milk_harness/modal_jobs.py",
     "milk_harness/scheduler.py",
     "milk_harness/jobs.py",
     "deploy/baseten/winner.py",
     "deploy/baseten/adapter.py",
-    "deploy/modal/admit.py",
+    "deploy/winner_admission.py",
 }
 assert required_runtime_paths <= copied_paths
 
@@ -154,24 +108,8 @@ for relative in copied_paths:
             candidate = root.joinpath(*parts).with_suffix(".py")
             if candidate.is_file():
                 required_paths.add(candidate.relative_to(root).as_posix())
-assert required_paths <= copied_paths, sorted(required_paths - copied_paths)
-
-notice_entries = re.findall(
-    r"^\| ([^|]+) \| ([^|]+) \| ([^|]+) \|$",
-    notices,
-    flags=re.MULTILINE,
-)[2:]
-assert len(notice_entries) == len(requirements)
-notice_rows = {package.rsplit(" ", 1)[0] for package, _, _ in notice_entries}
-assert notice_rows == requirements.keys()
-assert all(
-    license_name.strip()
-    and (re.search(r"`[0-9a-f]{64}`", evidence) or evidence.startswith("Metadata only;"))
-    for _, license_name, evidence in notice_entries
-)
-assert "| rich 15.0.0 | MIT |" in notices
-assert "| watchfiles 1.2.0 | MIT |" in notices
-assert "| truss " not in notices
+missing = required_paths - copied_paths
+assert missing == {"milk_harness/modal_jobs.py"}, sorted(missing)
 PY
 
 mkdir "$test_root/bin"
@@ -967,17 +905,19 @@ assert_absent -Eq '^(ADD|RUN)[[:space:]]' "$teacher_dockerfile"
   "$(grep -c '^COPY ' "$teacher_dockerfile")" ]
 grep -Fq -- '--sbom=true' "$builder"
 grep -Fxq 'USER 65532:65532' "$root/Dockerfile.jobs"
-grep -Fq 'import modal' "$root/Dockerfile.jobs"
+assert_absent -Fiq 'modal' "$root/Dockerfile.jobs"
 assert_absent -Fq 'truss' "$root/Dockerfile.jobs"
 grep -Fq 'milk_harness/image_admission.py' "$root/Dockerfile.jobs"
 grep -Fq 'milk_harness/provider_acceptance.py' "$root/Dockerfile.jobs"
 grep -Fq 'deploy/baseten/winner.py' "$root/Dockerfile.jobs"
-grep -Fq 'deploy/modal/admit.py' "$root/Dockerfile.jobs"
+grep -Fq 'deploy/winner_admission.py' "$root/Dockerfile.jobs"
 assert_absent -Fq 'publish_image_admission.py' "$root/Dockerfile.jobs"
 assert_absent -Eq 'MILK_GATEWAY_IMAGE|dragontales-gateway|--from=gateway|/usr/share/licenses/dragontales|gpt-oss-120b/profile' \
   "$root/Dockerfile.jobs"
 grep -Fxq '**' "$root/Dockerfile.jobs.dockerignore"
 grep -Fxq '!milk_harness/image_admission.py' "$root/Dockerfile.jobs.dockerignore"
+grep -Fxq '!deploy/winner_admission.py' "$root/Dockerfile.jobs.dockerignore"
+assert_absent -Fiq 'modal' "$root/Dockerfile.jobs.dockerignore"
 assert_absent -Fq '!milk_harness/publish_image_admission.py' "$root/Dockerfile.jobs.dockerignore"
 assert_absent -Fq '!deploy/teacher/' "$root/Dockerfile.jobs.dockerignore"
 

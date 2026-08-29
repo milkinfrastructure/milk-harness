@@ -221,8 +221,6 @@ jobs:
       MILK_GHCR_PULL_USERNAME: ${{ secrets.MILK_GHCR_PULL_USERNAME }}
       MILK_GHCR_PULL_TOKEN: ${{ secrets.MILK_GHCR_PULL_TOKEN }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       MILK_CONTROL_R2_ACCESS_KEY_ID: ${{ secrets.MILK_CONTROL_R2_ACCESS_KEY_ID }}
       MILK_CONTROL_R2_SECRET_ACCESS_KEY: ${{ secrets.MILK_CONTROL_R2_SECRET_ACCESS_KEY }}
       MILK_CONTROL_R2_SESSION_TOKEN: ${{ secrets.MILK_CONTROL_R2_SESSION_TOKEN }}
@@ -397,13 +395,7 @@ jobs:
             --gateway-config "$provider_gateway_config" \
             --gateway-image "$MILK_GATEWAY_IMAGE"
           [ -n "$BASETEN_API_KEY" ] || fail 'Baseten credential is missing'
-          [ -n "$MODAL_TOKEN_ID" ] || fail 'Modal credential is missing'
-          [ -n "$MODAL_TOKEN_SECRET" ] || fail 'Modal credential is missing'
-          provider_credential_env=(
-            -e BASETEN_API_KEY
-            -e MODAL_TOKEN_ID
-            -e MODAL_TOKEN_SECRET
-          )
+          provider_credential_env=(-e BASETEN_API_KEY)
 
           if ! printf '%s' "$MILK_GHCR_PULL_TOKEN" | docker --config "$docker_config" login \
             ghcr.io --username "$MILK_GHCR_PULL_USERNAME" --password-stdin >/dev/null 2>&1; then
@@ -461,26 +453,6 @@ jobs:
             --control-store-identity-sha256 "$MILK_PROVIDER_GPU_CONTROL_IDENTITY_SHA256"
             --control-store-access-key-secret "$MILK_BASETEN_CONTROL_ACCESS_SECRET"
             --control-store-secret-key-secret "$MILK_BASETEN_CONTROL_SECRET_SECRET"
-            --modal-workspace-id "$MILK_MODAL_WORKSPACE_ID"
-            --modal-workspace-name "$MILK_MODAL_WORKSPACE_NAME"
-            --modal-environment-id "$MILK_MODAL_ENVIRONMENT_ID"
-            --modal-environment-name "$MILK_MODAL_ENVIRONMENT_NAME"
-            --modal-app-id "$MILK_MODAL_APP_ID"
-            --modal-app-name "$MILK_MODAL_APP_NAME"
-            --modal-registry-secret-name "$MILK_MODAL_REGISTRY_SECRET_NAME"
-            --modal-registry-secret-id "$MILK_MODAL_REGISTRY_SECRET_ID"
-            --modal-config-secret-name "$MILK_MODAL_CONFIG_SECRET_NAME"
-            --modal-config-secret-id "$MILK_MODAL_CONFIG_SECRET_ID"
-            --modal-control-secret-name "$MILK_MODAL_CONTROL_SECRET_NAME"
-            --modal-control-secret-id "$MILK_MODAL_CONTROL_SECRET_ID"
-            --modal-capture-secret-name "$MILK_MODAL_CAPTURE_SECRET_NAME"
-            --modal-capture-secret-id "$MILK_MODAL_CAPTURE_SECRET_ID"
-            --modal-candidate-secret-name "$MILK_MODAL_CANDIDATE_SECRET_NAME"
-            --modal-candidate-secret-id "$MILK_MODAL_CANDIDATE_SECRET_ID"
-            --modal-teacher-volume-name "$MILK_MODAL_TEACHER_VOLUME_NAME"
-            --modal-teacher-volume-id "$MILK_MODAL_TEACHER_VOLUME_ID"
-            --modal-student-train-volume-name "$MILK_MODAL_STUDENT_TRAIN_VOLUME_NAME"
-            --modal-student-train-volume-id "$MILK_MODAL_STUDENT_TRAIN_VOLUME_ID"
           )
           if [ -n "$MILK_BASETEN_CAPTURE_SESSION_SECRET" ]; then
             job_arguments+=(--capture-store-session-token-secret "$MILK_BASETEN_CAPTURE_SESSION_SECRET")
@@ -533,27 +505,7 @@ jobs:
               --capture-session-secret "$MILK_BASETEN_CAPTURE_SESSION_SECRET" \
               --control-access-secret "$MILK_BASETEN_CONTROL_ACCESS_SECRET" \
               --control-secret-secret "$MILK_BASETEN_CONTROL_SECRET_SECRET" \
-              --control-session-secret "$MILK_BASETEN_CONTROL_SESSION_SECRET" \
-              --modal-workspace-id "$MILK_MODAL_WORKSPACE_ID" \
-              --modal-workspace-name "$MILK_MODAL_WORKSPACE_NAME" \
-              --modal-environment-id "$MILK_MODAL_ENVIRONMENT_ID" \
-              --modal-environment-name "$MILK_MODAL_ENVIRONMENT_NAME" \
-              --modal-app-id "$MILK_MODAL_APP_ID" \
-              --modal-app-name "$MILK_MODAL_APP_NAME" \
-              --modal-registry-secret-name "$MILK_MODAL_REGISTRY_SECRET_NAME" \
-              --modal-registry-secret-id "$MILK_MODAL_REGISTRY_SECRET_ID" \
-              --modal-config-secret-name "$MILK_MODAL_CONFIG_SECRET_NAME" \
-              --modal-config-secret-id "$MILK_MODAL_CONFIG_SECRET_ID" \
-              --modal-control-secret-name "$MILK_MODAL_CONTROL_SECRET_NAME" \
-              --modal-control-secret-id "$MILK_MODAL_CONTROL_SECRET_ID" \
-              --modal-capture-secret-name "$MILK_MODAL_CAPTURE_SECRET_NAME" \
-              --modal-capture-secret-id "$MILK_MODAL_CAPTURE_SECRET_ID" \
-              --modal-candidate-secret-name "$MILK_MODAL_CANDIDATE_SECRET_NAME" \
-              --modal-candidate-secret-id "$MILK_MODAL_CANDIDATE_SECRET_ID" \
-              --modal-teacher-volume-name "$MILK_MODAL_TEACHER_VOLUME_NAME" \
-              --modal-teacher-volume-id "$MILK_MODAL_TEACHER_VOLUME_ID" \
-              --modal-student-train-volume-name "$MILK_MODAL_STUDENT_TRAIN_VOLUME_NAME" \
-              --modal-student-train-volume-id "$MILK_MODAL_STUDENT_TRAIN_VOLUME_ID"; then
+              --control-session-secret "$MILK_BASETEN_CONTROL_SESSION_SECRET"; then
               configuration_verified=true
             else
               create_granted=false
@@ -929,9 +881,6 @@ jobs:
           MILK_ROUTE_SECRET_HEX: ${{ secrets.MILK_ROUTE_SECRET_HEX }}
           MILK_ROUTE_SIGNING_KEY_PEM: ${{ secrets.MILK_ROUTE_SIGNING_KEY_PEM }}
           MILK_ROUTE_SMOKE_CREDENTIAL_JSON: ${{ steps.route_proof.outputs.authorized == 'true' && secrets.MILK_ROUTE_SMOKE_CREDENTIAL_JSON || '' }}
-          MILK_MODAL_CANDIDATE_API_KEY: ${{ steps.route_proof.outputs.authorized == 'true' && secrets.MILK_MODAL_CANDIDATE_API_KEY || '' }}
-          MILK_GATEWAY_CONTAINER_ADMIN_KEY: ${{ secrets.MILK_GATEWAY_CONTAINER_ADMIN_KEY }}
-          CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN: ${{ secrets.CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN }}
           MILK_CONTROL_STORE_ACCESS_KEY_ID: ${{ secrets.MILK_ROUTE_CONTROL_R2_ACCESS_KEY_ID }}
           MILK_CONTROL_STORE_SECRET_ACCESS_KEY: ${{ secrets.MILK_ROUTE_CONTROL_R2_SECRET_ACCESS_KEY }}
           MILK_CONTROL_STORE_SESSION_TOKEN: ${{ secrets.MILK_ROUTE_CONTROL_R2_SESSION_TOKEN }}
@@ -993,11 +942,7 @@ jobs:
           gateway_anchor=$scratch/gateway-anchor.json
           signer=$gateway_source/deploy/dragontales-publish-route.sh
           smoke_program=$gateway_source/tools/openai-production-smoke.mjs
-          candidate_helper=$gateway_source/tools/manage-candidate-credential.py
           gateway_container_id=
-          candidate_provider=
-          candidate_absent=false
-          candidate_operation=0
           zero_needed=false
           zero_live=false
 
@@ -1017,10 +962,6 @@ jobs:
           evidence_access=$MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID
           evidence_secret=$MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY
           evidence_session=$MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN
-          modal_candidate_key=$MILK_MODAL_CANDIDATE_API_KEY
-          gateway_admin_key=$MILK_GATEWAY_CONTAINER_ADMIN_KEY
-          cloudflare_account_id=$CLOUDFLARE_ACCOUNT_ID
-          cloudflare_candidate_token=$CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN
           unset \
             MILK_GHCR_PULL_USERNAME MILK_GHCR_PULL_TOKEN \
             MILK_GATEWAY_CONFIG_PATH MILK_ROUTE_SECRET_HEX \
@@ -1031,9 +972,7 @@ jobs:
             MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID MILK_ROUTE_EVIDENCE_R2_BUCKET \
             MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID \
             MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY \
-            MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN \
-            MILK_MODAL_CANDIDATE_API_KEY MILK_GATEWAY_CONTAINER_ADMIN_KEY \
-            CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN
+            MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN
 
           mkdir -m 0700 "$docker_config" "$scratch/npm-home" "$scratch/signatures"
           printf '%s\n' "$signing_key_pem" >"$signing_key"
@@ -1092,228 +1031,6 @@ jobs:
             MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY="$evidence_secret"
           )
           [ -z "$evidence_session" ] || evidence_env+=(MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN="$evidence_session")
-
-          discard_candidate_request() {
-            if [ -n "${candidate_request:-}" ] && [ -f "$candidate_request" ]; then
-              chmod 0600 "$candidate_request"
-              : >"$candidate_request"
-            fi
-          }
-
-          prepare_candidate() {
-            local preparation values status
-            candidate_operation=$((candidate_operation + 1))
-            candidate_request=$scratch/modal-candidate-request-$candidate_operation.json
-            preparation=$scratch/modal-candidate-preparation-$candidate_operation.json
-            values=$scratch/modal-candidate-values-$candidate_operation
-            local arguments=(
-              --student-job-id "$MILK_ROUTE_STUDENT_JOB_ID"
-              --gateway-anchor "$gateway_anchor"
-              --request "$candidate_request"
-            )
-            if "${gateway_env[@]}" timeout --signal=TERM --kill-after=10s 90s \
-              "$gateway_binary" --config "$gateway_config" \
-              prepare-modal-candidate-credential "${arguments[@]}" \
-              >"$preparation" 2>"$preparation.stderr"; then
-              status=0
-            else
-              status=$?
-            fi
-            : >"$preparation.stderr"
-            if [ "$status" -ne 0 ]; then
-              : >"$preparation"
-              return "$status"
-            fi
-            if ! python3 - "$preparation" "$candidate_request" "$values" <<'PY'
-          import hashlib
-          import json
-          import os
-          from pathlib import Path
-          import re
-          import stat
-          import sys
-
-          preparation_name, request_name, values_name = sys.argv[1:]
-          raw = Path(preparation_name).read_bytes()
-          if not 1 <= len(raw) <= 1024 or not raw.endswith(b"\n"):
-              raise SystemExit("invalid candidate preparation output")
-          value = json.loads(raw)
-          if (
-              list(value) != ["schema_version", "selected_provider", "action", "request_sha256"]
-              or value["schema_version"] != "dragontales.modal-candidate-credential-preparation.v1"
-              or value["selected_provider"] not in {"baseten", "modal"}
-              or value["action"] not in {"install", "verify", "ready", "remove", "absent"}
-              or json.dumps(value, separators=(",", ":")).encode() + b"\n" != raw
-          ):
-              raise SystemExit("candidate preparation output differs")
-          action = value["action"]
-          digest = value["request_sha256"]
-          has_request = action in {"install", "verify", "remove"}
-          if value["selected_provider"] == "baseten" and action != "ready":
-              raise SystemExit("Baseten candidate is not ready")
-          if has_request:
-              path = Path(request_name)
-              metadata = path.lstat()
-              request = path.read_bytes()
-              if (
-                  not stat.S_ISREG(metadata.st_mode)
-                  or path.is_symlink()
-                  or metadata.st_uid != os.getuid()
-                  or metadata.st_nlink != 1
-                  or stat.S_IMODE(metadata.st_mode) != 0o400
-                  or not 1 <= len(request) <= 65_536
-                  or re.fullmatch(r"[0-9a-f]{64}", digest or "") is None
-                  or hashlib.sha256(request).hexdigest() != digest
-              ):
-                  raise SystemExit("candidate request differs from gateway preparation")
-          elif digest is not None or os.path.lexists(request_name):
-              raise SystemExit("candidate no-op produced request authority")
-          Path(values_name).write_text(
-              f'{value["selected_provider"]}\t{action}\t{digest or ""}\n',
-              encoding="utf-8",
-          )
-          PY
-            then
-              : >"$preparation"
-              return 65
-            fi
-            IFS=$'\t' read -r prepared_provider candidate_action candidate_request_sha256 <"$values"
-            : >"$preparation"
-            : >"$values"
-          }
-
-          run_candidate_helper() {
-            local action=$1 ack helper_stdout helper_stderr ingest_stdout ingest_stderr status
-            [ "$prepared_provider" = modal ] || return 64
-            [[ "$action" =~ ^(install|verify|remove)$ ]] || return 64
-            [ -n "$cloudflare_account_id" ] || return 77
-            [ -n "$cloudflare_candidate_token" ] || return 77
-            [ -n "$gateway_admin_key" ] || return 77
-            if [ "$action" = install ] && [ -z "$modal_candidate_key" ]; then
-              return 77
-            fi
-            ack=$scratch/modal-candidate-ack-$candidate_operation.json
-            helper_stdout=$ack
-            helper_stderr=$scratch/modal-candidate-helper-$candidate_operation.stderr
-            ingest_stdout=$scratch/modal-candidate-ingest-$candidate_operation.json
-            ingest_stderr=$scratch/modal-candidate-ingest-$candidate_operation.stderr
-            local arguments=(
-              "${action}-modal"
-              --request "$candidate_request"
-              --admin-key-fd 3
-            )
-            if [ "$action" = install ]; then
-              arguments+=(--candidate-key-fd 4)
-              if env -i \
-                HOME="$scratch/npm-home" \
-                PATH="$candidate_helper_path" \
-                CLOUDFLARE_ACCOUNT_ID="$cloudflare_account_id" \
-                CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN="$cloudflare_candidate_token" \
-                timeout --signal=TERM --kill-after=10s 600s \
-                python3 "$candidate_helper" "${arguments[@]}" \
-                3< <(printf '%s' "$gateway_admin_key") \
-                4< <(printf '%s' "$modal_candidate_key") \
-                >"$helper_stdout" 2>"$helper_stderr"; then
-                status=0
-              else
-                status=$?
-              fi
-            elif env -i \
-              HOME="$scratch/npm-home" \
-              PATH="$candidate_helper_path" \
-              CLOUDFLARE_ACCOUNT_ID="$cloudflare_account_id" \
-              CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN="$cloudflare_candidate_token" \
-              timeout --signal=TERM --kill-after=10s 600s \
-              python3 "$candidate_helper" "${arguments[@]}" \
-              3< <(printf '%s' "$gateway_admin_key") \
-              >"$helper_stdout" 2>"$helper_stderr"; then
-              status=0
-            else
-              status=$?
-            fi
-            : >"$helper_stderr"
-            if [ "$status" -ne 0 ]; then
-              [ ! -e "$helper_stdout" ] || : >"$helper_stdout"
-              return "$status"
-            fi
-            chmod 0600 "$ack"
-            if "${gateway_env[@]}" timeout --signal=TERM --kill-after=10s 90s \
-              "$gateway_binary" --config "$gateway_config" \
-              ingest-modal-candidate-credential-ack \
-                --student-job-id "$MILK_ROUTE_STUDENT_JOB_ID" \
-                --acknowledgement "$ack" \
-              >"$ingest_stdout" 2>"$ingest_stderr"; then
-              status=0
-            else
-              status=$?
-            fi
-            : >"$ingest_stderr"
-            if [ "$status" -eq 0 ]; then
-              if python3 - "$ingest_stdout" <<'PY'
-          import json
-          from pathlib import Path
-          import re
-          import sys
-
-          raw = Path(sys.argv[1]).read_bytes()
-          value = json.loads(raw)
-          if (
-              not 1 <= len(raw) <= 2048
-              or not raw.endswith(b"\n")
-              or list(value) != ["schema_version", "state", "object_key", "sha256"]
-              or value["schema_version"] != "dragontales.modal-candidate-credential-ack-write.v1"
-              or value["state"] not in {"installed", "absent"}
-              or not isinstance(value["object_key"], str)
-              or not value["object_key"].endswith("-ack.json")
-              or re.fullmatch(r"[0-9a-f]{64}", value["sha256"] or "") is None
-              or json.dumps(value, separators=(",", ":")).encode() + b"\n" != raw
-          ):
-              raise SystemExit("candidate acknowledgement write differs")
-          PY
-              then
-                status=0
-              else
-                status=$?
-              fi
-            fi
-            : >"$ack"
-            : >"$ingest_stdout"
-            discard_candidate_request
-            return "$status"
-          }
-
-          reconcile_candidate() {
-            local target=$1 iteration
-            for iteration in $(seq 1 8); do
-              prepare_candidate || return
-              if [ -z "$candidate_provider" ]; then
-                candidate_provider=$prepared_provider
-              elif [ "$candidate_provider" != "$prepared_provider" ]; then
-                return 70
-              fi
-              if [ "$prepared_provider" = baseten ]; then
-                [ "$candidate_action" = ready ] || return 70
-                if [ "$target" = ready ]; then
-                  [ "$MILK_ROUTE_CANDIDATE_READY" = true ] || return 70
-                else
-                  [ "$target" = absent ] || return 70
-                  candidate_absent=true
-                fi
-                return
-              fi
-              if [ "$candidate_action" = "$target" ]; then
-                [ "$target" != absent ] || candidate_absent=true
-                return 0
-              fi
-              if [ "$target" = ready ]; then
-                [[ "$candidate_action" =~ ^(install|verify)$ ]] || return 70
-              else
-                [[ "$candidate_action" =~ ^(remove|verify)$ ]] || return 70
-              fi
-              run_candidate_helper "$candidate_action" || return
-            done
-            return 70
-          }
 
           advance_phase() {
             local phase=$1 manifest=$2 output=$3 values=$4 status
@@ -1690,16 +1407,6 @@ jobs:
                 [ "$status" -ne 0 ] || status=70
               fi
             fi
-            if [ "$zero_live" = true ] && [ "$candidate_absent" != true ]; then
-              if ! reconcile_candidate absent; then
-                printf 'route control: Modal candidate credential removal failed\n' >&2
-                [ "$status" -ne 0 ] || status=70
-              fi
-            fi
-            modal_candidate_key=
-            gateway_admin_key=
-            cloudflare_candidate_token=
-            unset modal_candidate_key gateway_admin_key cloudflare_candidate_token
             if [ -n "$gateway_container_id" ]; then
               docker --config "$docker_config" rm -f "$gateway_container_id" >/dev/null 2>&1 || true
             fi
@@ -1748,7 +1455,6 @@ jobs:
           fi
 
           [ -f "$signer" ] && [ ! -L "$signer" ] || fail 'route signer is missing' 69
-          [ -f "$candidate_helper" ] && [ ! -L "$candidate_helper" ] || fail 'candidate helper is missing' 69
           if [ "$recovery_only" != true ]; then
             [ -f "$smoke_program" ] && [ ! -L "$smoke_program" ] || fail 'route smoke program is missing' 69
           fi
@@ -1765,18 +1471,6 @@ jobs:
             : >"$scratch/npm-stdout"
             : >"$scratch/npm-stderr"
           fi
-          if ! env -i CI=1 HOME="$scratch/npm-home" PATH="$PATH" \
-            npm ci --ignore-scripts --no-audit --no-fund \
-              --prefix "$gateway_source/deploy/cloudflare" \
-              >"$scratch/npm-stdout" 2>"$scratch/npm-stderr"; then
-            : >"$scratch/npm-stdout"
-            : >"$scratch/npm-stderr"
-            fail 'exact candidate helper dependency failed to install' 69
-          fi
-          : >"$scratch/npm-stdout"
-          : >"$scratch/npm-stderr"
-          candidate_helper_path="$gateway_source/deploy/cloudflare/node_modules/.bin:$(dirname "$(command -v node)"):$(dirname "$(command -v python3)"):$(dirname "$(command -v curl)"):$(dirname "$(command -v sleep)"):/usr/bin:/bin"
-
           if ! printf '%s' "$ghcr_token" | docker --config "$docker_config" login \
             ghcr.io --username "$ghcr_username" --password-stdin >/dev/null 2>&1; then
             fail 'private registry login failed' 77
@@ -1812,8 +1506,6 @@ jobs:
 
           if [ "$recovery_only" = true ]; then
             if [ "$canary_action" = prepare ]; then
-              reconcile_candidate absent || \
-                fail 'scheduled recovery candidate absence is not durable' 70
               exit 0
             fi
             if [ "$canary_action" = observe ]; then
@@ -1826,8 +1518,6 @@ jobs:
             else
               fail 'scheduled recovery route state is invalid' 70
             fi
-            reconcile_candidate absent || \
-              fail 'scheduled recovery candidate absence is not durable' 70
             exit 0
           fi
 
@@ -1835,7 +1525,6 @@ jobs:
             zero_live=true
             printf 'zero_published=true\n' >>"$GITHUB_OUTPUT"
             printf 'zero_route_revision=%s\n' "$canary_revision" >>"$GITHUB_OUTPUT"
-            reconcile_candidate absent || fail 'candidate credential absence is not durable' 70
             proof_evidence candidate require-any || fail 'completed route has no immutable candidate proof' 70
             proof_evidence saturation require-any || fail 'completed route has no immutable fallback proof' 70
             exit 0
@@ -1862,7 +1551,8 @@ jobs:
             fail 'canary advance action is invalid' 70
           fi
 
-          reconcile_candidate ready || fail 'candidate credential is not durably ready' 70
+          [ "$MILK_ROUTE_CANDIDATE_READY" = true ] || \
+            fail 'Baseten candidate credential delivery is not proven' 70
 
           set +e
           proof_evidence candidate check "$canary_revision"

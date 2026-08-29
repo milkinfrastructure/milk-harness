@@ -64,8 +64,8 @@ def gateway_line(value, *, newline=False):
 
 def gateway_claim():
     authority = {
-        "schema_version": "dragontales.winner-deployment-authority.v2",
-        "provider_policy": {"primary": "baseten", "fallback": "modal"},
+        "schema_version": "dragontales.winner-deployment-authority.v3",
+        "provider_policy": {"only": "baseten"},
         "provider_terms_sha256": "5" * 64,
         "student_branch_runtime_image_reference": IMAGE,
         "admission_program_sha256": hashlib.sha256(
@@ -120,7 +120,7 @@ def gateway_claim():
         ),
         "deployment_claim_sha256": hashlib.sha256(claim_raw).hexdigest(),
         "provider_binding_sha256": CLAIM_BINDING,
-        "provider_policy": {"primary": "baseten", "fallback": "modal"},
+        "provider_policy": {"only": "baseten"},
         "student_branch_runtime_image_reference": IMAGE,
         "max_wall_seconds": 1800,
         "max_cost_microusd": 10_000_000,
@@ -704,7 +704,7 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
         self.assertEqual(hashlib.sha256(raw).hexdigest(), acceptance_sha256(self.acceptance))
         self.assertEqual(
             hashlib.sha256(raw).hexdigest(),
-            "23cafa67018ce703b6f666b3c746fc8f6c0a1a10013616d161d9c4e6cba79ad2",
+            "294826abe3d05ac510fe263b8530e257ed929a9f1ca9d1654e84523ea2e8ed5d",
         )
         self.assertEqual(
             self.acceptance["provider_pass_claim_sha256"],
@@ -717,6 +717,38 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
         tampered["create_authorization_sha256"] = None
         with self.assertRaises(ValueError):
             acceptance_bytes(tampered)
+
+    def test_prior_or_fallback_winner_authority_is_rejected(self):
+        for label, mutation in (
+            (
+                "v2",
+                lambda authority: authority.__setitem__(
+                    "schema_version",
+                    "dragontales.winner-deployment-authority.v2",
+                ),
+            ),
+            (
+                "fallback",
+                lambda authority: authority.__setitem__(
+                    "provider_policy",
+                    {"primary": "baseten", "fallback": "modal"},
+                ),
+            ),
+        ):
+            claim = json.loads(self.claim_raw)
+            mutation(claim["authority"])
+            with (
+                self.subTest(label=label),
+                self.assertRaisesRegex(ValueError, "winner deployment authority"),
+            ):
+                baseten_winner.winner_run_id(
+                    campaign_id=CAMPAIGN,
+                    launch_raw=self.launch_raw,
+                    claim_raw=gateway_line(claim),
+                    outbox_sha256=OUTBOX,
+                    image_release_sha256=IMAGE_RELEASE,
+                    image_admission_sha256=IMAGE_ADMISSION,
+                )
 
     def test_create_authority_rejects_another_eval_namespace(self):
         with self.assertRaisesRegex(ValueError, "create authority"):
