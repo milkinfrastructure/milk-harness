@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import hashlib
 import inspect
@@ -20,8 +21,7 @@ RUNTIME_PATH = Path(__file__).resolve().with_name("runtime.py")
 SPEC = importlib.util.spec_from_file_location("student_runtime", RUNTIME_PATH)
 runtime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runtime)
-PRODUCTION_RECIPE_SHA256 = "6e12cf38219b44fc03e06f8f62f605441d96c019ab3bf059eeba6536e129b1ba"
-FIXTURE_RECIPE_SHA256 = "a4669cd38ac96daeef41c9e091afa239f8a0feeaee6ca2319151cd656d50c40e"
+PRODUCTION_RECIPE_SHA256 = "37334cf9060d960aa111be3d6825b6e38a5babc88e9bf7cfa49a198d2f43bc2e"
 FIXTURE_TRAIN_IMAGE = "fixture/dragontales-student-train@sha256:" + "1" * 64
 FIXTURE_BRANCH_IMAGE = "fixture/dragontales-student-branch@sha256:" + "2" * 64
 
@@ -69,6 +69,7 @@ def rows(prefix, count, kind):
 
 
 def fixture_files(root):
+    now = dt.datetime.now(dt.timezone.utc)
     scope = {
         "tenant_id": "00000000-0000-0000-0000-000000000001",
         "project_id": "00000000-0000-0000-0000-000000000002",
@@ -93,7 +94,7 @@ def fixture_files(root):
         "input_sha256": digest(input_raw),
         "dev_set_sha256": digest(runtime.DEV_SET_DOMAIN + compact(inputs["dev"])),
         "counts": {"train": 50, "dev": 73, "calibration": 128},
-        "recipe_sha256": runtime.recipe_sha256("fixture"),
+        "recipe_sha256": runtime.recipe_sha256(),
         "student_train_runtime_image_reference": FIXTURE_TRAIN_IMAGE,
         "student_branch_runtime_image_reference": FIXTURE_BRANCH_IMAGE,
         "max_train_gpu_seconds": runtime.MAX_TRAIN_GPU_SECONDS,
@@ -104,14 +105,14 @@ def fixture_files(root):
             "max_mean_loss_vs_bf16_bps": 0,
             "max_p95_latency_ms": 30_000,
         },
-        "expires_at": "2099-01-02T00:00:00Z",
+        "expires_at": runtime._format_time(now + dt.timedelta(hours=1)),
     }
     claim = {
         "schema_version": "dragontales.student-job-claim.v4",
         "scope": scope,
         "student_job_id": digest(compact(definition)),
         "definition": definition,
-        "started_at": "2026-01-01T00:00:00Z",
+        "started_at": runtime._format_time(now - dt.timedelta(seconds=5)),
     }
     claim_path = root / "claim.json"
     input_path = root / "input.json"
@@ -223,6 +224,129 @@ def fixture_fanout(root, claim, train_output):
     return train_path, fanout_path, model, manifest_path, fanout
 
 
+def gpu_probe(stage):
+    image = (
+        {
+            "stage": "train",
+            "schema_version": "dragontales.student-train-image-probe.v1",
+            "platform": "linux/amd64",
+            "prime_rl_version": "0.9.0",
+            "accelerate_version": "1.14.0",
+            "peft_version": "0.20.0",
+            "torch_cuda_version": "12.8",
+        }
+        if stage == "train"
+        else {
+            "stage": "branch",
+            "schema_version": "dragontales.h100-fp8-image-probe.v2",
+            "platform": "linux/amd64",
+            "vllm_version": "0.28.0",
+            "vllm_metadata_sha256": "5" * 64,
+            "compressed_tensors_version": "0.18.0",
+            "compressed_tensors_wheel_sha256": "6" * 64,
+            "fp8_dynamic_supported": True,
+            "fp8_static_supported": True,
+        }
+    )
+    return {
+        "device": {
+            "uuid": "GPU-00000000-0000-0000-0000-000000000001",
+            "cuda": "12.8" if stage == "train" else "12.9",
+            "name": "NVIDIA H100 80GB HBM3",
+            "compute_capability": [9, 0],
+            "total_memory_bytes": 80 * 1024**3,
+        },
+        "runtime": image,
+    }
+
+
+def test_kernel(variant):
+    return {
+        "variant": variant,
+        "model_verification": {
+            "schema_version": "dragontales.h100-model-verification.v2",
+            "model_type": "qwen3",
+            "variant": "bf16" if variant == "bf16" else variant.removesuffix("_fp8"),
+            "shards": 1,
+        },
+        "startup_log_sha256": digest((variant + "-startup").encode()),
+        "kernel_selection": None
+        if variant == "bf16"
+        else "Selected CutlassFP8ScaledMMLinearKernel for CompressedTensorsW8A8Fp8",
+        "occurrences": 0 if variant == "bf16" else 1,
+    }
+
+
+@contextlib.contextmanager
+def mocked_train_compute(root):
+    model = root / "base-model"
+    model.mkdir(mode=0o700)
+    (model / "config.json").write_bytes(b"{}\n")
+    run = root / "runs/run"
+
+    def prepare(_input_raw, _inputs, _working, _model_manifest_sha256):
+        adapter = run / "adapter"
+        adapter.mkdir(mode=0o700, parents=True)
+        (adapter / "adapter_config.json").write_bytes(b"{}\n")
+        (adapter / "adapter_model.safetensors").write_bytes(b"adapter\n")
+
+    def subprocess(_interpreter, command, arguments, _log, _timeout):
+        if command != "_merge":
+            raise AssertionError("unexpected train subprocess")
+        output = Path(arguments[-1])
+        output.mkdir(mode=0o700)
+        (output / "config.json").write_bytes(b"{}\n")
+        (output / "model.safetensors").write_bytes(b"merged-model\n")
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(runtime, "MODEL", model))
+        stack.enter_context(mock.patch.object(runtime, "RUN", run))
+        stack.enter_context(mock.patch.object(runtime, "_verify_base_model", return_value="7" * 64))
+        stack.enter_context(mock.patch.object(runtime, "_run_checked"))
+        stack.enter_context(mock.patch.object(runtime, "_gpu_probe", return_value=gpu_probe("train")))
+        stack.enter_context(mock.patch.object(runtime, "_prepare_training", side_effect=prepare))
+        stack.enter_context(mock.patch.object(runtime, "_subprocess_stage", side_effect=subprocess))
+        yield
+
+
+@contextlib.contextmanager
+def mocked_branch_compute():
+    def subprocess(_interpreter, command, arguments, _log, _timeout):
+        if command != "_quantize":
+            raise AssertionError("unexpected branch subprocess")
+        output = Path(arguments[-1])
+        output.mkdir(mode=0o700)
+        (output / "config.json").write_bytes(b"{}\n")
+        (output / "model.safetensors").write_bytes(b"quantized-model\n")
+
+    def evaluate(variant, _model, claim, dev, _working):
+        latency = {"bf16": 30, "dynamic_fp8": 20, "static_fp8": 10}[variant]
+        receipt, summary = runtime._receipt(
+            variant,
+            claim,
+            dev,
+            [
+                (
+                    1.0,
+                    latency,
+                    None,
+                    digest((variant + row["reference"]).encode()),
+                    row["reference"],
+                )
+                for row in dev
+            ],
+        )
+        return receipt, summary, test_kernel(variant)
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(runtime, "_h100", return_value=object()))
+        stack.enter_context(mock.patch.object(runtime, "_verify_retained_model"))
+        stack.enter_context(mock.patch.object(runtime, "_gpu_probe", return_value=gpu_probe("branch")))
+        stack.enter_context(mock.patch.object(runtime, "_subprocess_stage", side_effect=subprocess))
+        stack.enter_context(mock.patch.object(runtime, "_evaluate", side_effect=evaluate))
+        yield
+
+
 class StudentRuntimeTest(unittest.TestCase):
     def test_v4_split_images_and_budget_wire_are_exact(self):
         self.assertEqual(
@@ -254,7 +378,7 @@ class StudentRuntimeTest(unittest.TestCase):
             mixed = json.loads(claim_path.read_bytes())
             mixed["definition"]["max_gpu_seconds"] = runtime.MAX_TRAIN_GPU_SECONDS
             with self.assertRaisesRegex(ValueError, "wrong typed fields"):
-                runtime._validate_claim(compact(mixed), False, "fixture")
+                runtime._validate_claim(compact(mixed), False)
 
             untyped = json.loads(claim_path.read_bytes())
             untyped["definition"]["max_total_gpu_seconds"] = float(
@@ -262,7 +386,7 @@ class StudentRuntimeTest(unittest.TestCase):
             )
             untyped["student_job_id"] = digest(compact(untyped["definition"]))
             with self.assertRaisesRegex(ValueError, "outside its fixed range"):
-                runtime._validate_claim(compact(untyped), False, "fixture")
+                runtime._validate_claim(compact(untyped), False)
 
             mutable = json.loads(claim_path.read_bytes())
             mutable["definition"]["student_train_runtime_image_reference"] = (
@@ -270,7 +394,7 @@ class StudentRuntimeTest(unittest.TestCase):
             )
             mutable["student_job_id"] = digest(compact(mutable["definition"]))
             with self.assertRaisesRegex(ValueError, "immutable"):
-                runtime._validate_claim(compact(mutable), False, "fixture")
+                runtime._validate_claim(compact(mutable), False)
 
             same_digest = json.loads(claim_path.read_bytes())
             same_digest["definition"]["student_branch_runtime_image_reference"] = (
@@ -278,14 +402,14 @@ class StudentRuntimeTest(unittest.TestCase):
             )
             same_digest["student_job_id"] = digest(compact(same_digest["definition"]))
             with self.assertRaisesRegex(ValueError, "distinct digests"):
-                runtime._validate_claim(compact(same_digest), False, "fixture")
+                runtime._validate_claim(compact(same_digest), False)
 
             reordered = json.loads(claim_path.read_bytes())
             image = reordered["definition"].pop("student_train_runtime_image_reference")
             reordered["definition"]["student_train_runtime_image_reference"] = image
             reordered["student_job_id"] = digest(compact(reordered["definition"]))
             with self.assertRaisesRegex(ValueError, "wrong typed fields"):
-                runtime._validate_claim(compact(reordered), False, "fixture")
+                runtime._validate_claim(compact(reordered), False)
 
     def test_artifact_roles_are_exact_and_operations_are_separated(self):
         with tempfile.TemporaryDirectory(prefix="dragontales-student-role-") as temporary:
@@ -305,7 +429,7 @@ class StudentRuntimeTest(unittest.TestCase):
         with mock.patch.object(
             runtime, "_artifact_role", return_value="student-branch"
         ), self.assertRaisesRegex(ValueError, "student-train operation is forbidden"):
-            runtime.train_stage(missing, missing, missing, "fixture")
+            runtime.train_stage(missing, missing, missing)
         with mock.patch.object(
             runtime, "_artifact_role", return_value="student-train"
         ), self.assertRaisesRegex(ValueError, "student-branch operation is forbidden"):
@@ -318,7 +442,6 @@ class StudentRuntimeTest(unittest.TestCase):
                 missing,
                 "bf16",
                 missing,
-                "fixture",
             )
         with mock.patch.object(
             runtime, "_artifact_role", return_value="student-train"
@@ -375,7 +498,7 @@ class StudentRuntimeTest(unittest.TestCase):
                 write_terminal(output, store, result)
 
             train_output = root / "train"
-            with mock.patch.object(
+            with mocked_train_compute(root), mock.patch.object(
                 runtime, "_compute_alarm_seconds", side_effect=budget
             ), mock.patch.object(
                 runtime.signal,
@@ -386,15 +509,13 @@ class StudentRuntimeTest(unittest.TestCase):
             ), mock.patch.object(
                 runtime, "_artifact_role", return_value="student-train"
             ):
-                runtime.train_stage(
-                    claim_path, input_path, train_output, mode="fixture"
-                )
+                runtime.train_stage(claim_path, input_path, train_output)
 
             train_path, fanout_path, model, manifest, _fanout = fixture_fanout(
                 root, claim, train_output
             )
             branch_output = root / "branch"
-            with mock.patch.object(
+            with mocked_branch_compute(), mock.patch.object(
                 runtime, "_compute_alarm_seconds", side_effect=budget
             ), mock.patch.object(
                 runtime.signal,
@@ -414,7 +535,6 @@ class StudentRuntimeTest(unittest.TestCase):
                     manifest,
                     "bf16",
                     branch_output,
-                    mode="fixture",
                 )
 
         self.assertEqual(
@@ -831,8 +951,7 @@ class StudentRuntimeTest(unittest.TestCase):
             train_source.index('"parity"'),
             train_source.index("_gpu_probe(working)"),
         )
-        self.assertEqual(runtime.recipe_sha256("production"), PRODUCTION_RECIPE_SHA256)
-        self.assertEqual(runtime.recipe_sha256("fixture"), FIXTURE_RECIPE_SHA256)
+        self.assertEqual(runtime.recipe_sha256(), PRODUCTION_RECIPE_SHA256)
 
     def test_quantization_recipes_are_literal(self):
         dynamic = runtime._quant_recipe("dynamic_fp8")
@@ -1009,15 +1128,15 @@ class StudentRuntimeTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "alias"):
                 runtime.serve(model, manifest_path, "invalid alias", key)
 
-    def test_fixture_train_then_three_independent_branches(self):
+    def test_production_contract_with_mocked_compute_runs_three_independent_branches(self):
         with tempfile.TemporaryDirectory(prefix="dragontales-staged-student-") as temporary:
             root = Path(temporary)
             claim_path, input_path, claim, inputs = fixture_files(root)
             train_output = root / "train-output"
-            with mock.patch.object(
+            with mocked_train_compute(root), mock.patch.object(
                 runtime, "_artifact_role", return_value="student-train"
             ):
-                runtime.train_stage(claim_path, input_path, train_output, "fixture")
+                runtime.train_stage(claim_path, input_path, train_output)
             train = parse_line(train_output / "result.json")
             self.assertEqual(train["schema_version"], "dragontales.student-train-result.v1")
             self.assertEqual(train["outcome"]["kind"], "succeeded")
@@ -1056,7 +1175,6 @@ class StudentRuntimeTest(unittest.TestCase):
                     train_path,
                     wrong_image_fanout,
                     "bf16",
-                    "fixture",
                 )
             legacy_fanout = root / "legacy-fanout.json"
             legacy = dict(fanout)
@@ -1070,7 +1188,6 @@ class StudentRuntimeTest(unittest.TestCase):
                     train_path,
                     legacy_fanout,
                     "bf16",
-                    "fixture",
                 )
             untyped_fanout = root / "untyped-fanout.json"
             untyped = json.loads(compact(fanout))
@@ -1084,7 +1201,6 @@ class StudentRuntimeTest(unittest.TestCase):
                     train_path,
                     untyped_fanout,
                     "bf16",
-                    "fixture",
                 )
             untyped_branch = root / "untyped-branch.json"
             untyped = json.loads(compact(fanout))
@@ -1100,12 +1216,11 @@ class StudentRuntimeTest(unittest.TestCase):
                     train_path,
                     untyped_branch,
                     "bf16",
-                    "fixture",
                 )
             branch_results = []
             for variant, branch_claim in zip(runtime.VARIANTS, fanout["branches"]):
                 output = root / f"branch-{variant}"
-                with mock.patch.object(
+                with mocked_branch_compute(), mock.patch.object(
                     runtime, "_artifact_role", return_value="student-branch"
                 ):
                     runtime.branch_stage(
@@ -1117,7 +1232,6 @@ class StudentRuntimeTest(unittest.TestCase):
                         manifest,
                         variant,
                         output,
-                        "fixture",
                     )
                 result = parse_line(output / "result.json")
                 branch_results.append(result)
@@ -1146,7 +1260,7 @@ class StudentRuntimeTest(unittest.TestCase):
             )
 
             failed_output = root / "branch-failed"
-            with mock.patch.object(
+            with mocked_branch_compute(), mock.patch.object(
                 runtime, "_model_artifact", side_effect=RuntimeError("seal failed")
             ), mock.patch.object(
                 runtime, "_artifact_role", return_value="student-branch"
@@ -1160,7 +1274,6 @@ class StudentRuntimeTest(unittest.TestCase):
                     manifest,
                     "bf16",
                     failed_output,
-                    "fixture",
                 )
             failed = parse_line(failed_output / "result.json")["outcome"]
             self.assertEqual(failed["kind"], "failed")
@@ -1180,11 +1293,9 @@ class StudentRuntimeTest(unittest.TestCase):
             with mock.patch.object(
                 runtime, "_artifact_role", return_value="student-train"
             ), self.assertRaisesRegex(ValueError, "exactly one LF"):
-                runtime.train_stage(claim_path, input_path, output, "fixture")
+                runtime.train_stage(claim_path, input_path, output)
             self.assertFalse(output.exists())
-            self.assertNotEqual(
-                runtime.recipe_sha256("production"), runtime.recipe_sha256("fixture")
-            )
+            self.assertNotIn("fixture", inspect.getsource(runtime.main))
 
     def test_fixed_scores_use_reference_denominator_and_floor(self):
         self.assertEqual(runtime._score("exact_text_v1", "A", "a"), 0)

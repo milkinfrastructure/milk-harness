@@ -26,8 +26,7 @@ COPY --chmod=0444 milk_harness/__init__.py milk_harness/evidence.py milk_harness
 COPY --chmod=0444 deploy/baseten/adapter.py deploy/baseten/winner.py ./deploy/baseten/
 COPY --chmod=0444 deploy/modal/admit.py ./deploy/modal/admit.py
 RUN PYTHONDONTWRITEBYTECODE=1 python3 -c \
-  'from importlib.metadata import version; import modal, truss; import deploy.baseten.adapter, deploy.baseten.winner, deploy.modal.admit; import milk_harness.baseten_winner, milk_harness.jobs, milk_harness.modal_jobs, milk_harness.provider_acceptance, milk_harness.scheduler; assert modal.__version__ == version("modal") == "1.5.4"; assert version("truss") == "0.18.25"' && \
-    test "$(/usr/local/bin/truss --version)" = "truss, version 0.18.25"
+  'from importlib.metadata import version; import modal; import deploy.baseten.adapter, deploy.baseten.winner, deploy.modal.admit; import milk_harness.baseten_winner, milk_harness.jobs, milk_harness.modal_jobs, milk_harness.provider_acceptance, milk_harness.scheduler; assert modal.__version__ == version("modal") == "1.5.4"'
 
 ENV HOME=/tmp \
     PYTHONDONTWRITEBYTECODE=1 \

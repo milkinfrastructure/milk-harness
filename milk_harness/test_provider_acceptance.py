@@ -154,6 +154,41 @@ class ProviderAcceptanceTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             provider_acceptance.encode(value)
 
+    def test_modal_accepts_explicit_baseten_capability_absence(self):
+        value = gpu_acceptance()
+        value["selection"] = {
+            "selected_provider": "modal",
+            "provider_identity": {
+                "provider": "modal",
+                "workspace_id": "ws-production",
+                "workspace_name": "milk-production",
+                "environment_id": "en-production",
+                "environment_name": "production",
+                "app_id": "ap-production",
+                "app_name": "milk-gpu-jobs",
+            },
+            "primary_preflight": {
+                "provider": "baseten",
+                "outcome": "retryable_unavailable",
+                "reason": "capability_unavailable",
+                "status": None,
+                "evidence_sha256": "d" * 64,
+                "observed_at": "2026-08-27T12:00:00Z",
+            },
+            "fallback_preflight": {
+                "provider": "modal",
+                "outcome": "ready",
+                "evidence_sha256": "e" * 64,
+                "observed_at": "2026-08-27T12:00:01Z",
+            },
+        }
+
+        self.assertEqual(provider_acceptance.validate(value), value)
+
+        value["selection"]["primary_preflight"]["status"] = 503
+        with self.assertRaisesRegex(ValueError, "fallback-safe"):
+            provider_acceptance.validate(value)
+
 
 if __name__ == "__main__":
     unittest.main()

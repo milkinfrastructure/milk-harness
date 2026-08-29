@@ -96,6 +96,15 @@ PROVIDER_RUNTIME_FIELDS = (
     "modal_student_train_volume_name",
     "modal_student_train_volume_id",
 )
+GATEWAY_DEPLOYMENT_FIELDS = (
+    "source_commit",
+    "image_admission_sha256",
+    "release_sha256",
+    "application_id",
+    "application_version",
+    "container_image",
+    "worker_version_id",
+)
 RUN_ARTIFACTS = (
     "prompts/iterate.txt",
     "decision.schema.json",
@@ -1132,6 +1141,7 @@ def _validated_run_manifest(raw, confirmed_sha256, harness_source_commit, root):
         "images",
         "image_release_sha256",
         "gateway_config_sha256",
+        "gateway_deployment",
         "gateway_job_contract",
         "provider_secret_names",
         "store_identity_sha256s",
@@ -1140,7 +1150,7 @@ def _validated_run_manifest(raw, confirmed_sha256, harness_source_commit, root):
     }
     if (
         set(manifest) != expected_keys
-        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v2"
+        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v3"
         or manifest.get("provider_policy")
         != {"primary": "baseten", "fallback": "modal"}
         or not isinstance(harness_source_commit, str)
@@ -1155,6 +1165,7 @@ def _validated_run_manifest(raw, confirmed_sha256, harness_source_commit, root):
     ):
         raise ValueError("confirmed run config is invalid")
     _scope(manifest["scope_prefix"])
+    _gateway_deployment(manifest.get("gateway_deployment"))
     _provider_runtime(manifest.get("provider_runtime"))
     _provider_secret_names(manifest.get("provider_secret_names"))
     store_identities = manifest.get("store_identity_sha256s")
@@ -1208,6 +1219,66 @@ def _validated_run_manifest(raw, confirmed_sha256, harness_source_commit, root):
         )
     ):
         raise ValueError("confirmed gateway GPU job contract is invalid")
+    return manifest
+
+
+def _gateway_deployment(value):
+    if not isinstance(value, dict) or set(value) != set(GATEWAY_DEPLOYMENT_FIELDS):
+        raise ValueError("gateway deployment identity is invalid")
+    for name in ("application_id", "worker_version_id"):
+        item = value.get(name)
+        try:
+            parsed = uuid.UUID(item)
+        except (AttributeError, ValueError) as error:
+            raise ValueError("gateway deployment identity is invalid") from error
+        if parsed.int == 0 or str(parsed) != item:
+            raise ValueError("gateway deployment identity is invalid")
+    if (
+        SOURCE_COMMIT.fullmatch(value.get("source_commit") or "") is None
+        or HEX64.fullmatch(value.get("image_admission_sha256") or "") is None
+        or HEX64.fullmatch(value.get("release_sha256") or "") is None
+        or type(value.get("application_version")) is not int
+        or value["application_version"] <= 0
+        or not isinstance(value.get("container_image"), str)
+        or not 1 <= len(value["container_image"].encode()) <= 2048
+    ):
+        raise ValueError("gateway deployment identity is invalid")
+    return value
+
+
+def _gateway_deployment_arguments(arguments):
+    return {
+        "source_commit": arguments.gateway_source_commit,
+        "image_admission_sha256": arguments.gateway_image_admission_sha256,
+        "release_sha256": arguments.gateway_release_sha256,
+        "application_id": arguments.gateway_container_application_id,
+        "application_version": arguments.gateway_container_application_version,
+        "container_image": arguments.gateway_container_image,
+        "worker_version_id": arguments.gateway_worker_version_id,
+    }
+
+
+def verify_route_run_config(
+    manifest_raw,
+    confirmed_sha256,
+    harness_source_commit,
+    root,
+    gateway_config_raw,
+    gateway_image,
+    gateway_deployment,
+):
+    manifest = _validated_run_manifest(
+        manifest_raw, confirmed_sha256, harness_source_commit, root
+    )
+    config = _strict_object(gateway_config_raw)
+    if (
+        hashlib.sha256(canonical_json(config)).hexdigest()
+        != manifest["gateway_config_sha256"]
+        or manifest["images"]["gateway"] != immutable_image("gateway", gateway_image)
+        or manifest["gateway_deployment"]
+        != _gateway_deployment(gateway_deployment)
+    ):
+        raise ValueError("route gateway settings differ from the confirmed run config")
     return manifest
 
 
@@ -1266,7 +1337,7 @@ def verify_gateway_ingest_run_config(
         manifest_raw not in {canonical_manifest, canonical_manifest.removesuffix(b"\n")}
         or not isinstance(confirmed_sha256, str)
         or hashlib.sha256(canonical_manifest).hexdigest() != confirmed_sha256
-        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v2"
+        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v3"
         or manifest.get("provider_policy")
         != {"primary": "baseten", "fallback": "modal"}
         or not isinstance(manifest.get("images"), dict)
@@ -1283,6 +1354,7 @@ def verify_gateway_ingest_run_config(
         )
     ):
         raise ValueError("confirmed gateway ingest config is invalid")
+    _gateway_deployment(manifest.get("gateway_deployment"))
     config = _strict_object(gateway_config_raw)
     canonical_config = canonical_json(config)
     actual_identities = {
@@ -1327,6 +1399,7 @@ def verify_provider_run_config(
     provider_runtime,
     provider_secret_names,
     store_identities,
+    gateway_deployment,
 ):
     manifest = _validated_run_manifest(
         manifest_raw, confirmed_sha256, harness_source_commit, root
@@ -1354,6 +1427,8 @@ def verify_provider_run_config(
         or manifest["scope_prefix"] != scope_prefix
         or manifest["images"] != actual_images
         or manifest["image_release_sha256"] != image_release_sha256
+        or manifest["gateway_deployment"]
+        != _gateway_deployment(gateway_deployment)
         or manifest["provider_runtime"] != _provider_runtime(provider_runtime)
         or manifest["provider_secret_names"]
         != _provider_secret_names(provider_secret_names)
@@ -2103,7 +2178,9 @@ def main(argv=None):
 
     run_config = commands.add_parser("validate-run-config")
     run_config.add_argument(
-        "--phase", choices=("gateway", "provider", "gateway_ingest"), required=True
+        "--phase",
+        choices=("gateway", "provider", "gateway_ingest", "route"),
+        required=True,
     )
     run_config.add_argument("--manifest", required=True)
     run_config.add_argument("--confirmed-sha256", required=True)
@@ -2116,6 +2193,14 @@ def main(argv=None):
     for name in IMAGE_REPOSITORIES:
         run_config.add_argument(f"--{name.replace('_', '-')}-image")
     run_config.add_argument("--image-release-sha256")
+    run_config.add_argument("--gateway-source-commit")
+    run_config.add_argument("--gateway-image-admission-sha256")
+    run_config.add_argument("--gateway-release-sha256")
+    run_config.add_argument("--gateway-container-application-id")
+    run_config.add_argument("--gateway-container-application-version", type=int)
+    run_config.add_argument("--gateway-container-image")
+    run_config.add_argument("--gateway-worker-version-id")
+    run_config.add_argument("--gateway-anchor-output")
     for name in PROVIDER_RUNTIME_FIELDS:
         run_config.add_argument(f"--{name.replace('_', '-')}")
     for name in PROVIDER_SECRET_FIELDS:
@@ -2228,6 +2313,28 @@ def main(argv=None):
                 os.environ.get("MILK_GATEWAY_INGEST_CONTROL_R2_ACCESS_KEY_ID"),
                 os.environ.get("MILK_GATEWAY_INGEST_ROUTE_R2_ACCESS_KEY_ID"),
             )
+        elif arguments.phase == "route":
+            if (
+                arguments.gateway_config is None
+                or arguments.gateway_image is None
+            ):
+                raise ValueError("route config validation inputs are required")
+            manifest = verify_route_run_config(
+                manifest_raw,
+                arguments.confirmed_sha256,
+                arguments.harness_source_commit,
+                arguments.root,
+                _regular_file(arguments.gateway_config).read_bytes(),
+                arguments.gateway_image,
+                _gateway_deployment_arguments(arguments),
+            )
+            if arguments.gateway_anchor_output is not None:
+                output = Path(arguments.gateway_anchor_output)
+                if output.exists() or output.is_symlink():
+                    raise ValueError("gateway anchor output must be new")
+                with output.open("xb") as stream:
+                    stream.write(canonical_json(manifest["gateway_deployment"]))
+                output.chmod(0o600)
         else:
             _validate_create_authority_environment()
             images = {
@@ -2244,6 +2351,7 @@ def main(argv=None):
                 scope_prefix=arguments.scope_prefix,
                 images=images,
                 image_release_sha256=arguments.image_release_sha256,
+                gateway_deployment=_gateway_deployment_arguments(arguments),
                 provider_runtime={
                     name: getattr(arguments, name)
                     for name in PROVIDER_RUNTIME_FIELDS

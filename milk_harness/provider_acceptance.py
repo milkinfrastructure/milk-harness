@@ -343,13 +343,21 @@ def _modal_selection(value):
     reason = primary["reason"]
     status = primary["status"]
     if (
-        reason == "timeout"
+        reason == "capability_unavailable"
+        and status is not None
+        or reason == "timeout"
         and status is not None
         or reason == "rate_limited"
         and status != 429
         or reason == "server_unavailable"
         and (type(status) is not int or not 500 <= status <= 599)
-        or reason not in {"timeout", "rate_limited", "server_unavailable"}
+        or reason
+        not in {
+            "capability_unavailable",
+            "timeout",
+            "rate_limited",
+            "server_unavailable",
+        }
     ):
         raise ValueError("Baseten primary preflight is not fallback-safe")
     primary_at = _time(primary["observed_at"], "Baseten preflight time")

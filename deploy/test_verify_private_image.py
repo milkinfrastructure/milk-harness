@@ -46,7 +46,7 @@ class VerifierFixture:
             if self.artifact["gateway"]
             else None
         )
-        (self.evidence / "build-log.json").write_bytes(
+        build_log_raw = (
             _json(
                 {
                     "schema_version": "milk.content-free-build-log.v1",
@@ -56,6 +56,20 @@ class VerifierFixture:
                     "completed_at": "2026-01-01T00:01:00Z",
                     "sha256": "3" * 64,
                     "bytes": 123,
+                    "content_retained": False,
+                }
+            )
+            + b"\n"
+        )
+        (self.evidence / "build-log.json").write_bytes(build_log_raw)
+        (self.evidence / "ops-log-reference.json").write_bytes(
+            _json(
+                {
+                    "schema_version": "milk.private-ops-log-reference.v1",
+                    "authority": "private-release-evidence",
+                    "reference": "build-log.json",
+                    "receipt_sha256": hashlib.sha256(build_log_raw).hexdigest(),
+                    "immutable": True,
                     "content_retained": False,
                 }
             )
@@ -337,18 +351,33 @@ class VerifierFixture:
 
 
 class PrivateHarnessVerifierTests(unittest.TestCase):
-    def test_all_four_artifacts_write_content_verified_admissions(self):
+    def test_all_artifacts_write_content_verified_admissions(self):
         for artifact in VERIFY.ARTIFACTS:
             with self.subTest(artifact=artifact), tempfile.TemporaryDirectory() as directory:
                 fixture = VerifierFixture(directory, artifact)
-                image_reference, admission_sha256 = fixture.run()
+                image_reference, admission_sha256, ops_log_reference_sha256 = (
+                    fixture.run()
+                )
                 admission_raw = (fixture.evidence / "admission.json").read_bytes()
                 admission = json.loads(admission_raw)
+                receipt = json.loads(
+                    (fixture.evidence / "receipt.json").read_bytes()
+                )
                 self.assertEqual(
                     image_reference, fixture.repository + "@" + fixture.index_digest
                 )
                 self.assertEqual(
                     admission_sha256, hashlib.sha256(admission_raw).hexdigest()
+                )
+                self.assertEqual(
+                    ops_log_reference_sha256,
+                    hashlib.sha256(
+                        (fixture.evidence / "ops-log-reference.json").read_bytes()
+                    ).hexdigest(),
+                )
+                self.assertEqual(
+                    receipt["ops_log_reference_sha256"],
+                    ops_log_reference_sha256,
                 )
                 self.assertEqual(admission["artifact"], artifact)
                 self.assertEqual(
@@ -364,6 +393,19 @@ class PrivateHarnessVerifierTests(unittest.TestCase):
                     "spdx-sbom.json": fixture.raw_spdx,
                 }.items():
                     self.assertEqual((fixture.evidence / name).read_bytes(), raw)
+
+    def test_rejects_unbound_ops_log_reference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = VerifierFixture(directory)
+            reference = json.loads(
+                (fixture.evidence / "ops-log-reference.json").read_bytes()
+            )
+            reference["receipt_sha256"] = "f" * 64
+            (fixture.evidence / "ops-log-reference.json").write_bytes(
+                _json(reference) + b"\n"
+            )
+            with self.assertRaisesRegex(ValueError, "ops-log reference"):
+                fixture.run()
 
     def test_rejects_descriptor_size_and_blob_digest_mismatches(self):
         with tempfile.TemporaryDirectory() as directory:

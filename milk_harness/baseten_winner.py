@@ -629,13 +629,21 @@ def baseten_unavailable_preflight_receipt(
     if not _matches(TEAM_NAME, team_name):
         raise ValueError("Baseten team name is invalid")
     if (
-        reason == "timeout"
+        reason == "capability_unavailable"
+        and status is not None
+        or reason == "timeout"
         and status is not None
         or reason == "rate_limited"
         and status != 429
         or reason == "server_unavailable"
         and (type(status) is not int or not 500 <= status <= 599)
-        or reason not in {"timeout", "rate_limited", "server_unavailable"}
+        or reason
+        not in {
+            "capability_unavailable",
+            "timeout",
+            "rate_limited",
+            "server_unavailable",
+        }
     ):
         raise ValueError("Baseten retryable preflight outcome is invalid")
     observed_at = _utc_text(_utc(observed_at, "preflight time"))
@@ -1667,9 +1675,16 @@ class BasetenWinnerLifecycle:
         return getattr(self.runtime, name)
 
     def preflight(self):
+        observed_at = _utc(self.now(), "clock")
+        if not contract.DIRECT_IMAGE_RUNTIME_VERIFIED:
+            return baseten_unavailable_preflight_receipt(
+                self.team_name,
+                "capability_unavailable",
+                None,
+                observed_at,
+            )
         if self.runtime is None:
             raise ValueError("concrete Baseten winner runtime is required")
-        observed_at = _utc(self.now(), "clock")
         try:
             return self._provider(
                 self.runtime._preflight,

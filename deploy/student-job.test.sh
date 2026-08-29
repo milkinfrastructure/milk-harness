@@ -28,7 +28,7 @@ cleanup_work() {
 }
 
 cleanup() {
-  for name in success without-session empty-session branch failed-result missing missing-control existing production; do
+  for name in success without-session empty-session branch failed-result missing missing-control existing; do
     cleanup_work "$test_root/$name"
   done
   rm -f -- "$fake_gateway" "$fake_runner" "$fake_privilege" "$log" "$config" \
@@ -121,12 +121,12 @@ case $1 in
     esac
     exit 0
     ;;
-  fixture-train)
+  train)
     [ "$2" = --claim ] && [ -f "$3" ] && [ "$4" = --input ] && [ -f "$5" ] && \
       [ "$6" = --output ] || exit 86
     output=$7
     ;;
-  fixture-branch)
+  branch)
     [ "$2" = --claim ] && [ -f "$3" ] && [ "$4" = --input ] && [ -f "$5" ] && \
       [ "$6" = --train-result ] && [ -f "$7" ] && \
       [ "$8" = --fanout-claim ] && [ -f "$9" ] && \
@@ -172,6 +172,7 @@ exec "$@"
 EOF
 
 sed -e "s|/usr/bin/setpriv|$fake_privilege|" \
+  -e "s|/usr/local/bin/dragontales-gateway|$fake_gateway|" \
   -e "s|role_path=/usr/share/milk/student-artifact-role|role_path=$role_file|" \
   -e "s/^worker_uid=65532$/worker_uid=$worker_uid/" \
   -e "s/^worker_gid=65532$/worker_gid=$worker_gid/" \
@@ -181,8 +182,6 @@ chmod 0700 "$fake_gateway" "$fake_runner" "$fake_privilege" \
   "$wrapper" "$image_root/student-run.sh"
 
 run_wrapper() {
-  DRAGONTALES_GATEWAY_BIN=$fake_gateway \
-  DRAGONTALES_STUDENT_RUNNER=$fake_runner \
   DRAGONTALES_CONFIG_JSON=config-secret \
   MILK_CAPTURE_STORE_ACCESS_KEY_ID=capture-poison \
   MILK_CAPTURE_STORE_SECRET_ACCESS_KEY=capture-poison \
@@ -201,15 +200,13 @@ run_wrapper() {
 }
 
 run_branch() {
-  DRAGONTALES_GATEWAY_BIN=$fake_gateway \
-  DRAGONTALES_STUDENT_RUNNER=$fake_runner \
   DRAGONTALES_CONFIG_JSON=config-secret \
   MILK_CONTROL_STORE_ACCESS_KEY_ID=control-access \
   MILK_CONTROL_STORE_SECRET_ACCESS_KEY=control-secret \
   MILK_CONTROL_STORE_SESSION_TOKEN=control-session \
   TEST_LOG=$log TEST_CONFIG=$config TEST_RUNNER_BEHAVIOR=$2 \
   TEST_WORKER_UID=$worker_uid TEST_WORKER_GID=$worker_gid \
-    "$wrapper" fixture-branch --config "$config" --student-job-id "$1" \
+    "$wrapper" branch --config "$config" --student-job-id "$1" \
       --variant "$3" --work-dir "$4"
 }
 
@@ -225,33 +222,31 @@ assert_calls() {
 job_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 success_work=$test_root/success
 : >"$log"
-receipt=$(run_wrapper "$job_id" success fixture-train "$success_work")
+receipt=$(run_wrapper "$job_id" success train "$success_work")
 [ "$receipt" = '{"status":"ready"}' ]
 assert_calls "gateway|--config|$config|materialize-student-job|--student-job-id|$job_id|--stage-dir|$success_work/input
-runner|fixture-train|--claim|$success_work/input/claim.json|--input|$success_work/input/input.json|--output|$success_work/worker/output
+runner|train|--claim|$success_work/input/claim.json|--input|$success_work/input/input.json|--output|$success_work/worker/output
 gateway|--config|$config|ingest-student-train-execution|--result|$success_work/worker/output/result.json|--upload|$success_work/worker/output/upload.json|--artifact-dir|$success_work/worker/output/artifact"
 
 without_session_work=$test_root/without-session
 : >"$log"
-receipt=$(DRAGONTALES_GATEWAY_BIN=$fake_gateway DRAGONTALES_STUDENT_RUNNER=$fake_runner \
-  DRAGONTALES_CONFIG_JSON=config-secret \
+receipt=$(DRAGONTALES_CONFIG_JSON=config-secret \
   MILK_CONTROL_STORE_ACCESS_KEY_ID=control-access \
   MILK_CONTROL_STORE_SECRET_ACCESS_KEY=control-secret \
   TEST_LOG=$log TEST_CONFIG=$config TEST_RUNNER_BEHAVIOR=success \
   TEST_WORKER_UID=$worker_uid TEST_WORKER_GID=$worker_gid \
-  "$wrapper" fixture-train --config "$config" --student-job-id "$job_id" \
+  "$wrapper" train --config "$config" --student-job-id "$job_id" \
     --work-dir "$without_session_work")
 [ "$receipt" = '{"status":"ready"}' ]
 
 empty_session_work=$test_root/empty-session
 : >"$log"
 set +e
-DRAGONTALES_GATEWAY_BIN=$fake_gateway DRAGONTALES_STUDENT_RUNNER=$fake_runner \
 DRAGONTALES_CONFIG_JSON=config-secret MILK_CONTROL_STORE_ACCESS_KEY_ID=control-access \
 MILK_CONTROL_STORE_SECRET_ACCESS_KEY=control-secret MILK_CONTROL_STORE_SESSION_TOKEN= \
 TEST_LOG=$log TEST_CONFIG=$config TEST_RUNNER_BEHAVIOR=success \
 TEST_WORKER_UID=$worker_uid TEST_WORKER_GID=$worker_gid \
-  "$wrapper" fixture-train --config "$config" --student-job-id "$job_id" \
+  "$wrapper" train --config "$config" --student-job-id "$job_id" \
   --work-dir "$empty_session_work" >/dev/null 2>&1
 status=$?
 set -e
@@ -268,7 +263,7 @@ printf '%s\n' student-branch >"$role_file"
 receipt=$(run_branch "$job_id" success dynamic_fp8 "$branch_work")
 [ "$receipt" = '{"status":"ready"}' ]
 assert_calls "gateway|--config|$config|materialize-student-branch|--student-job-id|$job_id|--variant|dynamic_fp8|--stage-dir|$branch_work/input
-runner|fixture-branch|--claim|$branch_work/input/claim.json|--input|$branch_work/input/input.json|--train-result|$branch_work/input/train-result.json|--fanout-claim|$branch_work/input/fanout-claim.json|--merged-model|$branch_work/input/merged-model/model|--merged-model-manifest|$branch_work/input/merged-model/model-manifest.json|--variant|dynamic_fp8|--output|$branch_work/worker/output
+runner|branch|--claim|$branch_work/input/claim.json|--input|$branch_work/input/input.json|--train-result|$branch_work/input/train-result.json|--fanout-claim|$branch_work/input/fanout-claim.json|--merged-model|$branch_work/input/merged-model/model|--merged-model-manifest|$branch_work/input/merged-model/model-manifest.json|--variant|dynamic_fp8|--output|$branch_work/worker/output
 gateway|--config|$config|ingest-student-branch-execution|--result|$branch_work/worker/output/result.json|--upload|$branch_work/worker/output/upload.json|--artifact-dir|$branch_work/worker/output/artifact"
 
 printf '%s\n' student-train >"$role_file"
@@ -276,7 +271,7 @@ printf '%s\n' student-train >"$role_file"
 failed_work=$test_root/failed-result
 : >"$log"
 set +e
-run_wrapper "$job_id" failed-result fixture-train "$failed_work" >/dev/null 2>&1
+run_wrapper "$job_id" failed-result train "$failed_work" >/dev/null 2>&1
 status=$?
 set -e
 [ "$status" -eq 23 ]
@@ -285,7 +280,7 @@ set -e
 missing_work=$test_root/missing
 : >"$log"
 set +e
-run_wrapper "$job_id" missing fixture-train "$missing_work" >/dev/null 2>&1
+run_wrapper "$job_id" missing train "$missing_work" >/dev/null 2>&1
 status=$?
 set -e
 [ "$status" -eq 29 ] && [ "$(grep -c '^gateway|' "$log")" -eq 1 ]
@@ -293,10 +288,9 @@ set -e
 missing_control_work=$test_root/missing-control
 : >"$log"
 set +e
-DRAGONTALES_GATEWAY_BIN=$fake_gateway DRAGONTALES_STUDENT_RUNNER=$fake_runner \
 TEST_LOG=$log TEST_CONFIG=$config TEST_RUNNER_BEHAVIOR=success \
 TEST_WORKER_UID=$worker_uid TEST_WORKER_GID=$worker_gid \
-  "$wrapper" fixture-train --config "$config" --student-job-id "$job_id" \
+  "$wrapper" train --config "$config" --student-job-id "$job_id" \
   --work-dir "$missing_control_work" >/dev/null 2>&1
 status=$?
 set -e
@@ -310,14 +304,6 @@ run_wrapper "$job_id" success train "$existing_work" >/dev/null 2>&1
 status=$?
 set -e
 [ "$status" -ne 0 ] && [ ! -s "$log" ]
-
-production_work=$test_root/production
-: >"$log"
-set +e
-run_wrapper "$job_id" success train "$production_work" >/dev/null 2>&1
-status=$?
-set -e
-[ "$status" -ne 0 ] && [ ! -s "$log" ] && [ ! -e "$production_work" ]
 
 serve_model=$test_root/serve/model
 serve_manifest=$test_root/serve/model-manifest.json
@@ -355,6 +341,7 @@ grep -Fq 'run_as_worker /usr/bin/test -r "$config"' "$source_wrapper"
 grep -Fq 'mkdir -m 0711 -- "$work_dir"' "$source_wrapper"
 grep -Fq 'chown -hR "$worker_uid:$worker_gid" "$work_dir/input" "$worker_dir"' "$source_wrapper"
 grep -Fq -- '--no-new-privs "$runner" "$@"' "$source_wrapper"
+! grep -Eq 'fixture-train|fixture-branch|DRAGONTALES_(GATEWAY_BIN|STUDENT_RUNNER)' "$source_wrapper"
 
 sh -n "$source_wrapper" "$wrapper" "$0"
 if command -v shellcheck >/dev/null 2>&1; then

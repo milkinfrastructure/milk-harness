@@ -3,6 +3,8 @@ import hashlib
 import json
 import tempfile
 import unittest
+import urllib.error
+from unittest import mock
 
 from deploy.baseten import winner as winner_contract
 from milk_harness import baseten_winner
@@ -16,6 +18,7 @@ from milk_harness.jobs import (
     _workload_and_entries,
     BasetenJobs,
     dispatch_cross_provider_outboxes,
+    dispatch_provider_teardowns,
     discover_provider_teardown_authorizations,
     build_provider_teardown_result,
     discover_gpu_launches,
@@ -167,6 +170,7 @@ def teardown_record(store, run_id, selected_provider):
         f"campaigns/v1/{CAMPAIGN}/winner-jobs/{run_id}/gateway-result.json"
     )
     result = json.loads(result_raw)
+    result_raw = canonical_json(result)
     acceptance = result["provider_acceptance"]
     authorization = {
         "schema_version": "dragontales.provider-teardown-authorization.v1",
@@ -200,6 +204,42 @@ def teardown_record(store, run_id, selected_provider):
         "canary_route_raw": None,
         "zero_route_raw": None,
     }
+
+
+def modal_absence_ack(record):
+    winner = record["winner_result"]
+    admission = winner["admission"]
+    verified = dt.datetime.fromisoformat(
+        record["authorization"]["authorized_at"].replace("Z", "+00:00")
+    ) + dt.timedelta(seconds=1)
+    return canonical_json(
+        {
+            "schema_version": "milk.modal-candidate-key-ack.v1",
+            "run_id": record["authorization"]["run_id"],
+            "selected_provider": "modal",
+            "winner_admission_sha256": hashlib.sha256(
+                winner_contract.receipt_bytes(admission)
+            ).hexdigest(),
+            "gateway_result_sha256": hashlib.sha256(
+                winner_contract.result_bytes(winner)
+            ).hexdigest(),
+            "candidate_key_sha256": admission["candidate_api_key_sha256"],
+            "service_not_after": admission["service_not_after"],
+            "gateway_anchor": {
+                "source_commit": "1" * 40,
+                "image_admission_sha256": "2" * 64,
+                "release_sha256": "3" * 64,
+                "application_id": "11111111-1111-1111-1111-111111111111",
+                "application_version": 1,
+                "container_image": "registry.cloudflare.com/gateway:1",
+                "worker_version_id": "22222222-2222-2222-2222-222222222222",
+            },
+            "state": "absent",
+            "gateway_release_id": "33333333-3333-3333-3333-333333333333",
+            "gateway_release_sha256": "4" * 64,
+            "verified_at": verified.isoformat().replace("+00:00", "Z"),
+        }
+    )
 
 
 def resources():
@@ -519,8 +559,8 @@ class ModalFallbackWinnerLifecycle:
         self.calls += 1
         return baseten_winner.baseten_unavailable_preflight_receipt(
             TEAM,
-            "server_unavailable",
-            503,
+            "capability_unavailable",
+            None,
             NOW,
         )
 
@@ -1099,15 +1139,63 @@ class JobsProviderIntegrationTest(unittest.TestCase):
             mutation_index = events.index(("provider-create", 0))
             self.assertLess(definition_index, mutation_index)
             later = LaterLeaseModalWinnerLifecycle()
+            record = teardown_record(store, run_id, "modal")
+            with mock.patch(
+                "milk_harness.jobs.discover_provider_teardown_authorizations",
+                return_value=[record],
+            ):
+                missing_ack = mock.Mock()
+                missing_ack.get.side_effect = urllib.error.HTTPError(
+                    "https://control.example/absent-ack.json",
+                    404,
+                    "not found",
+                    {},
+                    None,
+                )
+                pending = dispatch_provider_teardowns(
+                    object(),
+                    later,
+                    store=store,
+                    control_store=missing_ack,
+                    campaign_id=CAMPAIGN,
+                    scope_prefix=SCOPE_PREFIX,
+                    evidence_store_identity_sha256="d" * 64,
+                    baseten_values_by_run_id={},
+                    now=lambda: NOW,
+                )
+            self.assertEqual(pending["state"], "hold")
+            self.assertEqual(pending["verified"], 1)
+            self.assertEqual(pending["completed"], 0)
+            self.assertEqual(pending["results"], [])
+            self.assertEqual(pending["teardown_result_references"], [])
+            self.assertEqual(later.calls, [])
+            unsafe_ack = json.loads(modal_absence_ack(record))
+            self.assertNotEqual(
+                unsafe_ack["gateway_result_sha256"],
+                record["authorization"]["winner_result_sha256"],
+            )
+            self.assertEqual(
+                unsafe_ack["gateway_result_sha256"],
+                hashlib.sha256(
+                    winner_contract.result_bytes(record["winner_result"])
+                ).hexdigest(),
+            )
+            unsafe_ack["state"] = "installed"
+            with self.assertRaisesRegex(ValueError, "absence acknowledgement"):
+                teardown_authorized_modal_winner(
+                    later,
+                    store=store,
+                    campaign_id=CAMPAIGN,
+                    authorization_record=record,
+                    candidate_absence_raw=canonical_json(unsafe_ack),
+                )
+            self.assertEqual(later.calls, [])
             teardown = teardown_authorized_modal_winner(
                 later,
                 store=store,
                 campaign_id=CAMPAIGN,
-                authorization_record=teardown_record(
-                    store,
-                    run_id,
-                    "modal",
-                ),
+                authorization_record=record,
+                candidate_absence_raw=modal_absence_ack(record),
             )
             self.assertEqual(teardown["state"], "zero")
             self.assertEqual(later.calls[0][0], run_id)

@@ -845,7 +845,7 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "hard non-200"):
                 lifecycle.preflight()
 
-    def test_preflight_fails_before_provider_calls_while_direct_image_is_unsafe(self):
+    def test_preflight_reports_capability_unavailable_without_provider_calls(self):
         opener = RuntimeOpener([])
         guards = []
         lifecycle = baseten_winner.BasetenWinnerLifecycle(
@@ -861,10 +861,12 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
             now=self.clock,
         )
 
-        with self.assertRaisesRegex(RuntimeError, "no-build is provider-enabled"):
-            lifecycle.preflight()
+        result = lifecycle.preflight()
 
-        self.assertEqual(guards, [True])
+        self.assertEqual(result["outcome"], "retryable_unavailable")
+        self.assertEqual(result["reason"], "capability_unavailable")
+        self.assertIsNone(result["status"])
+        self.assertEqual(guards, [])
         self.assertEqual(opener.requests, [])
 
     def test_concrete_runtime_uses_only_pinned_truss_and_exact_team(self):

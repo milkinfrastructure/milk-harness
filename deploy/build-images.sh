@@ -355,6 +355,24 @@ Path(target).write_text(json.dumps({
 }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
   rm -f -- "$build_log"
+  "$python" - "$artifact_dir/build-log.json" \
+    "$artifact_dir/ops-log-reference.json" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+source, target = map(Path, sys.argv[1:])
+raw = source.read_bytes()
+target.write_text(json.dumps({
+    "schema_version": "milk.private-ops-log-reference.v1",
+    "authority": "private-release-evidence",
+    "reference": "build-log.json",
+    "receipt_sha256": hashlib.sha256(raw).hexdigest(),
+    "immutable": True,
+    "content_retained": False,
+}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
   [ "$build_status" -eq 0 ] || fail "$artifact image build failed" 70
 
   failure_stage=verify-$artifact
@@ -375,23 +393,26 @@ PY
     "$gh" auth token --hostname github.com | "$python" "$@"
   ) || fail "$artifact immutable manifest verification failed" 70
   set -- $immutable
-  [ "$#" -eq 2 ] || fail "$artifact admission receipt is invalid" 70
+  [ "$#" -eq 3 ] || fail "$artifact admission receipt is invalid" 70
   immutable=$1
   admission_sha256=$2
-  printf '%s\t%s\t%s\n' "$artifact" "$immutable" "$admission_sha256" >>"$references"
+  ops_log_reference_sha256=$3
+  printf '%s\t%s\t%s\t%s\n' \
+    "$artifact" "$immutable" "$admission_sha256" \
+    "$ops_log_reference_sha256" >>"$references"
   printf '%s\n' "$immutable"
 }
 
+build_one planner Dockerfile.planner \
+  ghcr.io/milkinfrastructure/milk-planner no
+build_one jobs Dockerfile.jobs \
+  ghcr.io/milkinfrastructure/milk-jobs no
 build_one student-train deploy/student-train/Dockerfile \
   ghcr.io/milkinfrastructure/milk-student-train yes
 build_one student-branch deploy/student-branch/Dockerfile \
   ghcr.io/milkinfrastructure/milk-student-branch yes
 build_one teacher-gpt-oss deploy/teacher/gpt-oss-120b/Dockerfile \
   ghcr.io/milkinfrastructure/milk-teacher-gpt-oss yes
-build_one planner Dockerfile.planner \
-  ghcr.io/milkinfrastructure/milk-planner no
-build_one jobs Dockerfile.jobs \
-  ghcr.io/milkinfrastructure/milk-jobs no
 
 failure_stage=release-receipt
 completed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -412,25 +433,26 @@ expected = {
 }
 digest = re.compile(r"sha256:[0-9a-f]{64}\Z")
 sha256 = re.compile(r"[0-9a-f]{64}\Z")
-images = []
+images = {}
 for line in Path(references_path).read_text(encoding="utf-8").splitlines():
     fields = line.split("\t")
-    if len(fields) != 3 or fields[0] not in expected:
+    if len(fields) != 4 or fields[0] not in expected or fields[0] in images:
         raise SystemExit(1)
     prefix = expected[fields[0]] + "@"
     if not fields[1].startswith(prefix) or digest.fullmatch(fields[1].removeprefix(prefix)) is None:
         raise SystemExit(1)
-    if sha256.fullmatch(fields[2]) is None:
+    if sha256.fullmatch(fields[2]) is None or sha256.fullmatch(fields[3]) is None:
         raise SystemExit(1)
-    images.append({
+    images[fields[0]] = {
         "admission_sha256": fields[2],
         "artifact": fields[0],
         "image_reference": fields[1],
-    })
-if [item["artifact"] for item in images] != list(expected):
+        "ops_log_reference_sha256": fields[3],
+    }
+if set(images) != set(expected):
     raise SystemExit(1)
 Path(receipt_path).write_text(json.dumps({
-    "schema_version": "milk.private-harness-release.v2",
+    "schema_version": "milk.private-harness-release.v3",
     "source_commit": commit,
     "source_date_epoch": int(source_epoch),
     "source_repository": "https://github.com/milkinfrastructure/milk-harness",
@@ -439,7 +461,7 @@ Path(receipt_path).write_text(json.dumps({
     "dockerfile_frontend_reference": frontend,
     "build_authority": "local-socket",
     "platform": "linux/amd64",
-    "images": images,
+    "images": [images[artifact] for artifact in expected],
     "started_at": started_at,
     "completed_at": completed_at,
 }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")

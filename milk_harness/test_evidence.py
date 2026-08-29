@@ -128,6 +128,25 @@ class EvidenceTests(unittest.TestCase):
         self.assertTrue(headers["authorization"].startswith("AWS4-HMAC-SHA256 Credential=ACCESS/20260827/auto/s3/aws4_request,"))
         self.assertNotIn("SECRET", json.dumps(headers))
 
+    def test_r2_get_maps_only_404_to_absence(self):
+        missing = urllib.error.HTTPError("https://example", 404, "missing", {}, None)
+        unavailable = urllib.error.HTTPError("https://example", 503, "unavailable", {}, None)
+        store = R2EvidenceStore(
+            account_id="0" * 32,
+            bucket="milk-evidence",
+            access_key_id="ACCESS",
+            secret_access_key="SECRET",
+            opener=_Opener([missing, unavailable]),
+            now=lambda: dt.datetime(2026, 8, 27, tzinfo=UTC),
+        )
+        with self.assertRaises(FileNotFoundError) as caught:
+            store.get_versioned("state/v1/missing.json")
+        self.assertEqual(caught.exception.args, ("state/v1/missing.json",))
+        self.assertIs(caught.exception.__cause__, missing)
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            store.get_versioned("state/v1/unavailable.json")
+        self.assertIs(caught.exception, unavailable)
+
     def test_r2_list_start_after_is_bounded_sorted_and_signed(self):
         body = b'''<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">

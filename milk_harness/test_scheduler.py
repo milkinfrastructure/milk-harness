@@ -41,6 +41,7 @@ from milk_harness.scheduler import (
     verify_gateway_ingest_run_config,
     verify_provider_run_config,
     verify_provider_lease_token,
+    verify_route_run_config,
 )
 
 
@@ -672,6 +673,15 @@ class SchedulerTest(unittest.TestCase):
             "teacher_deployment_sha256": "c" * 64,
             "teacher_terms_sha256": "d" * 64,
         }
+        gateway_deployment = {
+            "source_commit": "2" * 40,
+            "image_admission_sha256": "3" * 64,
+            "release_sha256": "4" * 64,
+            "application_id": "00000000-0000-4000-8000-000000000020",
+            "application_version": 7,
+            "container_image": "registry.cloudflare.com/milk-gateway@sha256:" + "5" * 64,
+            "worker_version_id": "00000000-0000-4000-8000-000000000021",
+        }
         gateway_config = {
             "tenant_id": ids[0],
             "project_id": ids[1],
@@ -776,7 +786,7 @@ class SchedulerTest(unittest.TestCase):
             ),
         }
         manifest = {
-            "schema_version": "milk.confirmed-production-run-config.v2",
+            "schema_version": "milk.confirmed-production-run-config.v3",
             "provider_policy": {"primary": "baseten", "fallback": "modal"},
             "harness_source_commit": source_commit,
             "campaign_id": "e" * 64,
@@ -786,6 +796,7 @@ class SchedulerTest(unittest.TestCase):
             "images": images,
             "image_release_sha256": "f" * 64,
             "gateway_config_sha256": hashlib.sha256(gateway_raw).hexdigest(),
+            "gateway_deployment": gateway_deployment,
             "gateway_job_contract": contract,
             "provider_secret_names": provider_secrets,
             "store_identity_sha256s": store_identities,
@@ -850,6 +861,48 @@ class SchedulerTest(unittest.TestCase):
                 "gateway-ingest-route",
             )
         self.assertEqual(
+            verify_route_run_config(
+                manifest_raw,
+                confirmed,
+                source_commit,
+                root,
+                gateway_raw,
+                images["gateway"],
+                gateway_deployment,
+            ),
+            manifest,
+        )
+        changed_gateway_deployment = {
+            **gateway_deployment,
+            "worker_version_id": "00000000-0000-4000-8000-000000000022",
+        }
+        with self.assertRaisesRegex(ValueError, "route gateway settings"):
+            verify_route_run_config(
+                manifest_raw,
+                confirmed,
+                source_commit,
+                root,
+                gateway_raw,
+                images["gateway"],
+                changed_gateway_deployment,
+            )
+        v2_manifest = {
+            **manifest,
+            "schema_version": "milk.confirmed-production-run-config.v2",
+        }
+        v2_raw = canonical_json(v2_manifest)
+        with self.assertRaisesRegex(ValueError, "confirmed run config is invalid"):
+            verify_gateway_run_config(
+                v2_raw,
+                hashlib.sha256(v2_raw).hexdigest(),
+                source_commit,
+                root,
+                gateway_raw,
+                images["gateway"],
+                "gateway-capture-access",
+                "gateway-control-access",
+            )
+        self.assertEqual(
             verify_provider_run_config(
                 manifest_raw.removesuffix(b"\n"),
                 confirmed,
@@ -860,6 +913,7 @@ class SchedulerTest(unittest.TestCase):
                 scope_prefix=scope,
                 images=images,
                 image_release_sha256="f" * 64,
+                gateway_deployment=gateway_deployment,
                 provider_runtime=provider_runtime,
                 provider_secret_names=provider_secrets,
                 store_identities={
@@ -888,6 +942,7 @@ class SchedulerTest(unittest.TestCase):
                 scope_prefix=scope,
                 images=images,
                 image_release_sha256="f" * 64,
+                gateway_deployment=gateway_deployment,
                 provider_runtime=provider_runtime,
                 provider_secret_names=provider_secrets,
                 store_identities={
@@ -916,6 +971,7 @@ class SchedulerTest(unittest.TestCase):
                 scope_prefix=scope,
                 images=images,
                 image_release_sha256="f" * 64,
+                gateway_deployment=gateway_deployment,
                 provider_runtime=changed_runtime,
                 provider_secret_names=provider_secrets,
                 store_identities={

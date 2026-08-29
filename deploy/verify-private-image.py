@@ -774,10 +774,8 @@ def verify(arguments, github_token):
     if visibility != "private":
         raise ValueError(f"{package} package is not private")
 
-    build_log = _object(
-        arguments.evidence_dir.joinpath("build-log.json").read_bytes(),
-        "build log observation",
-    )
+    build_log_raw = arguments.evidence_dir.joinpath("build-log.json").read_bytes()
+    build_log = _object(build_log_raw, "build log observation")
     if (
         build_log.get("schema_version") != "milk.content-free-build-log.v1"
         or build_log.get("artifact") != arguments.artifact
@@ -790,6 +788,19 @@ def verify(arguments, github_token):
         or build_log["bytes"] < 0
     ):
         raise ValueError("build log observation is invalid")
+    ops_log_raw = arguments.evidence_dir.joinpath(
+        "ops-log-reference.json"
+    ).read_bytes()
+    ops_log_reference = _object(ops_log_raw, "private ops-log reference")
+    if ops_log_reference != {
+        "schema_version": "milk.private-ops-log-reference.v1",
+        "authority": "private-release-evidence",
+        "reference": "build-log.json",
+        "receipt_sha256": hashlib.sha256(build_log_raw).hexdigest(),
+        "immutable": True,
+        "content_retained": False,
+    }:
+        raise ValueError("private ops-log reference is invalid")
 
     _write_new(arguments.evidence_dir / "index.json", raw_index)
     _write_new(arguments.evidence_dir / "amd64-manifest.json", raw_manifest)
@@ -816,6 +827,8 @@ def verify(arguments, github_token):
         "config_sha256": config_digest.removeprefix("sha256:"),
         "gateway_image_reference": gateway,
         "build_log": build_log,
+        "ops_log_reference": ops_log_reference,
+        "ops_log_reference_sha256": hashlib.sha256(ops_log_raw).hexdigest(),
         "visibility": "private",
         "build_authority": "local-socket",
         "buildkit_image_reference": BUILDKIT_IMAGE,
@@ -860,7 +873,11 @@ def verify(arguments, github_token):
     }
     admission_raw = json.dumps(admission, sort_keys=True, separators=(",", ":")) + "\n"
     _write_new(arguments.evidence_dir / "admission.json", admission_raw.encode())
-    return immutable_reference, hashlib.sha256(admission_raw.encode()).hexdigest()
+    return (
+        immutable_reference,
+        hashlib.sha256(admission_raw.encode()).hexdigest(),
+        hashlib.sha256(ops_log_raw).hexdigest(),
+    )
 
 
 def _parse_arguments(argv):
@@ -892,10 +909,16 @@ def main(argv=None):
             or b"\r" in token_bytes
         ):
             raise ValueError("registry credential is invalid")
-        image_reference, admission_sha256 = verify(
+        image_reference, admission_sha256, ops_log_reference_sha256 = verify(
             arguments, token_bytes.decode("ascii")
         )
-        print(image_reference + "\t" + admission_sha256)
+        print(
+            image_reference
+            + "\t"
+            + admission_sha256
+            + "\t"
+            + ops_log_reference_sha256
+        )
         return 0
     except (OSError, UnicodeError, ValueError, subprocess.SubprocessError) as error:
         print(f"verify-private-image: {error}", file=sys.stderr)

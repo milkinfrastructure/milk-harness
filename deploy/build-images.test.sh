@@ -39,19 +39,14 @@ for line in lock.splitlines():
     name, version, digest = match.groups()
     assert name not in requirements
     requirements[name] = (version, digest)
-assert len(requirements) == 94
+assert len(requirements) == 29
 assert list(requirements) == sorted(requirements)
 assert requirements["modal"] == (
     "1.5.4",
     "3e54e26037c445af42f9a9ef9862b66bdd2e0b1faeced5fcc7adf3e5f59e44ed",
 )
-assert requirements["truss"] == (
-    "0.18.25",
-    "386ec68ecb5bcb1c582d26765cc47c34192ef092ffd1934224ed308c063b8b5a",
-)
-assert requirements["rich"][0] == "13.9.4"
-assert requirements["watchfiles"][0] == "0.19.0"
-assert {"jeepney", "secretstorage"} <= requirements.keys()
+assert requirements["rich"][0] == "15.0.0"
+assert requirements["watchfiles"][0] == "1.2.0"
 assert not {
     "aiohttp-socks",
     "async-timeout",
@@ -59,9 +54,11 @@ assert not {
     "exceptiongroup",
     "importlib-metadata",
     "python-socks",
+    "truss",
+    "truss-transfer",
     "zipp",
 } & requirements.keys()
-assert "Public PyPI wheels only: 94 files, 60,304,951 bytes" in lock
+assert "Public PyPI wheels only: 29 files, 7,020,953 bytes" in lock
 assert "--require-hashes --requirement requirements-linux-amd64-cp312.lock" in lock
 
 assert "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7" in dockerfile
@@ -80,10 +77,8 @@ for required in (
     "deploy/baseten/winner.py",
     "deploy/baseten/adapter.py",
     "deploy/modal/admit.py",
-    "import modal, truss",
+    "import modal",
     'version("modal") == "1.5.4"',
-    'version("truss") == "0.18.25"',
-    'test "$(/usr/local/bin/truss --version)" = "truss, version 0.18.25"',
 ):
     assert required in dockerfile, required
 for forbidden in (
@@ -92,6 +87,9 @@ for forbidden in (
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
     "PIP_EXTRA_INDEX_URL",
+    "import modal, truss",
+    'version("truss")',
+    "/usr/local/bin/truss",
 ):
     assert forbidden not in dockerfile
 
@@ -162,7 +160,9 @@ assert all(
     and (re.search(r"`[0-9a-f]{64}`", evidence) or evidence.startswith("Metadata only;"))
     for _, license_name, evidence in notice_entries
 )
-assert "| truss 0.18.25 | MIT |" in notices
+assert "| rich 15.0.0 | MIT |" in notices
+assert "| watchfiles 1.2.0 | MIT |" in notices
+assert "| truss " not in notices
 PY
 
 mkdir "$test_root/bin"
@@ -292,6 +292,8 @@ root.joinpath("config.json").write_text("{}", encoding="utf-8")
 root.joinpath("slsa-provenance.json").write_text("{}", encoding="utf-8")
 root.joinpath("spdx-sbom.json").write_text("{}", encoding="utf-8")
 log = json.loads(root.joinpath("build-log.json").read_bytes())
+ops_log_raw = root.joinpath("ops-log-reference.json").read_bytes()
+ops_log_reference = json.loads(ops_log_raw)
 gateway = arguments.gateway_image_reference
 image_reference = repository + "@" + index_digest
 attestations = [
@@ -313,6 +315,8 @@ receipt = {
     "config_sha256": "0" * 64,
     "gateway_image_reference": gateway,
     "build_log": log,
+    "ops_log_reference": ops_log_reference,
+    "ops_log_reference_sha256": hashlib.sha256(ops_log_raw).hexdigest(),
     "visibility": "private",
     "build_authority": "local-socket",
     "buildkit_image_reference": "moby/buildkit@sha256:ddd1ca44b21eda906e81ab14a3d467fa6c39cd73b9a39df1196210edcb8db59e",
@@ -359,7 +363,13 @@ admission_raw = json.dumps(admission, sort_keys=True, separators=(",", ":")) + "
 root.joinpath("admission.json").write_text(admission_raw, encoding="utf-8")
 with Path(os.environ["TEST_COMMAND_LOG"]).open("a", encoding="utf-8") as output:
     output.write("verifier|" + "|".join(sys.argv[1:]) + "\n")
-print(image_reference + "\t" + hashlib.sha256(admission_raw.encode()).hexdigest())
+print(
+    image_reference
+    + "\t"
+    + hashlib.sha256(admission_raw.encode()).hexdigest()
+    + "\t"
+    + hashlib.sha256(ops_log_raw).hexdigest()
+)
 PY
 
 cat >"$test_root/bin/git" <<'EOF'
@@ -512,6 +522,7 @@ for artifact in student-train student-branch teacher-gpt-oss planner jobs; do
   [ -s "$output/$artifact/slsa-provenance.json" ]
   [ -s "$output/$artifact/spdx-sbom.json" ]
   [ -s "$output/$artifact/build-log.json" ]
+  [ -s "$output/$artifact/ops-log-reference.json" ]
   [ -s "$output/$artifact/receipt.json" ]
   [ -s "$output/$artifact/admission.json" ]
 done
@@ -522,6 +533,9 @@ done
 [ "$(grep -c '^docker|.*buildx|imagetools|inspect|--raw|' "$test_root/commands.log")" -eq 15 ]
 [ "$(grep -c '^verifier|' "$test_root/commands.log")" -eq 5 ]
 [ "$(grep -c '^gh|auth|token|--hostname|github.com$' "$test_root/commands.log")" -eq 6 ]
+build_order=$(grep '^docker|.*buildx|build|' "$test_root/commands.log" | \
+  sed -n 's/.*|--tag|ghcr.io\/milkinfrastructure\/milk-\([^:|]*\):source-[^|]*|.*/\1/p')
+[ "$build_order" = "$(printf '%s\n' planner jobs student-train student-branch teacher-gpt-oss)" ]
 [ "$(grep -o -- '--platform|linux/amd64' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 5 ]
 [ "$(grep -o -- '--provenance=mode=max,version=v1' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 5 ]
 [ "$(grep -o -- '--sbom=true' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 5 ]
@@ -551,7 +565,7 @@ assert release["source_commit"] == revision
 assert release["gateway_image_reference"] == gateway
 assert release["build_authority"] == "local-socket"
 assert release["platform"] == "linux/amd64"
-assert release["schema_version"] == "milk.private-harness-release.v2"
+assert release["schema_version"] == "milk.private-harness-release.v3"
 assert [item["artifact"] for item in release["images"]] == [
     "student-train", "student-branch", "teacher-gpt-oss", "planner", "jobs",
 ]
@@ -599,6 +613,22 @@ for artifact in ("student-train", "student-branch", "teacher-gpt-oss", "planner"
     ]
     assert receipt["build_log"]["content_retained"] is False
     assert receipt["build_log"]["bytes"] > 0
+    ops_log_raw = root.joinpath(artifact, "ops-log-reference.json").read_bytes()
+    ops_log = json.loads(ops_log_raw)
+    assert ops_log == {
+        "schema_version": "milk.private-ops-log-reference.v1",
+        "authority": "private-release-evidence",
+        "reference": "build-log.json",
+        "receipt_sha256": hashlib.sha256(
+            root.joinpath(artifact, "build-log.json").read_bytes()
+        ).hexdigest(),
+        "immutable": True,
+        "content_retained": False,
+    }
+    assert receipt["ops_log_reference"] == ops_log
+    assert receipt["ops_log_reference_sha256"] == hashlib.sha256(
+        ops_log_raw
+    ).hexdigest()
     admission_path = root.joinpath(artifact, "admission.json")
     admission_raw = admission_path.read_bytes()
     admission = json.loads(admission_raw)
@@ -634,8 +664,15 @@ for artifact in ("student-train", "student-branch", "teacher-gpt-oss", "planner"
     assert admission["visibility"] == "private"
     assert admission["builder"] == expected_builder
     release_item = release_by_artifact[artifact]
+    assert set(release_item) == {
+        "admission_sha256", "artifact", "image_reference",
+        "ops_log_reference_sha256",
+    }
     assert release_item["image_reference"] == image_reference
     assert release_item["admission_sha256"] == hashlib.sha256(admission_raw).hexdigest()
+    assert release_item["ops_log_reference_sha256"] == hashlib.sha256(
+        ops_log_raw
+    ).hexdigest()
     if artifact in {"planner", "jobs"}:
         assert receipt["gateway_image_reference"] is None
         assert admission["gateway_image_reference"] is None
@@ -718,7 +755,8 @@ status=$?
 set -e
 [ "$status" -eq 70 ]
 [ -s "$test_root/build-failure/failure.json" ]
-[ -s "$test_root/build-failure/student-train/build-log.json" ]
+[ -s "$test_root/build-failure/planner/build-log.json" ]
+[ -s "$test_root/build-failure/planner/ops-log-reference.json" ]
 [ -z "$(find "$test_root/build-failure" -type f -name '*.log' -print)" ]
 ! grep -R -Fq 'raw failing build output must not persist' "$test_root/build-failure"
 python3 - "$test_root/build-failure" <<'PY'
@@ -728,8 +766,8 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 failure = json.loads(root.joinpath("failure.json").read_bytes())
-observation = json.loads(root.joinpath("student-train", "build-log.json").read_bytes())
-assert failure["stage"] == "build-student-train"
+observation = json.loads(root.joinpath("planner", "build-log.json").read_bytes())
+assert failure["stage"] == "build-planner"
 assert observation["exit_code"] == 55
 assert observation["content_retained"] is False
 assert observation["bytes"] > 0
@@ -751,7 +789,7 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 failure = json.loads(root.joinpath("failure.json").read_bytes())
-assert failure["stage"] == "verify-student-train"
+assert failure["stage"] == "verify-planner"
 PY
 ! grep -R -Fq 'ephemeral-test-password' \
   "$test_root/verify-failure" "$test_root/commands.log"
@@ -772,7 +810,8 @@ teacher_dockerfile=$root/deploy/teacher/gpt-oss-120b/Dockerfile
 grep -Fq -- '--sbom=true' "$builder"
 grep -Fxq 'USER 65532:65532' "$root/Dockerfile.planner"
 grep -Fxq 'USER 65532:65532' "$root/Dockerfile.jobs"
-grep -Fq 'import modal, truss' "$root/Dockerfile.jobs"
+grep -Fq 'import modal' "$root/Dockerfile.jobs"
+! grep -Fq 'truss' "$root/Dockerfile.jobs"
 grep -Fq 'milk_harness/image_admission.py' "$root/Dockerfile.jobs"
 grep -Fq 'milk_harness/provider_acceptance.py' "$root/Dockerfile.jobs"
 grep -Fq 'deploy/baseten/winner.py' "$root/Dockerfile.jobs"

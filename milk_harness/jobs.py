@@ -92,6 +92,7 @@ CANDIDATE_KEY_SOCKET = "/run/milk-candidate-key.sock"
 MAX_CANDIDATE_KEY_DELIVERY_BYTES = 4096
 MAX_CANDIDATE_KEY_SOCKET_REQUEST_BYTES = 32 * 1024
 MAX_CANDIDATE_KEY_SOCKET_RESPONSE_BYTES = 4096
+MAX_MODAL_CANDIDATE_ACK_BYTES = 4096
 BASETEN_WINNER_ADMIT_STATES = {
     "admitted",
     "create_ambiguous_no_replay",
@@ -1720,13 +1721,21 @@ def _ordered_provider_selection(
     reason = primary["reason"]
     status = primary["status"]
     if (
-        reason == "timeout"
+        reason == "capability_unavailable"
+        and status is not None
+        or reason == "timeout"
         and status is not None
         or reason == "rate_limited"
         and status != 429
         or reason == "server_unavailable"
         and (type(status) is not int or not 500 <= status <= 599)
-        or reason not in {"timeout", "rate_limited", "server_unavailable"}
+        or reason
+        not in {
+            "capability_unavailable",
+            "timeout",
+            "rate_limited",
+            "server_unavailable",
+        }
     ):
         raise ValueError("Baseten preflight is not safe for Modal fallback")
     primary_at = _utc(primary.get("observed_at"), "Baseten preflight observed_at")
@@ -4054,6 +4063,7 @@ def teardown_authorized_modal_winner(
     store,
     campaign_id,
     authorization_record,
+    candidate_absence_raw,
 ):
     """Run one gateway-authorized Modal teardown under the live lease."""
     authorization, unused_result, embedded = _authorized_winner_acceptance(
@@ -4066,6 +4076,11 @@ def teardown_authorized_modal_winner(
         or not hasattr(modal_jobs, "teardown_winner")
     ):
         raise ValueError("Modal teardown campaign or lifecycle differs")
+    _validate_modal_candidate_absence_ack(
+        candidate_absence_raw,
+        authorization,
+        authorization_record["winner_result"],
+    )
     run_id = authorization["run_id"]
     acceptance, plan, definitions = _stored_modal_run(
         store,
@@ -4096,6 +4111,85 @@ def teardown_authorized_modal_winner(
     if result.get("state") != "zero":
         raise RuntimeError("Modal winner teardown did not verify zero GPU")
     return result
+
+
+def _validate_modal_candidate_absence_ack(raw, authorization, winner_result):
+    if (
+        not isinstance(raw, (bytes, bytearray))
+        or not 1 <= len(raw) <= MAX_MODAL_CANDIDATE_ACK_BYTES
+    ):
+        raise ValueError("Modal candidate absence acknowledgement is invalid")
+    raw = bytes(raw)
+    value = _strict_object(raw)
+    anchor = value.get("gateway_anchor")
+    admission = winner_result.get("admission")
+    if (
+        canonical_json(value) != raw
+        or set(value)
+        != {
+            "candidate_key_sha256",
+            "gateway_anchor",
+            "gateway_release_id",
+            "gateway_release_sha256",
+            "gateway_result_sha256",
+            "run_id",
+            "schema_version",
+            "selected_provider",
+            "service_not_after",
+            "state",
+            "verified_at",
+            "winner_admission_sha256",
+        }
+        or value.get("schema_version")
+        != "milk.modal-candidate-key-ack.v1"
+        or value.get("selected_provider") != "modal"
+        or value.get("state") != "absent"
+        or value.get("run_id") != authorization.get("run_id")
+        or value.get("gateway_result_sha256")
+        != hashlib.sha256(
+            winner_contract.result_bytes(winner_result)
+        ).hexdigest()
+        or not isinstance(admission, dict)
+        or value.get("candidate_key_sha256")
+        != admission.get("candidate_api_key_sha256")
+        or value.get("service_not_after")
+        != admission.get("service_not_after")
+        or value.get("winner_admission_sha256")
+        != hashlib.sha256(winner_contract.receipt_bytes(admission)).hexdigest()
+        or not _valid_uuid(value.get("gateway_release_id"))
+        or not _is_hex64(value.get("gateway_release_sha256"))
+        or not isinstance(anchor, dict)
+        or set(anchor)
+        != {
+            "source_commit",
+            "image_admission_sha256",
+            "release_sha256",
+            "application_id",
+            "application_version",
+            "container_image",
+            "worker_version_id",
+        }
+        or re.fullmatch(r"[0-9a-f]{40}", anchor.get("source_commit") or "")
+        is None
+        or not _is_hex64(anchor.get("image_admission_sha256"))
+        or not _is_hex64(anchor.get("release_sha256"))
+        or not _valid_uuid(anchor.get("application_id"))
+        or type(anchor.get("application_version")) is not int
+        or anchor["application_version"] <= 0
+        or not isinstance(anchor.get("container_image"), str)
+        or not 1 <= len(anchor["container_image"].encode()) <= 2048
+        or not _valid_uuid(anchor.get("worker_version_id"))
+        or _gateway_time(
+            value.get("verified_at"),
+            "Modal candidate absence verified_at",
+        )[0]
+        < _gateway_time(
+            authorization.get("authorized_at"),
+            "provider teardown authorized_at",
+        )[0]
+    ):
+        raise ValueError("Modal candidate absence acknowledgement differs")
+    return value
 
 
 def store_gateway_winner_result_handoff(
@@ -4882,11 +4976,25 @@ def dispatch_provider_teardowns(
                 values=baseten_values_by_run_id[authorization["run_id"]],
             )
         else:
+            absence_key = (
+                f"{scope_prefix}/jobs/student/"
+                f"{authorization['student_job_id']}/winner-deployment/"
+                "modal-candidate-credential/absent-ack.json"
+            )
+            try:
+                candidate_absence_raw = control_store.get(absence_key)
+            except FileNotFoundError:
+                continue
+            except urllib.error.HTTPError as error:
+                if error.code != 404:
+                    raise
+                continue
             result = teardown_authorized_modal_winner(
                 modal_jobs,
                 store=store,
                 campaign_id=campaign_id,
                 authorization_record=record,
+                candidate_absence_raw=candidate_absence_raw,
             )
         results.append(result)
         references.append(
@@ -4911,7 +5019,7 @@ def dispatch_provider_teardowns(
         "scope_prefix": scope_prefix,
         "verified": len(records),
         "completed": len(references),
-        "state": "hold" if not records else "zero",
+        "state": "zero" if records and len(references) == len(records) else "hold",
         "results": results,
         "teardown_result_references": references,
     }
@@ -6667,15 +6775,23 @@ class BasetenJobs:
             or admission.get("repository") != PRIVATE_IMAGE_REPOSITORIES[artifact]
             or admission.get("image_reference", "").rpartition("@sha256:")[0]
             != PRIVATE_IMAGE_REPOSITORIES[artifact]
-            or release.get("schema_version") != "milk.private-harness-release.v2"
+            or release.get("schema_version") != "milk.private-harness-release.v3"
             or not isinstance(release.get("images"), list)
             or not any(
-                item
+                isinstance(item, dict)
+                and set(item)
                 == {
-                    "admission_sha256": workload["image_admission_sha256"],
-                    "artifact": artifact,
-                    "image_reference": admission.get("image_reference"),
+                    "admission_sha256",
+                    "artifact",
+                    "image_reference",
+                    "ops_log_reference_sha256",
                 }
+                and item["admission_sha256"]
+                == workload["image_admission_sha256"]
+                and item["artifact"] == artifact
+                and item["image_reference"] == admission.get("image_reference")
+                and HEX64.fullmatch(item["ops_log_reference_sha256"] or "")
+                is not None
                 for item in release["images"]
             )
         ):
@@ -9550,6 +9666,7 @@ def main(argv=None):
                     create_authorization_raw=create_authorization_raw,
                     modal_plans_by_run_id=plans,
                     winner_values_by_run_id=winner_values,
+                    allow_modal_winner_fallback=True,
                 )
             else:
                 dispatched = {

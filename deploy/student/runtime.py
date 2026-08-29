@@ -52,10 +52,7 @@ MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_EDIT_DISTANCE_CELLS = 16 * 1024 * 1024
 DEV_SET_DOMAIN = b"dragontales.student-dev-set.v1\0"
 MODEL_INVENTORY_DOMAIN = b"dragontales.student-model-inventory.v1\0"
-RECIPE_DOMAINS = {
-    "production": b"dragontales.student-recipe.production.v1\0",
-    "fixture": b"dragontales.student-recipe.fixture.v1\0",
-}
+RECIPE_DOMAIN = b"dragontales.student-recipe.production.v1\0"
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 SAFE_NAME = re.compile(r"[A-Za-z0-9._-]{1,255}\Z")
 LOGICAL_MODEL_ALIAS = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}\Z")
@@ -413,11 +410,9 @@ def _require_role(expected: str) -> None:
         raise ValueError(f"{expected} operation is forbidden in this artifact")
 
 
-def recipe_sha256(mode: str) -> str:
-    if mode not in RECIPE_DOMAINS:
-        raise ValueError("student recipe mode is invalid")
+def recipe_sha256() -> str:
     deploy = Path(__file__).resolve().parents[1]
-    digest = hashlib.sha256(RECIPE_DOMAINS[mode])
+    digest = hashlib.sha256(RECIPE_DOMAIN)
     for relative in AUTHORITY_FILES:
         path = deploy / relative
         if path.is_symlink() or not path.is_file():
@@ -431,7 +426,7 @@ def recipe_sha256(mode: str) -> str:
     return digest.hexdigest()
 
 
-def _validate_claim(raw: bytes, check_clock: bool, mode: str):
+def _validate_claim(raw: bytes, check_clock: bool):
     claim = _keys(_canonical(raw, "student claim", False), CLAIM_KEYS, "student claim")
     if claim["schema_version"] != "dragontales.student-job-claim.v4":
         raise ValueError("student claim has an unsupported schema")
@@ -445,7 +440,7 @@ def _validate_claim(raw: bytes, check_clock: bool, mode: str):
     _digest(definition["teacher_provider_binding_sha256"], "teacher provider binding")
     _digest(definition["input_sha256"], "student input")
     _digest(definition["dev_set_sha256"], "student DEV set")
-    expected_recipe = recipe_sha256(mode)
+    expected_recipe = recipe_sha256()
     if _digest(definition["recipe_sha256"], "student recipe") != expected_recipe:
         raise ValueError("student claim does not bind this exact runner recipe")
     train_image = _runtime_image_reference(
@@ -552,10 +547,10 @@ def _validate_input(raw: bytes, claim):
     return value
 
 
-def load_inputs(claim_path: Path, input_path: Path, check_clock: bool, mode: str):
+def load_inputs(claim_path: Path, input_path: Path, check_clock: bool):
     claim_raw = _read(claim_path, MAX_CLAIM_BYTES)
     input_raw = _read(input_path, MAX_INPUT_BYTES)
-    claim, started, expires = _validate_claim(claim_raw, check_clock, mode)
+    claim, started, expires = _validate_claim(claim_raw, check_clock)
     inputs = _validate_input(input_raw, claim)
     return claim_raw, input_raw, claim, inputs, started, expires
 
@@ -580,10 +575,9 @@ def _branch_inputs(
     train_result_path: Path,
     fanout_claim_path: Path,
     variant: str,
-    mode: str,
 ):
     claim_raw, input_raw, claim, inputs, claim_started, expires = load_inputs(
-        claim_path, input_path, False, mode
+        claim_path, input_path, False
     )
     train_raw = _read(train_result_path, MAX_RESULT_BYTES)
     train = _keys(
@@ -646,8 +640,7 @@ def _branch_inputs(
         or fanout_expires != expires
         or created < train_finished
         or created >= fanout_expires
-        or mode == "production"
-        and (
+        or (
             now < created
             or now >= created + dt.timedelta(minutes=15)
             or now >= fanout_expires
@@ -1604,74 +1597,22 @@ def _clear_partial(output):
         (output / name).unlink(missing_ok=True)
 
 
-def _gpu_record(claim, probe, kernels, stage, mode="h100"):
+def _gpu_record(claim, probe, kernels, stage):
     if stage not in {"train", "branch"}:
         raise ValueError("student GPU evidence stage is invalid")
-    if mode == "fixture":
-        runtime = (
-            {
-                "stage": "train",
-                "schema_version": "dragontales.student-train-image-probe.v1",
-                "platform": "fixture",
-                "prime_rl_version": "fixture",
-                "accelerate_version": "fixture",
-                "peft_version": "fixture",
-                "torch_cuda_version": "fixture",
-            }
-            if stage == "train"
-            else {
-                "stage": "branch",
-                "schema_version": "dragontales.h100-fp8-image-probe.v2",
-                "platform": "fixture",
-                "vllm_version": "fixture",
-                "vllm_metadata_sha256": _sha256(b"fixture-vllm"),
-                "compressed_tensors_version": "fixture",
-                "compressed_tensors_wheel_sha256": _sha256(b"fixture-compressed-tensors"),
-                "fp8_dynamic_supported": True,
-                "fp8_static_supported": True,
-            }
-        )
-        probe = {
-            "device": {
-                "uuid": None,
-                "cuda": "fixture",
-                "name": "deterministic-one-h100-fixture",
-                "compute_capability": [9, 0],
-                "total_memory_bytes": 80 * 1024**3,
-            },
-            "runtime": runtime,
-        }
-    elif not isinstance(probe, dict) or probe.get("runtime", {}).get("stage") != stage:
+    if not isinstance(probe, dict) or probe.get("runtime", {}).get("stage") != stage:
         raise ValueError("student GPU probe differs from its stage")
     if stage == "train" and kernels:
         raise ValueError("student train GPU evidence cannot contain branch kernels")
     return {
         "schema_version": "dragontales.student-gpu-evidence.v2",
         "student_job_id": claim["student_job_id"],
-        "mode": mode,
+        "mode": "h100",
         "recipe_sha256": claim["definition"]["recipe_sha256"],
         "device": probe["device"],
         "runtime": probe["runtime"],
         "kernels": kernels,
     }
-
-
-def _fixture_kernel(variant):
-    return {
-        "variant": variant,
-        "model_verification": {
-            "schema_version": "dragontales.h100-model-verification.v2",
-            "model_type": "qwen3",
-            "variant": "bf16" if variant == "bf16" else variant.removesuffix("_fp8"),
-            "shards": 1,
-        },
-        "startup_log_sha256": _sha256(f"fixture-{variant}-startup".encode()),
-        "kernel_selection": None
-        if variant == "bf16"
-        else "Selected CutlassFP8ScaledMMLinearKernel for CompressedTensorsW8A8Fp8",
-        "occurrences": 0 if variant == "bf16" else 1,
-    }
-
 
 def _train_terminal(claim_raw, claim, started, finished, gpu_seconds, gpu, outcome):
     return {
@@ -1688,20 +1629,20 @@ def _train_terminal(claim_raw, claim, started, finished, gpu_seconds, gpu, outco
     }
 
 
-def train_stage(claim_path, input_path, output, mode="production"):
+def train_stage(claim_path, input_path, output):
     _require_role("student-train")
-    claim_raw, input_raw, claim, inputs, claim_started, expires = load_inputs(
-        claim_path, input_path, mode == "production", mode
+    claim_raw, input_raw, claim, inputs, _claim_started, expires = load_inputs(
+        claim_path, input_path, True
     )
     compute_seconds = _compute_alarm_seconds(expires, MAX_TRAIN_GPU_SECONDS)
     if not output.is_absolute() or output.exists() or not output.parent.is_dir():
         raise ValueError("student output must be one new absolute directory")
-    if mode == "production" and (RUN.exists() or not MODEL.is_dir()):
+    if RUN.exists() or not MODEL.is_dir():
         raise ValueError("student container must provide /model and a new /runs/run")
     output.mkdir(mode=0o700)
     working = output / "working"
     working.mkdir(mode=0o700)
-    started = claim_started if mode == "fixture" else dt.datetime.now(dt.timezone.utc)
+    started = dt.datetime.now(dt.timezone.utc)
     gpu_started = time.monotonic()
     gpu = None
     old_alarm = signal.getsignal(signal.SIGALRM)
@@ -1712,46 +1653,34 @@ def train_stage(claim_path, input_path, output, mode="production"):
     signal.signal(signal.SIGALRM, expire)
     signal.alarm(compute_seconds)
     try:
-        if mode == "fixture":
-            adapter = working / "adapter"
-            adapter.mkdir(mode=0o700)
-            _write_new(adapter / "adapter_config.json", b'{"fixture":true}\n')
-            _write_new(adapter / "adapter_model.safetensors", b"fixture-adapter\n")
-            model = working / "bf16"
-            model.mkdir(mode=0o700)
-            _write_new(model / "config.json", _line({"fixture": True, "variant": "bf16"}))
-            _write_new(model / "model.safetensors", b"fixture-model-bf16\n")
-            gpu = _gpu_record(claim, None, [], "train", "fixture")
-            finished = started
-        else:
-            model_manifest_sha256 = _verify_base_model()
-            _run_checked(
-                [
-                    PRIME_PYTHON,
-                    "-m",
-                    "adapter_train.sft_entrypoint",
-                    "parity",
-                    "--model",
-                    MODEL,
-                    "--template",
-                    CHAT_TEMPLATE,
-                ],
-                working / "chat-template-parity.log",
-                300,
-                {"PYTHONPATH": str(_deploy()), "PYTHONDONTWRITEBYTECODE": "1"},
-            )
-            gpu = _gpu_record(claim, _gpu_probe(working), [], "train")
-            _prepare_training(input_raw, inputs, working, model_manifest_sha256)
-            adapter = RUN / "adapter"
-            model = working / "bf16"
-            _subprocess_stage(
+        model_manifest_sha256 = _verify_base_model()
+        _run_checked(
+            [
                 PRIME_PYTHON,
-                "_merge",
-                ["--model", MODEL, "--adapter", adapter, "--output", model],
-                working / "merge.log",
-                7200,
-            )
-            finished = dt.datetime.now(dt.timezone.utc)
+                "-m",
+                "adapter_train.sft_entrypoint",
+                "parity",
+                "--model",
+                MODEL,
+                "--template",
+                CHAT_TEMPLATE,
+            ],
+            working / "chat-template-parity.log",
+            300,
+            {"PYTHONPATH": str(_deploy()), "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        gpu = _gpu_record(claim, _gpu_probe(working), [], "train")
+        _prepare_training(input_raw, inputs, working, model_manifest_sha256)
+        adapter = RUN / "adapter"
+        model = working / "bf16"
+        _subprocess_stage(
+            PRIME_PYTHON,
+            "_merge",
+            ["--model", MODEL, "--adapter", adapter, "--output", model],
+            working / "merge.log",
+            7200,
+        )
+        finished = dt.datetime.now(dt.timezone.utc)
         if finished > expires:
             raise TimeoutError("student train stage exceeded claim expiry")
         signal.alarm(0)
@@ -1773,11 +1702,7 @@ def train_stage(claim_path, input_path, output, mode="production"):
             claim,
             started,
             finished,
-            1
-            if mode == "fixture"
-            else _observed_gpu_seconds(
-                started, finished, gpu_started, MAX_TRAIN_GPU_SECONDS
-            ),
+            _observed_gpu_seconds(started, finished, gpu_started, MAX_TRAIN_GPU_SECONDS),
             _artifact_reference(gpu_reference),
             {
                 "kind": "succeeded",
@@ -1790,7 +1715,7 @@ def train_stage(claim_path, input_path, output, mode="production"):
     except BaseException as error:
         signal.alarm(0)
         finished = min(
-            started if mode == "fixture" else dt.datetime.now(dt.timezone.utc),
+            dt.datetime.now(dt.timezone.utc),
             expires,
             started + dt.timedelta(seconds=MAX_TRAIN_GPU_SECONDS),
         )
@@ -1848,7 +1773,6 @@ def branch_stage(
     merged_model_manifest,
     variant,
     output,
-    mode="production",
 ):
     _require_role("student-branch")
     (
@@ -1868,7 +1792,6 @@ def branch_stage(
         train_result_path,
         fanout_claim_path,
         variant,
-        mode,
     )
     compute_seconds = _compute_alarm_seconds(expires, MAX_BRANCH_GPU_SECONDS)
     manifest_raw = _read(merged_model_manifest, MAX_RESULT_ARTIFACT_BYTES)
@@ -1882,11 +1805,7 @@ def branch_stage(
     output.mkdir(mode=0o700)
     working = output / "working"
     working.mkdir(mode=0o700)
-    started = (
-        _time(fanout["created_at"], "student fanout creation")
-        if mode == "fixture"
-        else dt.datetime.now(dt.timezone.utc)
-    )
+    started = dt.datetime.now(dt.timezone.utc)
     gpu_started = time.monotonic()
     gpu = None
     receipt = None
@@ -1899,60 +1818,34 @@ def branch_stage(
     signal.signal(signal.SIGALRM, expire)
     signal.alarm(compute_seconds)
     try:
-        if mode == "fixture":
+        runtime = _h100()
+        _verify_retained_model(merged_model, merged_model_manifest, runtime)
+        probe = _gpu_probe(working)
+        gpu = _gpu_record(claim, probe, [], "branch")
+        model = merged_model
+        if variant != "bf16":
             model = working / variant
-            model.mkdir(mode=0o700)
-            _write_new(model / "config.json", _line({"fixture": True, "variant": variant}))
-            _write_new(model / "model.safetensors", f"fixture-model-{variant}\n".encode())
-            latency = {"bf16": 30, "dynamic_fp8": 20, "static_fp8": 10}[variant]
-            receipt, summary = _receipt(
-                variant,
-                claim,
-                inputs["dev"],
+            _subprocess_stage(
+                QUANT_PYTHON,
+                "_quantize",
                 [
-                    (
-                        1.0,
-                        latency,
-                        None,
-                        _sha256((variant + row["reference"]).encode()),
-                        row["reference"],
-                    )
-                    for row in inputs["dev"]
+                    "--variant",
+                    variant,
+                    "--model",
+                    merged_model,
+                    "--input",
+                    input_path,
+                    "--output",
+                    model,
                 ],
+                working / f"{variant}.quantize.log",
+                7200,
             )
-            gpu = _gpu_record(
-                claim, None, [_fixture_kernel(variant)], "branch", "fixture"
-            )
-            finished = started
-        else:
-            runtime = _h100()
-            _verify_retained_model(merged_model, merged_model_manifest, runtime)
-            probe = _gpu_probe(working)
-            gpu = _gpu_record(claim, probe, [], "branch")
-            model = merged_model
-            if variant != "bf16":
-                model = working / variant
-                _subprocess_stage(
-                    QUANT_PYTHON,
-                    "_quantize",
-                    [
-                        "--variant",
-                        variant,
-                        "--model",
-                        merged_model,
-                        "--input",
-                        input_path,
-                        "--output",
-                        model,
-                    ],
-                    working / f"{variant}.quantize.log",
-                    7200,
-                )
-            receipt, summary, kernel = _evaluate(
-                variant, model, claim, inputs["dev"], working
-            )
-            gpu["kernels"].append(kernel)
-            finished = dt.datetime.now(dt.timezone.utc)
+        receipt, summary, kernel = _evaluate(
+            variant, model, claim, inputs["dev"], working
+        )
+        gpu["kernels"].append(kernel)
+        finished = dt.datetime.now(dt.timezone.utc)
         if finished > expires:
             raise TimeoutError("student branch exceeded claim expiry")
         signal.alarm(0)
@@ -1967,11 +1860,7 @@ def branch_stage(
             variant,
             started,
             finished,
-            1
-            if mode == "fixture"
-            else _observed_gpu_seconds(
-                started, finished, gpu_started, MAX_BRANCH_GPU_SECONDS
-            ),
+            _observed_gpu_seconds(started, finished, gpu_started, MAX_BRANCH_GPU_SECONDS),
             {
                 "kind": "succeeded",
                 "gpu_evidence": _artifact_reference(gpu_reference),
@@ -1985,7 +1874,7 @@ def branch_stage(
     except BaseException as error:
         signal.alarm(0)
         finished = min(
-            started if mode == "fixture" else dt.datetime.now(dt.timezone.utc),
+            dt.datetime.now(dt.timezone.utc),
             expires,
             started + dt.timedelta(seconds=MAX_BRANCH_GPU_SECONDS),
         )
@@ -2101,23 +1990,20 @@ def main():
         return
     parser = argparse.ArgumentParser(prog="student-run")
     commands = parser.add_subparsers(dest="command", required=True)
-    recipe = commands.add_parser("recipe-sha256")
-    recipe.add_argument("--mode", choices=("production", "fixture"), required=True)
-    for command in ("train", "fixture-train"):
-        child = commands.add_parser(command)
-        child.add_argument("--claim", type=Path, required=True)
-        child.add_argument("--input", type=Path, required=True)
-        child.add_argument("--output", type=Path, required=True)
-    for command in ("branch", "fixture-branch"):
-        child = commands.add_parser(command)
-        child.add_argument("--claim", type=Path, required=True)
-        child.add_argument("--input", type=Path, required=True)
-        child.add_argument("--train-result", type=Path, required=True)
-        child.add_argument("--fanout-claim", type=Path, required=True)
-        child.add_argument("--merged-model", type=Path, required=True)
-        child.add_argument("--merged-model-manifest", type=Path, required=True)
-        child.add_argument("--variant", choices=VARIANTS, required=True)
-        child.add_argument("--output", type=Path, required=True)
+    commands.add_parser("recipe-sha256")
+    train_command = commands.add_parser("train")
+    train_command.add_argument("--claim", type=Path, required=True)
+    train_command.add_argument("--input", type=Path, required=True)
+    train_command.add_argument("--output", type=Path, required=True)
+    branch_command = commands.add_parser("branch")
+    branch_command.add_argument("--claim", type=Path, required=True)
+    branch_command.add_argument("--input", type=Path, required=True)
+    branch_command.add_argument("--train-result", type=Path, required=True)
+    branch_command.add_argument("--fanout-claim", type=Path, required=True)
+    branch_command.add_argument("--merged-model", type=Path, required=True)
+    branch_command.add_argument("--merged-model-manifest", type=Path, required=True)
+    branch_command.add_argument("--variant", choices=VARIANTS, required=True)
+    branch_command.add_argument("--output", type=Path, required=True)
     serve_command = commands.add_parser("serve")
     serve_command.add_argument("--model", type=Path, required=True)
     serve_command.add_argument("--model-manifest", type=Path, required=True)
@@ -2127,7 +2013,7 @@ def main():
     serve_auth.add_argument("--trusted-ingress-auth", action="store_true")
     arguments = parser.parse_args()
     if arguments.command == "recipe-sha256":
-        print(recipe_sha256(arguments.mode))
+        print(recipe_sha256())
     elif arguments.command == "serve":
         serve(
             arguments.model,
@@ -2136,12 +2022,11 @@ def main():
             arguments.api_key_file,
             arguments.trusted_ingress_auth,
         )
-    elif arguments.command in {"train", "fixture-train"}:
+    elif arguments.command == "train":
         train_stage(
             arguments.claim,
             arguments.input,
             arguments.output,
-            "fixture" if arguments.command == "fixture-train" else "production",
         )
     else:
         branch_stage(
@@ -2153,7 +2038,6 @@ def main():
             arguments.merged_model_manifest,
             arguments.variant,
             arguments.output,
-            "fixture" if arguments.command == "fixture-branch" else "production",
         )
 
 

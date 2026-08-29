@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -48,3 +49,46 @@ jobs:
           go test ./...
           sh deploy/student-job.test.sh
           sh deploy/build-images.test.sh
+
+      - name: Write content-free CI receipt
+        if: always()
+        env:
+          JOB_OUTCOME: ${{ job.status }}
+        run: |
+          install -d -m 0700 ci-evidence
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          value = {
+              "schema_version": "milk.private-ci-ops-log-reference.v1",
+              "repository_id": int(os.environ["GITHUB_REPOSITORY_ID"]),
+              "source_commit": os.environ["GITHUB_SHA"],
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "job": "verify",
+              "ops_log_authority": "private-github-actions-run",
+              "ops_log_reference": (
+                  f"github-actions://repositories/{os.environ['GITHUB_REPOSITORY_ID']}"
+                  f"/runs/{os.environ['GITHUB_RUN_ID']}"
+                  f"/attempts/{os.environ['GITHUB_RUN_ATTEMPT']}/jobs/verify"
+              ),
+              "immutable": True,
+              "content_free_receipt": True,
+              "outcome": os.environ["JOB_OUTCOME"],
+          }
+          Path("ci-evidence/receipt.json").write_text(
+              json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Retain private CI receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: milk-harness-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-evidence/receipt.json
+          if-no-files-found: error
+          retention-days: 30

@@ -100,12 +100,13 @@ for _artifact, _repository, _digit in (
     }
 TEST_IMAGE_RELEASE_RAW = canonical_json(
     {
-        "schema_version": "milk.private-harness-release.v2",
+        "schema_version": "milk.private-harness-release.v3",
         "images": [
             {
                 "admission_sha256": TEST_IMAGE_ADMISSIONS[artifact]["sha256"],
                 "artifact": artifact,
                 "image_reference": TEST_IMAGE_ADMISSIONS[artifact]["image_reference"],
+                "ops_log_reference_sha256": "a" * 64,
             }
             for artifact in ("student-train", "student-branch", "teacher-gpt-oss")
         ],
@@ -765,6 +766,27 @@ def private_image_release(root):
     images = []
     for artifact, repository in repositories.items():
         image = repository + "@sha256:" + digests[artifact]
+        build_log_raw = canonical_json(
+            {
+                "schema_version": "milk.content-free-build-log.v1",
+                "artifact": artifact,
+                "exit_code": 0,
+                "started_at": "2026-08-27T20:00:00Z",
+                "completed_at": "2026-08-27T20:01:00Z",
+                "sha256": digests[artifact],
+                "bytes": 1,
+                "content_retained": False,
+            }
+        )
+        ops_log = {
+            "schema_version": "milk.private-ops-log-reference.v1",
+            "authority": "private-release-evidence",
+            "reference": "build-log.json",
+            "receipt_sha256": hashlib.sha256(build_log_raw).hexdigest(),
+            "immutable": True,
+            "content_retained": False,
+        }
+        ops_log_raw = canonical_json(ops_log)
         admission = {
             "schema_version": "milk.private-image-admission.v1",
             "artifact": artifact,
@@ -791,6 +813,10 @@ def private_image_release(root):
                     "predicate_type": "https://spdx.dev/Document",
                 },
             ],
+            "ops_log_reference": ops_log,
+            "ops_log_reference_sha256": hashlib.sha256(
+                ops_log_raw
+            ).hexdigest(),
             "platform": "linux/amd64",
             "visibility": "private",
             "builder": builder,
@@ -799,17 +825,22 @@ def private_image_release(root):
         path = root / artifact / "admission.json"
         path.parent.mkdir(parents=True)
         path.write_bytes(raw)
+        (path.parent / "build-log.json").write_bytes(build_log_raw)
+        (path.parent / "ops-log-reference.json").write_bytes(ops_log_raw)
         images.append(
             {
                 "admission_sha256": hashlib.sha256(raw).hexdigest(),
                 "artifact": artifact,
                 "image_reference": image,
+                "ops_log_reference_sha256": hashlib.sha256(
+                    ops_log_raw
+                ).hexdigest(),
             }
         )
     (root / "release.json").write_bytes(
         canonical_json(
             {
-                "schema_version": "milk.private-harness-release.v2",
+                "schema_version": "milk.private-harness-release.v3",
                 "source_commit": "8" * 40,
                 "source_date_epoch": 1_777_777_777,
                 "source_repository": "https://github.com/milkinfrastructure/milk-harness",
@@ -908,13 +939,15 @@ class BasetenJobsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pairwise distinct"):
             jobs_module._modal_resources_from_arguments(arguments, settings)
 
-    def test_paid_modal_winner_fallback_is_disabled_before_preflight(self):
+    def test_modal_winner_fallback_requires_an_explicit_production_opt_in(self):
         parameter = inspect.signature(
             jobs_module.dispatch_cross_provider_outboxes
         ).parameters["allow_modal_winner_fallback"]
         self.assertIs(parameter.default, False)
         with self.assertRaisesRegex(RuntimeError, "handoff is crash-safe"):
             jobs_module._disabled_modal_winner_preflight()
+        source = inspect.getsource(jobs_module.main)
+        self.assertIn("allow_modal_winner_fallback=True", source)
 
     def test_production_api_has_no_operator_candidate_key_escape_hatch(self):
         self.assertNotIn(

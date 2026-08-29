@@ -3,8 +3,8 @@ set -eu
 umask 077
 
 usage() {
-  printf 'usage: %s train|fixture-train --config ABS --student-job-id HEX64 --work-dir NEW_ABS\n' "$0" >&2
-  printf '       %s branch|fixture-branch --config ABS --student-job-id HEX64 --variant VARIANT --work-dir NEW_ABS\n' "$0" >&2
+  printf 'usage: %s train --config ABS --student-job-id HEX64 --work-dir NEW_ABS\n' "$0" >&2
+  printf '       %s branch --config ABS --student-job-id HEX64 --variant VARIANT --work-dir NEW_ABS\n' "$0" >&2
   printf '       %s serve --model ABS --model-manifest ABS --model-alias ALIAS {--api-key-file ABS|--trusted-ingress-auth}\n' "$0" >&2
   exit 64
 }
@@ -46,8 +46,8 @@ role_path=/usr/share/milk/student-artifact-role
 read_one_line "$role_path" || fail 'student artifact role authority is invalid'
 artifact_role=$line
 case "$artifact_role:${1:-}" in
-  student-train:train|student-train:fixture-train) ;;
-  student-branch:branch|student-branch:fixture-branch|student-branch:serve) ;;
+  student-train:train) ;;
+  student-branch:branch|student-branch:serve) ;;
   student-train:*|student-branch:*) fail 'operation is forbidden in this student artifact' 64 ;;
   *) fail 'student artifact role authority is invalid' ;;
 esac
@@ -109,18 +109,18 @@ if [ "${1:-}" = serve ]; then
 fi
 
 case ${1:-} in
-  train|fixture-train)
+  train)
     [ "$#" -eq 7 ] || usage
     [ "$2" = --config ] && [ "$4" = --student-job-id ] && [ "$6" = --work-dir ] || usage
-    mode=$1
+    operation=$1
     variant=
     work_dir=$7
     ;;
-  branch|fixture-branch)
+  branch)
     [ "$#" -eq 9 ] || usage
     [ "$2" = --config ] && [ "$4" = --student-job-id ] &&
       [ "$6" = --variant ] && [ "$8" = --work-dir ] || usage
-    mode=$1
+    operation=$1
     variant=$7
     case $variant in bf16|dynamic_fp8|static_fp8) ;; *) usage ;; esac
     work_dir=$9
@@ -142,20 +142,10 @@ if [ "$control_store_session_set" = set ] && [ -z "$control_store_session_token"
   fail 'control-store session token cannot be empty'
 fi
 
-case $mode in
-  fixture-train|fixture-branch)
-    gateway=$(resolve_executable "${DRAGONTALES_GATEWAY_BIN:-/usr/local/bin/dragontales-gateway}") ||
-      fail 'gateway executable is unavailable'
-    runner=$(resolve_executable "${DRAGONTALES_STUDENT_RUNNER:-$script_dir/student-run.sh}") ||
-      fail 'student runner is unavailable'
-    ;;
-  *)
-    gateway=$(resolve_executable /usr/local/bin/dragontales-gateway) ||
-      fail 'gateway executable is unavailable'
-    runner=$(resolve_executable "$script_dir/student-run.sh") ||
-      fail 'student runner is unavailable'
-    ;;
-esac
+gateway=$(resolve_executable /usr/local/bin/dragontales-gateway) ||
+  fail 'gateway executable is unavailable'
+runner=$(resolve_executable "$script_dir/student-run.sh") ||
+  fail 'student runner is unavailable'
 
 if run_as_worker /usr/bin/test -r "$config"; then
   fail 'config is readable by the student worker'
@@ -207,10 +197,10 @@ run_as_worker /usr/bin/test -r "$work_dir/input/claim.json" ||
   fail "materialized work is not accessible to the student worker; work preserved at $work_dir"
 
 if [ -z "$variant" ]; then
-  set -- "$mode" --claim "$work_dir/input/claim.json" \
+  set -- "$operation" --claim "$work_dir/input/claim.json" \
     --input "$work_dir/input/input.json" --output "$worker_dir/output"
 else
-  set -- "$mode" --claim "$work_dir/input/claim.json" \
+  set -- "$operation" --claim "$work_dir/input/claim.json" \
     --input "$work_dir/input/input.json" \
     --train-result "$work_dir/input/train-result.json" \
     --fanout-claim "$work_dir/input/fanout-claim.json" \

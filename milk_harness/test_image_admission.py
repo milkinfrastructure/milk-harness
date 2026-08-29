@@ -104,6 +104,16 @@ class ImageAdmissionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "canonical"):
                 load_local_private_image_release(str(directory))
 
+    def test_local_bundle_rejects_unbound_ops_log_reference(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory, unused_release = self.fixture(root)
+            path = directory / "student-train" / "ops-log-reference.json"
+            value = json.loads(path.read_bytes())
+            value["receipt_sha256"] = "f" * 64
+            path.write_bytes(canonical_json(value))
+            with self.assertRaisesRegex(ValueError, "ops-log reference"):
+                load_local_private_image_release(str(directory))
+
     def test_publisher_rejects_other_authorities(self):
         clean = {
             "MILK_EVIDENCE_R2_ACCOUNT_ID": "0" * 32,

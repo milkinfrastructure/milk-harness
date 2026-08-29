@@ -330,11 +330,16 @@ class R2EvidenceStore:
 
     def get_versioned(self, key):
         request = self._request("GET", key)
-        with self.opener.open(request, timeout=self.timeout_seconds) as response:
-            if response.getcode() != 200:
-                raise RuntimeError("R2 get returned an unexpected status")
-            body = response.read(MAX_OBJECT_BYTES + 1)
-            etag = response.headers.get("ETag")
+        try:
+            with self.opener.open(request, timeout=self.timeout_seconds) as response:
+                if response.getcode() != 200:
+                    raise RuntimeError("R2 get returned an unexpected status")
+                body = response.read(MAX_OBJECT_BYTES + 1)
+                etag = response.headers.get("ETag")
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                raise FileNotFoundError(key) from error
+            raise
         if len(body) > MAX_OBJECT_BYTES:
             raise ValueError("stored evidence object is oversized")
         if not isinstance(etag, str) or not etag:

@@ -26,10 +26,11 @@ jobs:
   gateway-tick:
     name: Gateway tick
     if: >-
-      ${{ github.event_name == 'workflow_dispatch' &&
-          inputs.authorize_provider_creates == true &&
-          vars.MILK_CONFIRMED_RUN_CONFIG_SHA256 != '' &&
-          inputs.confirmed_run_config_sha256 == vars.MILK_CONFIRMED_RUN_CONFIG_SHA256 }}
+      ${{ vars.MILK_CONFIRMED_RUN_CONFIG_SHA256 != '' &&
+          (github.event_name == 'schedule' ||
+           (github.event_name == 'workflow_dispatch' &&
+            inputs.authorize_provider_creates == true &&
+            inputs.confirmed_run_config_sha256 == vars.MILK_CONFIRMED_RUN_CONFIG_SHA256)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     environment: milk-gateway-tick-prod
@@ -49,7 +50,8 @@ jobs:
       MILK_CONTROL_STORE_SESSION_TOKEN: ${{ secrets.MILK_CONTROL_STORE_SESSION_TOKEN }}
       MILK_CONFIRMED_RUN_CONFIG_SHA256: ${{ vars.MILK_CONFIRMED_RUN_CONFIG_SHA256 }}
       MILK_CONFIRMED_RUN_CONFIG_JSON: ${{ vars.MILK_CONFIRMED_RUN_CONFIG_JSON }}
-      MILK_PROVIDER_CREATE_CONFIRMATION: ${{ inputs.confirmed_run_config_sha256 }}
+      MILK_PROVIDER_CREATE_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true }}
+      MILK_PROVIDER_CREATE_CONFIRMATION: ${{ github.event_name == 'workflow_dispatch' && inputs.confirmed_run_config_sha256 || '' }}
     steps:
       - name: Read scheduler code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -71,7 +73,7 @@ jobs:
           python3 -m milk_harness.scheduler validate-image \
             --name gateway --image "$MILK_GATEWAY_IMAGE"
           python3 -m milk_harness.scheduler validate-confirmation \
-            --requested true \
+            --requested "$MILK_PROVIDER_CREATE_REQUESTED" \
             --provided-sha256 "$MILK_PROVIDER_CREATE_CONFIRMATION" \
             --expected-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256"
 
@@ -93,7 +95,7 @@ jobs:
           python3 -m milk_harness.scheduler validate-run-config \
             --phase gateway \
             --manifest "$run_config" \
-            --confirmed-sha256 "$MILK_PROVIDER_CREATE_CONFIRMATION" \
+            --confirmed-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256" \
             --harness-source-commit "$GITHUB_SHA" \
             --gateway-config "$config" \
             --gateway-image "$MILK_GATEWAY_IMAGE"
@@ -201,6 +203,8 @@ jobs:
       MILK_MODAL_STUDENT_TRAIN_VOLUME_NAME: ${{ vars.MILK_MODAL_STUDENT_TRAIN_VOLUME_NAME }}
       MILK_MODAL_STUDENT_TRAIN_VOLUME_ID: ${{ vars.MILK_MODAL_STUDENT_TRAIN_VOLUME_ID }}
       MILK_GATEWAY_SOURCE_COMMIT: ${{ vars.MILK_GATEWAY_SOURCE_COMMIT }}
+      MILK_GATEWAY_IMAGE_ADMISSION_SHA256: ${{ vars.MILK_GATEWAY_IMAGE_ADMISSION_SHA256 }}
+      MILK_GATEWAY_RELEASE_SHA256: ${{ vars.MILK_GATEWAY_RELEASE_SHA256 }}
       MILK_GATEWAY_CONTAINER_APPLICATION_ID: ${{ vars.MILK_GATEWAY_CONTAINER_APPLICATION_ID }}
       MILK_GATEWAY_CONTAINER_APPLICATION_VERSION: ${{ vars.MILK_GATEWAY_CONTAINER_APPLICATION_VERSION }}
       MILK_GATEWAY_CONTAINER_IMAGE: ${{ vars.MILK_GATEWAY_CONTAINER_IMAGE }}
@@ -221,16 +225,16 @@ jobs:
       MILK_EVIDENCE_R2_ACCESS_KEY_ID: ${{ secrets.MILK_EVIDENCE_R2_ACCESS_KEY_ID }}
       MILK_EVIDENCE_R2_SECRET_ACCESS_KEY: ${{ secrets.MILK_EVIDENCE_R2_SECRET_ACCESS_KEY }}
       MILK_EVIDENCE_R2_SESSION_TOKEN: ${{ secrets.MILK_EVIDENCE_R2_SESSION_TOKEN }}
-      MILK_CREATE_AUTHORITY_WRITE_R2_ACCOUNT_ID: ${{ needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_WRITE_R2_ACCOUNT_ID || '' }}
-      MILK_CREATE_AUTHORITY_WRITE_R2_BUCKET: ${{ needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_WRITE_R2_BUCKET || '' }}
-      MILK_CREATE_AUTHORITY_WRITE_R2_ACCESS_KEY_ID: ${{ needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_WRITE_R2_ACCESS_KEY_ID || '' }}
-      MILK_CREATE_AUTHORITY_WRITE_R2_SECRET_ACCESS_KEY: ${{ needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_WRITE_R2_SECRET_ACCESS_KEY || '' }}
-      MILK_CREATE_AUTHORITY_WRITE_R2_SESSION_TOKEN: ${{ needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_WRITE_R2_SESSION_TOKEN || '' }}
-      MILK_CREATE_AUTHORITY_READ_R2_ACCOUNT_ID: ${{ needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_READ_R2_ACCOUNT_ID || '' }}
-      MILK_CREATE_AUTHORITY_READ_R2_BUCKET: ${{ needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_READ_R2_BUCKET || '' }}
-      MILK_CREATE_AUTHORITY_READ_R2_ACCESS_KEY_ID: ${{ needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_READ_R2_ACCESS_KEY_ID || '' }}
-      MILK_CREATE_AUTHORITY_READ_R2_SECRET_ACCESS_KEY: ${{ needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_READ_R2_SECRET_ACCESS_KEY || '' }}
-      MILK_CREATE_AUTHORITY_READ_R2_SESSION_TOKEN: ${{ needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_READ_R2_SESSION_TOKEN || '' }}
+      MILK_CREATE_AUTHORITY_WRITE_R2_ACCOUNT_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_WRITE_R2_ACCOUNT_ID || '' }}
+      MILK_CREATE_AUTHORITY_WRITE_R2_BUCKET: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_WRITE_R2_BUCKET || '' }}
+      MILK_CREATE_AUTHORITY_WRITE_R2_ACCESS_KEY_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_WRITE_R2_ACCESS_KEY_ID || '' }}
+      MILK_CREATE_AUTHORITY_WRITE_R2_SECRET_ACCESS_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_WRITE_R2_SECRET_ACCESS_KEY || '' }}
+      MILK_CREATE_AUTHORITY_WRITE_R2_SESSION_TOKEN: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_WRITE_R2_SESSION_TOKEN || '' }}
+      MILK_CREATE_AUTHORITY_READ_R2_ACCOUNT_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_READ_R2_ACCOUNT_ID || '' }}
+      MILK_CREATE_AUTHORITY_READ_R2_BUCKET: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_READ_R2_BUCKET || '' }}
+      MILK_CREATE_AUTHORITY_READ_R2_ACCESS_KEY_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_READ_R2_ACCESS_KEY_ID || '' }}
+      MILK_CREATE_AUTHORITY_READ_R2_SECRET_ACCESS_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_READ_R2_SECRET_ACCESS_KEY || '' }}
+      MILK_CREATE_AUTHORITY_READ_R2_SESSION_TOKEN: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_READ_R2_SESSION_TOKEN || '' }}
       MILK_OPS_LOG_R2_ACCOUNT_ID: ${{ secrets.MILK_OPS_LOG_R2_ACCOUNT_ID }}
       MILK_OPS_LOG_R2_BUCKET: ${{ secrets.MILK_OPS_LOG_R2_BUCKET }}
       MILK_OPS_LOG_R2_ACCESS_KEY_ID: ${{ secrets.MILK_OPS_LOG_R2_ACCESS_KEY_ID }}
@@ -251,8 +255,8 @@ jobs:
       GATEWAY_SUMMARY_B64: ${{ needs.gateway-tick.outputs.summary_b64 }}
       GATEWAY_SUMMARY_ACCEPTED: ${{ needs.gateway-tick.outputs.accepted }}
       MILK_GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
-      MILK_PROVIDER_CREATE_REQUESTED: ${{ inputs.authorize_provider_creates }}
-      MILK_PROVIDER_CREATE_CONFIRMATION: ${{ inputs.confirmed_run_config_sha256 }}
+      MILK_PROVIDER_CREATE_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true }}
+      MILK_PROVIDER_CREATE_CONFIRMATION: ${{ github.event_name == 'workflow_dispatch' && inputs.confirmed_run_config_sha256 || '' }}
     steps:
       - name: Read scheduler code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -333,6 +337,8 @@ jobs:
           gateway_ingest_entries=$scratch/gateway-ingest-entries
           gateway_ingest_config=$scratch/gateway-ingest-config.json
           gateway_ingest_run_config=$scratch/gateway-ingest-run-config.json
+          provider_gateway_config=$scratch/provider-gateway-config.json
+          provider_gateway_run_config=$scratch/provider-gateway-run-config.json
           gateway_ingest_stdout=$scratch/gateway-ingest-stdout
           gateway_ingest_stderr=$scratch/gateway-ingest-stderr
           candidate_socket=$candidate_socket_dir/milk-candidate-key.sock
@@ -347,6 +353,25 @@ jobs:
             --repository-id "$MILK_GITHUB_REPOSITORY_ID" \
             --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT")
+          printf '%s' "$MILK_GATEWAY_INGEST_CONFIG_JSON" >"$provider_gateway_config"
+          printf '%s' "$MILK_CONFIRMED_RUN_CONFIG_JSON" >"$provider_gateway_run_config"
+          chmod 0400 "$provider_gateway_config" "$provider_gateway_run_config"
+          env -i HOME="$scratch/npm-home" PATH=/usr/bin:/bin PYTHONPATH="$GITHUB_WORKSPACE" \
+            python3 -m milk_harness.scheduler validate-run-config \
+              --phase route \
+              --manifest "$provider_gateway_run_config" \
+              --confirmed-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256" \
+              --harness-source-commit "$GITHUB_SHA" \
+              --root "$GITHUB_WORKSPACE" \
+              --gateway-config "$provider_gateway_config" \
+              --gateway-image "$MILK_GATEWAY_IMAGE" \
+              --gateway-source-commit "$MILK_GATEWAY_SOURCE_COMMIT" \
+              --gateway-image-admission-sha256 "$MILK_GATEWAY_IMAGE_ADMISSION_SHA256" \
+              --gateway-release-sha256 "$MILK_GATEWAY_RELEASE_SHA256" \
+              --gateway-container-application-id "$MILK_GATEWAY_CONTAINER_APPLICATION_ID" \
+              --gateway-container-application-version "$MILK_GATEWAY_CONTAINER_APPLICATION_VERSION" \
+              --gateway-container-image "$MILK_GATEWAY_CONTAINER_IMAGE" \
+              --gateway-worker-version-id "$MILK_GATEWAY_WORKER_VERSION_ID"
 
           if ! printf '%s' "$MILK_GHCR_PULL_TOKEN" | docker --config "$docker_config" login \
             ghcr.io --username "$MILK_GHCR_PULL_USERNAME" --password-stdin >/dev/null 2>&1; then
@@ -458,6 +483,13 @@ jobs:
               --student-branch-image "$MILK_STUDENT_BRANCH_IMAGE" \
               --teacher-image "$MILK_TEACHER_IMAGE" \
               --image-release-sha256 "$MILK_IMAGE_RELEASE_SHA256" \
+              --gateway-source-commit "$MILK_GATEWAY_SOURCE_COMMIT" \
+              --gateway-image-admission-sha256 "$MILK_GATEWAY_IMAGE_ADMISSION_SHA256" \
+              --gateway-release-sha256 "$MILK_GATEWAY_RELEASE_SHA256" \
+              --gateway-container-application-id "$MILK_GATEWAY_CONTAINER_APPLICATION_ID" \
+              --gateway-container-application-version "$MILK_GATEWAY_CONTAINER_APPLICATION_VERSION" \
+              --gateway-container-image "$MILK_GATEWAY_CONTAINER_IMAGE" \
+              --gateway-worker-version-id "$MILK_GATEWAY_WORKER_VERSION_ID" \
               --registry-secret "$MILK_BASETEN_REGISTRY_SECRET" \
               --config-secret "$MILK_BASETEN_CONFIG_SECRET" \
               --capture-access-secret "$MILK_BASETEN_CAPTURE_ACCESS_SECRET" \
@@ -772,19 +804,28 @@ jobs:
     if: >-
       ${{ needs.provider-jobs.result == 'success' &&
           needs.provider-jobs.outputs.route_required == 'true' &&
-          github.event_name == 'workflow_dispatch' &&
-          inputs.authorize_provider_creates == true &&
           vars.MILK_CONFIRMED_RUN_CONFIG_SHA256 != '' &&
-          inputs.confirmed_run_config_sha256 == vars.MILK_CONFIRMED_RUN_CONFIG_SHA256 }}
+          (github.event_name == 'schedule' ||
+           (github.event_name == 'workflow_dispatch' &&
+            inputs.authorize_provider_creates == true &&
+            inputs.confirmed_run_config_sha256 == vars.MILK_CONFIRMED_RUN_CONFIG_SHA256)) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     environment: milk-route-control-prod
     outputs:
       zero_published: ${{ steps.route.outputs.zero_published }}
       zero_route_revision: ${{ steps.route.outputs.zero_route_revision }}
     env:
       MILK_GATEWAY_IMAGE: ${{ vars.MILK_GATEWAY_IMAGE }}
+      MILK_CONFIRMED_RUN_CONFIG_SHA256: ${{ vars.MILK_CONFIRMED_RUN_CONFIG_SHA256 }}
+      MILK_CONFIRMED_RUN_CONFIG_JSON: ${{ vars.MILK_CONFIRMED_RUN_CONFIG_JSON }}
       MILK_GATEWAY_SOURCE_COMMIT: ${{ vars.MILK_GATEWAY_SOURCE_COMMIT }}
+      MILK_GATEWAY_IMAGE_ADMISSION_SHA256: ${{ vars.MILK_GATEWAY_IMAGE_ADMISSION_SHA256 }}
+      MILK_GATEWAY_RELEASE_SHA256: ${{ vars.MILK_GATEWAY_RELEASE_SHA256 }}
+      MILK_GATEWAY_CONTAINER_APPLICATION_ID: ${{ vars.MILK_GATEWAY_CONTAINER_APPLICATION_ID }}
+      MILK_GATEWAY_CONTAINER_APPLICATION_VERSION: ${{ vars.MILK_GATEWAY_CONTAINER_APPLICATION_VERSION }}
+      MILK_GATEWAY_CONTAINER_IMAGE: ${{ vars.MILK_GATEWAY_CONTAINER_IMAGE }}
+      MILK_GATEWAY_WORKER_VERSION_ID: ${{ vars.MILK_GATEWAY_WORKER_VERSION_ID }}
       MILK_ROUTE_CANDIDATE_READY: ${{ needs.provider-jobs.outputs.route_candidate_ready }}
       MILK_ROUTE_STUDENT_JOB_ID: ${{ needs.provider-jobs.outputs.route_student_job_id }}
     steps:
@@ -811,18 +852,22 @@ jobs:
           MILK_ROUTE_GATEWAY_CONFIG_JSON: ${{ secrets.MILK_ROUTE_GATEWAY_CONFIG_JSON }}
           MILK_ROUTE_SECRET_HEX: ${{ secrets.MILK_ROUTE_SECRET_HEX }}
           MILK_ROUTE_SIGNING_KEY_PEM: ${{ secrets.MILK_ROUTE_SIGNING_KEY_PEM }}
-          MILK_ROUTE_SMOKE_CREDENTIAL_JSON: ${{ secrets.MILK_ROUTE_SMOKE_CREDENTIAL_JSON }}
+          MILK_ROUTE_SMOKE_CREDENTIAL_JSON: ${{ github.event_name == 'workflow_dispatch' && secrets.MILK_ROUTE_SMOKE_CREDENTIAL_JSON || '' }}
+          MILK_MODAL_CANDIDATE_API_KEY: ${{ github.event_name == 'workflow_dispatch' && secrets.MILK_MODAL_CANDIDATE_API_KEY || '' }}
+          MILK_GATEWAY_CONTAINER_ADMIN_KEY: ${{ secrets.MILK_GATEWAY_CONTAINER_ADMIN_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN: ${{ secrets.CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN }}
           MILK_CONTROL_STORE_ACCESS_KEY_ID: ${{ secrets.MILK_ROUTE_CONTROL_R2_ACCESS_KEY_ID }}
           MILK_CONTROL_STORE_SECRET_ACCESS_KEY: ${{ secrets.MILK_ROUTE_CONTROL_R2_SECRET_ACCESS_KEY }}
           MILK_CONTROL_STORE_SESSION_TOKEN: ${{ secrets.MILK_ROUTE_CONTROL_R2_SESSION_TOKEN }}
           MILK_ROUTE_STORE_ACCESS_KEY_ID: ${{ secrets.MILK_ROUTE_ROUTE_R2_ACCESS_KEY_ID }}
           MILK_ROUTE_STORE_SECRET_ACCESS_KEY: ${{ secrets.MILK_ROUTE_ROUTE_R2_SECRET_ACCESS_KEY }}
           MILK_ROUTE_STORE_SESSION_TOKEN: ${{ secrets.MILK_ROUTE_ROUTE_R2_SESSION_TOKEN }}
-          MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID }}
-          MILK_ROUTE_EVIDENCE_R2_BUCKET: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_BUCKET }}
-          MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID }}
-          MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY }}
-          MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN }}
+          MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID: ${{ github.event_name == 'workflow_dispatch' && secrets.MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID || '' }}
+          MILK_ROUTE_EVIDENCE_R2_BUCKET: ${{ github.event_name == 'workflow_dispatch' && secrets.MILK_ROUTE_EVIDENCE_R2_BUCKET || '' }}
+          MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID: ${{ github.event_name == 'workflow_dispatch' && secrets.MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID || '' }}
+          MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY: ${{ github.event_name == 'workflow_dispatch' && secrets.MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY || '' }}
+          MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN: ${{ github.event_name == 'workflow_dispatch' && secrets.MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN || '' }}
         run: |
           set -euo pipefail
           umask 077
@@ -830,7 +875,9 @@ jobs:
             printf 'route control: %s\n' "$1" >&2
             exit "${2:-64}"
           }
-          [ "$MILK_ROUTE_CANDIDATE_READY" = true ] || fail 'candidate credential proof is unavailable' 70
+          recovery_only=false
+          [ "$GITHUB_EVENT_NAME" != schedule ] || recovery_only=true
+          [[ "$MILK_ROUTE_CANDIDATE_READY" =~ ^(true|false)$ ]] || fail 'candidate credential proof flag is invalid' 70
           [[ "$MILK_ROUTE_STUDENT_JOB_ID" =~ ^[0-9a-f]{64}$ ]] || fail 'student job identity is invalid'
           [[ "$MILK_GATEWAY_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail 'gateway source commit is invalid'
           python3 -m milk_harness.scheduler validate-image \
@@ -839,33 +886,51 @@ jobs:
           for required in \
             MILK_GHCR_PULL_USERNAME MILK_GHCR_PULL_TOKEN \
             MILK_ROUTE_GATEWAY_CONFIG_JSON MILK_ROUTE_SECRET_HEX \
-            MILK_ROUTE_SIGNING_KEY_PEM MILK_ROUTE_SMOKE_CREDENTIAL_JSON \
+            MILK_ROUTE_SIGNING_KEY_PEM \
             MILK_CONTROL_STORE_ACCESS_KEY_ID MILK_CONTROL_STORE_SECRET_ACCESS_KEY \
             MILK_ROUTE_STORE_ACCESS_KEY_ID MILK_ROUTE_STORE_SECRET_ACCESS_KEY \
-            MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID MILK_ROUTE_EVIDENCE_R2_BUCKET \
-            MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID \
-            MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY; do
+            MILK_CONFIRMED_RUN_CONFIG_SHA256 MILK_CONFIRMED_RUN_CONFIG_JSON \
+            MILK_GATEWAY_IMAGE_ADMISSION_SHA256 MILK_GATEWAY_RELEASE_SHA256 \
+            MILK_GATEWAY_CONTAINER_APPLICATION_ID \
+            MILK_GATEWAY_CONTAINER_APPLICATION_VERSION \
+            MILK_GATEWAY_CONTAINER_IMAGE MILK_GATEWAY_WORKER_VERSION_ID; do
             [ -n "${!required}" ] || fail 'a route-control credential is missing' 77
           done
+          if [ "$recovery_only" != true ]; then
+            for required in \
+              MILK_ROUTE_SMOKE_CREDENTIAL_JSON \
+              MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID MILK_ROUTE_EVIDENCE_R2_BUCKET \
+              MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID \
+              MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY; do
+              [ -n "${!required}" ] || fail 'a route proof credential is missing' 77
+            done
+          fi
           [[ "$MILK_ROUTE_SECRET_HEX" =~ ^[0-9a-f]{64}$ ]] || fail 'route secret is invalid' 77
 
           scratch=$(mktemp -d "$RUNNER_TEMP/milk-route-control.XXXXXX")
           gateway_source=$GITHUB_WORKSPACE/milk-gateway-source
           docker_config=$scratch/docker
           gateway_config=$scratch/gateway-config.json
+          run_config=$scratch/run-config.json
           gateway_binary=$scratch/dragontales-gateway
           openssl_binary=$scratch/openssl
           signing_key=$scratch/route-signing-key.pem
           smoke_credential=$scratch/smoke-credential.json
+          gateway_anchor=$scratch/gateway-anchor.json
           signer=$gateway_source/deploy/dragontales-publish-route.sh
           smoke_program=$gateway_source/tools/openai-production-smoke.mjs
+          candidate_helper=$gateway_source/tools/manage-candidate-credential.py
           gateway_container_id=
+          candidate_provider=
+          candidate_absent=false
+          candidate_operation=0
           zero_needed=false
           zero_live=false
 
           ghcr_username=$MILK_GHCR_PULL_USERNAME
           ghcr_token=$MILK_GHCR_PULL_TOKEN
           gateway_config_json=$MILK_ROUTE_GATEWAY_CONFIG_JSON
+          confirmed_run_config_json=$MILK_CONFIRMED_RUN_CONFIG_JSON
           route_secret_hex=$MILK_ROUTE_SECRET_HEX
           signing_key_pem=$MILK_ROUTE_SIGNING_KEY_PEM
           smoke_credential_json=$MILK_ROUTE_SMOKE_CREDENTIAL_JSON
@@ -880,6 +945,10 @@ jobs:
           evidence_access=$MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID
           evidence_secret=$MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY
           evidence_session=$MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN
+          modal_candidate_key=$MILK_MODAL_CANDIDATE_API_KEY
+          gateway_admin_key=$MILK_GATEWAY_CONTAINER_ADMIN_KEY
+          cloudflare_account_id=$CLOUDFLARE_ACCOUNT_ID
+          cloudflare_candidate_token=$CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN
           unset \
             MILK_GHCR_PULL_USERNAME MILK_GHCR_PULL_TOKEN \
             MILK_ROUTE_GATEWAY_CONFIG_JSON MILK_ROUTE_SECRET_HEX \
@@ -890,18 +959,43 @@ jobs:
             MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID MILK_ROUTE_EVIDENCE_R2_BUCKET \
             MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID \
             MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY \
-            MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN
+            MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN \
+            MILK_MODAL_CANDIDATE_API_KEY MILK_GATEWAY_CONTAINER_ADMIN_KEY \
+            CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN \
+            MILK_CONFIRMED_RUN_CONFIG_JSON
 
           mkdir -m 0700 "$docker_config" "$scratch/npm-home" "$scratch/signatures"
           printf '%s\n' "$gateway_config_json" >"$gateway_config"
+          printf '%s' "$confirmed_run_config_json" >"$run_config"
           printf '%s\n' "$signing_key_pem" >"$signing_key"
-          printf '%s\n' "$smoke_credential_json" >"$smoke_credential"
-          chmod 0400 "$gateway_config" "$smoke_credential"
+          if [ "$recovery_only" != true ]; then
+            printf '%s\n' "$smoke_credential_json" >"$smoke_credential"
+            chmod 0400 "$smoke_credential"
+          fi
+          chmod 0400 "$gateway_config" "$run_config"
           chmod 0600 "$signing_key"
           gateway_config_json=
+          confirmed_run_config_json=
           signing_key_pem=
           smoke_credential_json=
-          unset gateway_config_json signing_key_pem smoke_credential_json
+          unset gateway_config_json confirmed_run_config_json signing_key_pem smoke_credential_json
+          env -i HOME="$scratch/npm-home" PATH=/usr/bin:/bin PYTHONPATH="$GITHUB_WORKSPACE" \
+            python3 -m milk_harness.scheduler validate-run-config \
+              --phase route \
+              --manifest "$run_config" \
+              --confirmed-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256" \
+              --harness-source-commit "$GITHUB_SHA" \
+              --root "$GITHUB_WORKSPACE" \
+              --gateway-config "$gateway_config" \
+              --gateway-image "$MILK_GATEWAY_IMAGE" \
+              --gateway-source-commit "$MILK_GATEWAY_SOURCE_COMMIT" \
+              --gateway-image-admission-sha256 "$MILK_GATEWAY_IMAGE_ADMISSION_SHA256" \
+              --gateway-release-sha256 "$MILK_GATEWAY_RELEASE_SHA256" \
+              --gateway-container-application-id "$MILK_GATEWAY_CONTAINER_APPLICATION_ID" \
+              --gateway-container-application-version "$MILK_GATEWAY_CONTAINER_APPLICATION_VERSION" \
+              --gateway-container-image "$MILK_GATEWAY_CONTAINER_IMAGE" \
+              --gateway-worker-version-id "$MILK_GATEWAY_WORKER_VERSION_ID" \
+              --gateway-anchor-output "$gateway_anchor"
 
           gateway_env=(
             env -i
@@ -927,23 +1021,245 @@ jobs:
           )
           [ -z "$evidence_session" ] || evidence_env+=(MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN="$evidence_session")
 
+          discard_candidate_request() {
+            if [ -n "${candidate_request:-}" ] && [ -f "$candidate_request" ]; then
+              chmod 0600 "$candidate_request"
+              : >"$candidate_request"
+            fi
+          }
+
+          prepare_candidate() {
+            local preparation values status
+            candidate_operation=$((candidate_operation + 1))
+            candidate_request=$scratch/modal-candidate-request-$candidate_operation.json
+            preparation=$scratch/modal-candidate-preparation-$candidate_operation.json
+            values=$scratch/modal-candidate-values-$candidate_operation
+            local arguments=(
+              --student-job-id "$MILK_ROUTE_STUDENT_JOB_ID"
+              --gateway-anchor "$gateway_anchor"
+              --request "$candidate_request"
+            )
+            if "${gateway_env[@]}" timeout --signal=TERM --kill-after=10s 90s \
+              "$gateway_binary" --config "$gateway_config" \
+              prepare-modal-candidate-credential "${arguments[@]}" \
+              >"$preparation" 2>"$preparation.stderr"; then
+              status=0
+            else
+              status=$?
+            fi
+            : >"$preparation.stderr"
+            if [ "$status" -ne 0 ]; then
+              : >"$preparation"
+              return "$status"
+            fi
+            if ! python3 - "$preparation" "$candidate_request" "$values" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import sys
+
+          preparation_name, request_name, values_name = sys.argv[1:]
+          raw = Path(preparation_name).read_bytes()
+          if not 1 <= len(raw) <= 1024 or not raw.endswith(b"\n"):
+              raise SystemExit("invalid candidate preparation output")
+          value = json.loads(raw)
+          if (
+              list(value) != ["schema_version", "selected_provider", "action", "request_sha256"]
+              or value["schema_version"] != "dragontales.modal-candidate-credential-preparation.v1"
+              or value["selected_provider"] not in {"baseten", "modal"}
+              or value["action"] not in {"install", "verify", "ready", "remove", "absent"}
+              or json.dumps(value, separators=(",", ":")).encode() + b"\n" != raw
+          ):
+              raise SystemExit("candidate preparation output differs")
+          action = value["action"]
+          digest = value["request_sha256"]
+          has_request = action in {"install", "verify", "remove"}
+          if value["selected_provider"] == "baseten" and action != "ready":
+              raise SystemExit("Baseten candidate is not ready")
+          if has_request:
+              path = Path(request_name)
+              metadata = path.lstat()
+              request = path.read_bytes()
+              if (
+                  not stat.S_ISREG(metadata.st_mode)
+                  or path.is_symlink()
+                  or metadata.st_uid != os.getuid()
+                  or metadata.st_nlink != 1
+                  or stat.S_IMODE(metadata.st_mode) != 0o400
+                  or not 1 <= len(request) <= 65_536
+                  or re.fullmatch(r"[0-9a-f]{64}", digest or "") is None
+                  or hashlib.sha256(request).hexdigest() != digest
+              ):
+                  raise SystemExit("candidate request differs from gateway preparation")
+          elif digest is not None or os.path.lexists(request_name):
+              raise SystemExit("candidate no-op produced request authority")
+          Path(values_name).write_text(
+              f'{value["selected_provider"]}\t{action}\t{digest or ""}\n',
+              encoding="utf-8",
+          )
+          PY
+            then
+              : >"$preparation"
+              return 65
+            fi
+            IFS=$'\t' read -r prepared_provider candidate_action candidate_request_sha256 <"$values"
+            : >"$preparation"
+            : >"$values"
+          }
+
+          run_candidate_helper() {
+            local action=$1 ack helper_stdout helper_stderr ingest_stdout ingest_stderr status
+            [ "$prepared_provider" = modal ] || return 64
+            [[ "$action" =~ ^(install|verify|remove)$ ]] || return 64
+            [ -n "$cloudflare_account_id" ] || return 77
+            [ -n "$cloudflare_candidate_token" ] || return 77
+            [ -n "$gateway_admin_key" ] || return 77
+            if [ "$action" = install ] && [ -z "$modal_candidate_key" ]; then
+              return 77
+            fi
+            ack=$scratch/modal-candidate-ack-$candidate_operation.json
+            helper_stdout=$ack
+            helper_stderr=$scratch/modal-candidate-helper-$candidate_operation.stderr
+            ingest_stdout=$scratch/modal-candidate-ingest-$candidate_operation.json
+            ingest_stderr=$scratch/modal-candidate-ingest-$candidate_operation.stderr
+            local arguments=(
+              "${action}-modal"
+              --request "$candidate_request"
+              --admin-key-fd 3
+            )
+            if [ "$action" = install ]; then
+              arguments+=(--candidate-key-fd 4)
+              if env -i \
+                HOME="$scratch/npm-home" \
+                PATH="$candidate_helper_path" \
+                CLOUDFLARE_ACCOUNT_ID="$cloudflare_account_id" \
+                CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN="$cloudflare_candidate_token" \
+                timeout --signal=TERM --kill-after=10s 600s \
+                python3 "$candidate_helper" "${arguments[@]}" \
+                3< <(printf '%s' "$gateway_admin_key") \
+                4< <(printf '%s' "$modal_candidate_key") \
+                >"$helper_stdout" 2>"$helper_stderr"; then
+                status=0
+              else
+                status=$?
+              fi
+            elif env -i \
+              HOME="$scratch/npm-home" \
+              PATH="$candidate_helper_path" \
+              CLOUDFLARE_ACCOUNT_ID="$cloudflare_account_id" \
+              CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN="$cloudflare_candidate_token" \
+              timeout --signal=TERM --kill-after=10s 600s \
+              python3 "$candidate_helper" "${arguments[@]}" \
+              3< <(printf '%s' "$gateway_admin_key") \
+              >"$helper_stdout" 2>"$helper_stderr"; then
+              status=0
+            else
+              status=$?
+            fi
+            : >"$helper_stderr"
+            if [ "$status" -ne 0 ]; then
+              [ ! -e "$helper_stdout" ] || : >"$helper_stdout"
+              return "$status"
+            fi
+            chmod 0600 "$ack"
+            if "${gateway_env[@]}" timeout --signal=TERM --kill-after=10s 90s \
+              "$gateway_binary" --config "$gateway_config" \
+              ingest-modal-candidate-credential-ack \
+                --student-job-id "$MILK_ROUTE_STUDENT_JOB_ID" \
+                --acknowledgement "$ack" \
+              >"$ingest_stdout" 2>"$ingest_stderr"; then
+              status=0
+            else
+              status=$?
+            fi
+            : >"$ingest_stderr"
+            if [ "$status" -eq 0 ]; then
+              if python3 - "$ingest_stdout" <<'PY'
+          import json
+          from pathlib import Path
+          import re
+          import sys
+
+          raw = Path(sys.argv[1]).read_bytes()
+          value = json.loads(raw)
+          if (
+              not 1 <= len(raw) <= 2048
+              or not raw.endswith(b"\n")
+              or list(value) != ["schema_version", "state", "object_key", "sha256"]
+              or value["schema_version"] != "dragontales.modal-candidate-credential-ack-write.v1"
+              or value["state"] not in {"installed", "absent"}
+              or not isinstance(value["object_key"], str)
+              or not value["object_key"].endswith("-ack.json")
+              or re.fullmatch(r"[0-9a-f]{64}", value["sha256"] or "") is None
+              or json.dumps(value, separators=(",", ":")).encode() + b"\n" != raw
+          ):
+              raise SystemExit("candidate acknowledgement write differs")
+          PY
+              then
+                status=0
+              else
+                status=$?
+              fi
+            fi
+            : >"$ack"
+            : >"$ingest_stdout"
+            discard_candidate_request
+            return "$status"
+          }
+
+          reconcile_candidate() {
+            local target=$1 iteration
+            for iteration in $(seq 1 8); do
+              prepare_candidate || return
+              if [ -z "$candidate_provider" ]; then
+                candidate_provider=$prepared_provider
+              elif [ "$candidate_provider" != "$prepared_provider" ]; then
+                return 70
+              fi
+              if [ "$prepared_provider" = baseten ]; then
+                [ "$candidate_action" = ready ] || return 70
+                if [ "$target" = ready ]; then
+                  [ "$MILK_ROUTE_CANDIDATE_READY" = true ] || return 70
+                else
+                  [ "$target" = absent ] || return 70
+                  candidate_absent=true
+                fi
+                return
+              fi
+              if [ "$candidate_action" = "$target" ]; then
+                [ "$target" != absent ] || candidate_absent=true
+                return 0
+              fi
+              if [ "$target" = ready ]; then
+                [[ "$candidate_action" =~ ^(install|verify)$ ]] || return 70
+              else
+                [[ "$candidate_action" =~ ^(remove|verify)$ ]] || return 70
+              fi
+              run_candidate_helper "$candidate_action" || return
+            done
+            return 70
+          }
+
           advance_phase() {
             local phase=$1 manifest=$2 output=$3 values=$4 status
             [ ! -e "$manifest" ] && [ ! -L "$manifest" ] || return 64
-            set +e
-            "${gateway_env[@]}" timeout --signal=TERM --kill-after=10s 90s \
+            if "${gateway_env[@]}" timeout --signal=TERM --kill-after=10s 90s \
               "$gateway_binary" --config "$gateway_config" \
               advance-winner-route \
                 --student-job-id "$MILK_ROUTE_STUDENT_JOB_ID" \
                 --phase "$phase" \
                 --manifest "$manifest" \
-              >"$output" 2>"$output.stderr"
-            status=$?
-            set -e
+              >"$output" 2>"$output.stderr"; then
+              status=0
+            else
+              status=$?
+            fi
             : >"$output.stderr"
             [ "$status" -eq 0 ] || return "$status"
-            set +e
-            python3 - "$phase" "$manifest" "$output" "$values" <<'PY'
+            if python3 - "$phase" "$manifest" "$output" "$values" <<'PY'
           import datetime as dt
           import json
           import os
@@ -986,8 +1302,11 @@ jobs:
               encoding="utf-8",
           )
           PY
-            validation_status=$?
-            set -e
+            then
+              validation_status=0
+            else
+              validation_status=$?
+            fi
             : >"$output"
             [ "$validation_status" -eq 0 ] || return "$validation_status"
           }
@@ -995,14 +1314,15 @@ jobs:
           publish_manifest() {
             local manifest=$1 signature=$2 receipt=$3 status
             chmod 0400 "$manifest"
-            set +e
-            "${gateway_env[@]}" timeout --signal=TERM --kill-after=10s 180s \
+            if "${gateway_env[@]}" timeout --signal=TERM --kill-after=10s 180s \
               bash "$signer" \
                 "$gateway_binary" "$openssl_binary" "$gateway_config" \
                 "$manifest" "$signature" "$signing_key" \
-              >"$receipt" 2>"$receipt.stderr"
-            status=$?
-            set -e
+              >"$receipt" 2>"$receipt.stderr"; then
+              status=0
+            else
+              status=$?
+            fi
             : >"$receipt"
             : >"$receipt.stderr"
             return "$status"
@@ -1056,6 +1376,7 @@ jobs:
               item for item in config.get("traffic_keys", [])
               if item == {
                   "api_key_sha256": hashlib.sha256(api_key.encode()).hexdigest(),
+                  "capture_allowed": False,
                   "cohort_id": cohort_id,
               }
           ]
@@ -1073,29 +1394,45 @@ jobs:
           PY
           }
 
-          smoke_evidence() {
-            local mode=$1 revision=${2:-} receipt=${3:-}
-            "${evidence_env[@]}" python3 - "$mode" "$MILK_ROUTE_STUDENT_JOB_ID" \
+          proof_evidence() {
+            local kind=$1 mode=$2 revision=${3:-} receipt=${4:-}
+            "${evidence_env[@]}" python3 - "$kind" "$mode" "$MILK_ROUTE_STUDENT_JOB_ID" \
               "$revision" "$receipt" "$smoke_credential" <<'PY'
           import hashlib
           import json
           from pathlib import Path
           import re
           import sys
-          import urllib.error
-
           from milk_harness.evidence import R2EvidenceStore, canonical_json, create_same
 
-          mode, student_job_id, revision, receipt_name, credential_name = sys.argv[1:]
+          kind, mode, student_job_id, revision, receipt_name, credential_name = sys.argv[1:]
+          if kind not in {"candidate", "saturation"}:
+              raise ValueError("route proof kind is invalid")
           digest = re.compile(r"[0-9a-f]{64}\Z")
           if digest.fullmatch(student_job_id) is None:
               raise SystemExit("invalid smoke student job identity")
           credential_raw = Path(credential_name).read_bytes()
           credential = json.loads(credential_raw)
-          request = {
-              "messages": [{"role": "user", "content": "Reply with only OK."}],
-              "model": credential["model"],
-          }
+          if kind == "candidate":
+              request = {
+                  "messages": [{"role": "user", "content": "Reply with only OK."}],
+                  "model": credential["model"],
+              }
+              prefix = f"route-smokes/v1/{student_job_id}"
+              intent_prefix = f"route-smoke-intents/v1/{student_job_id}"
+              intent_schema = "milk.official-openai-sdk-route-smoke-intent.v1"
+          else:
+              request = {
+                  "messages": [{
+                      "role": "user",
+                      "content": "Write OK on 4096 separate lines. Do not summarize or stop early.",
+                  }],
+                  "model": credential["model"],
+                  "stream": True,
+              }
+              prefix = f"route-saturation-fallback-smokes/v1/{student_job_id}"
+              intent_prefix = f"route-saturation-fallback-smoke-intents/v1/{student_job_id}"
+              intent_schema = "milk.official-openai-sdk-saturation-fallback-smoke-intent.v1"
           if credential["reasoning_effort"] is not None:
               request["reasoning_effort"] = credential["reasoning_effort"]
           expected = {
@@ -1104,43 +1441,67 @@ jobs:
               "traffic_cohort_sha256": hashlib.sha256(credential["cohort_id"].encode()).hexdigest(),
               "traffic_key_sha256": hashlib.sha256(credential["api_key"].encode()).hexdigest(),
           }
-          keys = {
-              "artifact_sha256", "authenticated", "candidate_sha256", "choice_count",
-              "content_retained", "deployment_sha256", "endpoint_sha256", "finish_reason",
-              "http_status", "request_sha256", "response_bytes", "response_sha256",
-              "route_revision", "route_target", "schema_version", "sdk", "sdk_version",
-              "succeeded", "traffic_cohort_sha256", "traffic_key_sha256",
-          }
           def validate(raw, expected_revision):
               value = json.loads(raw)
-              if canonical_json(value) != raw or set(value) != keys:
+              common = (
+                  value.get("authenticated") is True
+                  and value.get("content_retained") is False
+                  and value.get("route_revision") == expected_revision
+                  and value.get("sdk") == "openai-node"
+                  and value.get("sdk_version") == "6.33.0"
+                  and value.get("succeeded") is True
+                  and all(value.get(field) == item for field, item in expected.items())
+              )
+              if canonical_json(value) != raw:
                   raise ValueError("route smoke receipt is not canonical")
-              for field in (
-                  "artifact_sha256", "candidate_sha256", "deployment_sha256", "response_sha256",
-              ):
-                  if digest.fullmatch(value.get(field) or "") is None:
-                      raise ValueError("route smoke digest is invalid")
+              if kind == "candidate":
+                  keys = {
+                      "artifact_sha256", "authenticated", "candidate_sha256", "choice_count",
+                      "content_retained", "deployment_sha256", "endpoint_sha256", "finish_reason",
+                      "http_status", "request_sha256", "response_bytes", "response_sha256",
+                      "route_revision", "route_target", "schema_version", "sdk", "sdk_version",
+                      "succeeded", "traffic_cohort_sha256", "traffic_key_sha256",
+                  }
+                  valid = (
+                      value.get("schema_version") == "milk.official-openai-sdk-route-smoke.v1"
+                      and value.get("choice_count") == 1
+                      and value.get("http_status") == 200
+                      and type(value.get("response_bytes")) is int
+                      and 1 <= value["response_bytes"] <= 65_536
+                      and isinstance(value.get("finish_reason"), str)
+                      and 1 <= len(value["finish_reason"]) <= 64
+                      and value.get("route_target") == "candidate"
+                      and digest.fullmatch(value.get("response_sha256") or "") is not None
+                  )
+              else:
+                  keys = {
+                      "artifact_sha256", "authenticated", "candidate_http_status",
+                      "candidate_route_target", "candidate_sha256", "content_retained",
+                      "deployment_sha256", "endpoint_sha256", "fallback_http_status",
+                      "fallback_route_target", "request_sha256", "route_revision",
+                      "schema_version", "sdk", "sdk_version", "succeeded",
+                      "traffic_cohort_sha256", "traffic_key_sha256",
+                  }
+                  valid = (
+                      value.get("schema_version")
+                      == "milk.official-openai-sdk-saturation-fallback-smoke.v1"
+                      and value.get("candidate_http_status") == 200
+                      and value.get("candidate_route_target") == "candidate"
+                      and value.get("fallback_http_status") == 200
+                      and value.get("fallback_route_target") == "openai"
+                  )
               if (
-                  value.get("schema_version") != "milk.official-openai-sdk-route-smoke.v1"
-                  or value.get("authenticated") is not True
-                  or value.get("choice_count") != 1
-                  or value.get("content_retained") is not False
-                  or value.get("http_status") != 200
-                  or type(value.get("response_bytes")) is not int
-                  or not 1 <= value["response_bytes"] <= 65_536
-                  or not isinstance(value.get("finish_reason"), str)
-                  or not 1 <= len(value["finish_reason"]) <= 64
-                  or value.get("route_revision") != expected_revision
-                  or value.get("route_target") != "candidate"
-                  or value.get("sdk") != "openai-node"
-                  or value.get("sdk_version") != "6.33.0"
-                  or value.get("succeeded") is not True
-                  or any(value.get(field) != item for field, item in expected.items())
+                  set(value) != keys
+                  or not common
+                  or not valid
+                  or any(
+                      digest.fullmatch(value.get(field) or "") is None
+                      for field in ("artifact_sha256", "candidate_sha256", "deployment_sha256")
+                  )
               ):
                   raise ValueError("route smoke receipt differs")
               return value
           store = R2EvidenceStore.from_environment("MILK_ROUTE_EVIDENCE_R2_")
-          prefix = f"route-smokes/v1/{student_job_id}"
           if mode == "require-any":
               found = store.list(prefix, limit=2)
               if len(found) != 1 or not found[0].startswith(prefix + "/") or not found[0].endswith(".json"):
@@ -1156,17 +1517,15 @@ jobs:
           if mode == "check":
               try:
                   raw = store.get(key)
-              except urllib.error.HTTPError as error:
-                  if error.code == 404:
-                      raise SystemExit(3)
-                  raise
+              except FileNotFoundError:
+                  raise SystemExit(3)
               validate(raw, revision)
               raise SystemExit(0)
           intent = {
               "endpoint_sha256": expected["endpoint_sha256"],
               "request_sha256": expected["request_sha256"],
               "route_revision": revision,
-              "schema_version": "milk.official-openai-sdk-route-smoke-intent.v1",
+              "schema_version": intent_schema,
               "student_job_id": student_job_id,
               "traffic_cohort_sha256": expected["traffic_cohort_sha256"],
               "traffic_key_sha256": expected["traffic_key_sha256"],
@@ -1174,7 +1533,7 @@ jobs:
           if mode == "reserve":
               outcome = create_same(
                   store,
-                  f"route-smoke-intents/v1/{student_job_id}/{revision}.json",
+                  f"{intent_prefix}/{revision}.json",
                   canonical_json(intent),
                   "application/json",
               )
@@ -1236,6 +1595,16 @@ jobs:
                 [ "$status" -ne 0 ] || status=70
               fi
             fi
+            if [ "$zero_live" = true ] && [ "$candidate_absent" != true ]; then
+              if ! reconcile_candidate absent; then
+                printf 'route control: Modal candidate credential removal failed\n' >&2
+                [ "$status" -ne 0 ] || status=70
+              fi
+            fi
+            modal_candidate_key=
+            gateway_admin_key=
+            cloudflare_candidate_token=
+            unset modal_candidate_key gateway_admin_key cloudflare_candidate_token
             if [ -n "$gateway_container_id" ]; then
               docker --config "$docker_config" rm -f "$gateway_container_id" >/dev/null 2>&1 || true
             fi
@@ -1247,7 +1616,8 @@ jobs:
           trap cleanup EXIT
           trap 'exit 130' HUP INT TERM
 
-          python3 - "$smoke_credential" "$gateway_config" <<'PY'
+          if [ "$recovery_only" != true ]; then
+            python3 - "$smoke_credential" "$gateway_config" <<'PY'
           import hashlib
           import json
           from pathlib import Path
@@ -1269,25 +1639,48 @@ jobs:
           config = json.loads(config_path.read_bytes())
           expected = {
               "api_key_sha256": hashlib.sha256(value["api_key"].encode()).hexdigest(),
+              "capture_allowed": False,
               "cohort_id": value["cohort_id"],
           }
-          if sum(item == expected for item in config.get("traffic_keys", [])) != 1:
+          if (
+              sum(item == expected for item in config.get("traffic_keys", [])) != 1
+              or not isinstance(config.get("route"), dict)
+              or type(config["route"].get("candidate_max_in_flight")) is not int
+              or config["route"].get("candidate_max_in_flight") != 1
+          ):
               raise SystemExit("route smoke credential is not configured")
           PY
+          fi
 
           [ -f "$signer" ] && [ ! -L "$signer" ] || fail 'route signer is missing' 69
-          [ -f "$smoke_program" ] && [ ! -L "$smoke_program" ] || fail 'route smoke program is missing' 69
+          [ -f "$candidate_helper" ] && [ ! -L "$candidate_helper" ] || fail 'candidate helper is missing' 69
+          if [ "$recovery_only" != true ]; then
+            [ -f "$smoke_program" ] && [ ! -L "$smoke_program" ] || fail 'route smoke program is missing' 69
+          fi
           [ "$(git -C "$gateway_source" rev-parse --verify HEAD)" = "$MILK_GATEWAY_SOURCE_COMMIT" ] || \
             fail 'gateway route source differs from the admitted commit' 69
+          if [ "$recovery_only" != true ]; then
+            if ! env -i CI=1 HOME="$scratch/npm-home" PATH="$PATH" \
+              npm ci --ignore-scripts --no-audit --no-fund --prefix "$gateway_source" \
+                >"$scratch/npm-stdout" 2>"$scratch/npm-stderr"; then
+              : >"$scratch/npm-stdout"
+              : >"$scratch/npm-stderr"
+              fail 'exact route SDK dependency failed to install' 69
+            fi
+            : >"$scratch/npm-stdout"
+            : >"$scratch/npm-stderr"
+          fi
           if ! env -i CI=1 HOME="$scratch/npm-home" PATH="$PATH" \
-            npm ci --ignore-scripts --no-audit --no-fund --prefix "$gateway_source" \
+            npm ci --ignore-scripts --no-audit --no-fund \
+              --prefix "$gateway_source/deploy/cloudflare" \
               >"$scratch/npm-stdout" 2>"$scratch/npm-stderr"; then
             : >"$scratch/npm-stdout"
             : >"$scratch/npm-stderr"
-            fail 'exact route SDK dependency failed to install' 69
+            fail 'exact candidate helper dependency failed to install' 69
           fi
           : >"$scratch/npm-stdout"
           : >"$scratch/npm-stderr"
+          candidate_helper_path="$gateway_source/deploy/cloudflare/node_modules/.bin:$(dirname "$(command -v node)"):$(dirname "$(command -v python3)"):$(dirname "$(command -v curl)"):$(dirname "$(command -v sleep)"):/usr/bin:/bin"
 
           if ! printf '%s' "$ghcr_token" | docker --config "$docker_config" login \
             ghcr.io --username "$ghcr_username" --password-stdin >/dev/null 2>&1; then
@@ -1322,11 +1715,34 @@ jobs:
           canary_revision=$advance_revision
           canary_not_after=$advance_not_after
 
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            if [ "$canary_action" = prepare ]; then
+              reconcile_candidate absent || \
+                fail 'scheduled recovery candidate absence is not durable' 70
+              exit 0
+            fi
+            if [ "$canary_action" = observe ]; then
+              zero_needed=true
+              force_zero || fail 'scheduled recovery could not publish zero' 70
+            elif [ "$canary_action" = done ]; then
+              zero_live=true
+              printf 'zero_published=true\n' >>"$GITHUB_OUTPUT"
+              printf 'zero_route_revision=%s\n' "$canary_revision" >>"$GITHUB_OUTPUT"
+            else
+              fail 'scheduled recovery route state is invalid' 70
+            fi
+            reconcile_candidate absent || \
+              fail 'scheduled recovery candidate absence is not durable' 70
+            exit 0
+          fi
+
           if [ "$canary_action" = done ]; then
-            smoke_evidence require-any || fail 'completed route has no immutable smoke proof' 70
             zero_live=true
             printf 'zero_published=true\n' >>"$GITHUB_OUTPUT"
             printf 'zero_route_revision=%s\n' "$canary_revision" >>"$GITHUB_OUTPUT"
+            reconcile_candidate absent || fail 'candidate credential absence is not durable' 70
+            proof_evidence candidate require-any || fail 'completed route has no immutable candidate proof' 70
+            proof_evidence saturation require-any || fail 'completed route has no immutable fallback proof' 70
             exit 0
           fi
           if [ "$canary_action" = prepare ]; then
@@ -1351,8 +1767,10 @@ jobs:
             fail 'canary advance action is invalid' 70
           fi
 
+          reconcile_candidate ready || fail 'candidate credential is not durably ready' 70
+
           set +e
-          smoke_evidence check "$canary_revision"
+          proof_evidence candidate check "$canary_revision"
           smoke_status=$?
           set -e
           if [ "$smoke_status" -eq 3 ]; then
@@ -1361,7 +1779,7 @@ jobs:
               smoke_status=70
             else
               set +e
-              smoke_evidence reserve "$canary_revision"
+              proof_evidence candidate reserve "$canary_revision"
               reserve_status=$?
               set -e
               if [ "$reserve_status" -eq 0 ]; then
@@ -1378,7 +1796,7 @@ jobs:
                 : >"$scratch/smoke-stderr"
                 if [ "$smoke_status" -eq 0 ]; then
                   set +e
-                  smoke_evidence store "$canary_revision" "$scratch/smoke-receipt.json"
+                  proof_evidence candidate store "$canary_revision" "$scratch/smoke-receipt.json"
                   smoke_status=$?
                   set -e
                 fi
@@ -1391,17 +1809,72 @@ jobs:
             smoke_status=70
           fi
 
+          fallback_status=70
           if [ "$smoke_status" -eq 0 ]; then
-            remaining=$(seconds_until "$canary_not_after")
-            while [ "$remaining" -gt 0 ]; do
-              if [ "$remaining" -gt 60 ]; then
-                sleep 60
-              else
-                sleep "$remaining"
-              fi
+            set +e
+            proof_evidence saturation check "$canary_revision"
+            fallback_status=$?
+            set -e
+            if [ "$fallback_status" -eq 3 ]; then
               remaining=$(seconds_until "$canary_not_after")
-            done
+              if [ "$remaining" -le 45 ]; then
+                fallback_status=70
+              else
+                set +e
+                proof_evidence saturation reserve "$canary_revision"
+                reserve_status=$?
+                set -e
+                if [ "$reserve_status" -eq 0 ]; then
+                  set +e
+                  env -i HOME="$scratch/npm-home" PATH="$(dirname "$(command -v node)"):/usr/bin:/bin" \
+                    timeout --signal=TERM --kill-after=5s 45s \
+                    node "$smoke_program" \
+                      https://api.dragontales.milkinfrastructure.com/v1 \
+                      "$smoke_credential" "$canary_revision" \
+                      --saturation-fallback \
+                    >"$scratch/fallback-receipt.json" 2>"$scratch/fallback-stderr"
+                  fallback_status=$?
+                  set -e
+                  : >"$scratch/fallback-stderr"
+                  if [ "$fallback_status" -eq 0 ]; then
+                    set +e
+                    proof_evidence saturation store \
+                      "$canary_revision" "$scratch/fallback-receipt.json"
+                    fallback_status=$?
+                    set -e
+                  fi
+                  : >"$scratch/fallback-receipt.json"
+                else
+                  fallback_status=70
+                fi
+              fi
+            elif [ "$fallback_status" -ne 0 ]; then
+              fallback_status=70
+            fi
           fi
 
           force_zero || fail 'zero route publication failed' 70
           [ "$smoke_status" -eq 0 ] || fail 'candidate smoke failed; zero route is live' 70
+          [ "$fallback_status" -eq 0 ] || fail 'fallback smoke failed; zero route is live' 70
+
+      - name: Retain content-free route-control receipt
+        if: ${{ always() }}
+        env:
+          ROUTE_STEP_OUTCOME: ${{ steps.route.outcome }}
+          ZERO_PUBLISHED: ${{ steps.route.outputs.zero_published }}
+          ZERO_ROUTE_REVISION: ${{ steps.route.outputs.zero_route_revision }}
+          MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID }}
+          MILK_ROUTE_EVIDENCE_R2_BUCKET: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_BUCKET }}
+          MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID }}
+          MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY }}
+          MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN }}
+        run: >-
+          python3 -c 'import os,re; from milk_harness.evidence import R2EvidenceStore,canonical_json,create_same;
+          revision=os.environ.get("ZERO_ROUTE_REVISION") or None;
+          zero_raw=os.environ.get("ZERO_PUBLISHED",""); assert zero_raw in {"","true"}; zero_published=zero_raw=="true";
+          assert revision is None or re.fullmatch(r"[0-9a-f]{64}",revision);
+          assert zero_published==(revision is not None); assert re.fullmatch(r"[0-9a-f]{40}",os.environ["GITHUB_SHA"]); assert re.fullmatch(r"[0-9a-f]{40}",os.environ["MILK_GATEWAY_SOURCE_COMMIT"]); assert re.fullmatch(r"[0-9a-f]{64}",os.environ["MILK_ROUTE_STUDENT_JOB_ID"]); assert os.environ["ROUTE_STEP_OUTCOME"] in {"success","failure","cancelled","skipped"};
+          value={"schema_version":"milk.private-route-control-ops-log-reference.v1","repository_id":int(os.environ["GITHUB_REPOSITORY_ID"]),"source_commit":os.environ["GITHUB_SHA"],"gateway_source_commit":os.environ["MILK_GATEWAY_SOURCE_COMMIT"],"workflow_run_id":int(os.environ["GITHUB_RUN_ID"]),"run_attempt":int(os.environ["GITHUB_RUN_ATTEMPT"]),"student_job_id":os.environ["MILK_ROUTE_STUDENT_JOB_ID"],"route_step_outcome":os.environ["ROUTE_STEP_OUTCOME"],"zero_published":zero_published,"zero_route_revision":revision,"ops_log_authority":"private-github-actions-run","ops_log_reference":"github-actions://repositories/{}/runs/{}/attempts/{}/jobs/route-control".format(os.environ["GITHUB_REPOSITORY_ID"],os.environ["GITHUB_RUN_ID"],os.environ["GITHUB_RUN_ATTEMPT"]),"immutable":True,"content_free_receipt":True};
+          raw=canonical_json(value); store=R2EvidenceStore.from_environment("MILK_ROUTE_EVIDENCE_R2_"); key="route-operations/v1/{}/{}-{}.json".format(value["student_job_id"],value["workflow_run_id"],value["run_attempt"]);
+          create_same(store,key,raw,"application/json");
+          assert store.get(key)==raw'

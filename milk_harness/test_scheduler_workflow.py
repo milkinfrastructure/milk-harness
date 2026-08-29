@@ -1,10 +1,13 @@
+import os
 import re
 import subprocess
+import tempfile
 import textwrap
 import unittest
 from pathlib import Path
 
 from milk_harness.scheduler import (
+    GATEWAY_DEPLOYMENT_FIELDS,
     PROVIDER_RUNTIME_FIELDS,
     PROVIDER_LEASE_MAX_CLOCK_SKEW_SECONDS,
     PROVIDER_LEASE_TTL_SECONDS,
@@ -48,6 +51,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
         )
 
     def test_cron_is_reconcile_only_and_manual_create_is_exactly_confirmed(self):
+        self.assertIn("github.event_name == 'schedule'", self.gateway)
         self.assertIn("github.event_name == 'workflow_dispatch'", self.gateway)
         self.assertIn("inputs.authorize_provider_creates == true", self.gateway)
         self.assertIn(
@@ -61,6 +65,15 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertIn("validate-run-config", self.provider)
         self.assertIn("MILK_CONFIRMED_RUN_CONFIG_JSON", self.gateway)
         self.assertIn("MILK_CONFIRMED_RUN_CONFIG_JSON", self.provider)
+        self.assertIn(
+            "MILK_PROVIDER_CREATE_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true }}",
+            self.gateway,
+        )
+        self.assertIn('--requested "$MILK_PROVIDER_CREATE_REQUESTED"', self.gateway)
+        self.assertIn(
+            '--confirmed-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256"',
+            self.gateway,
+        )
         self.assertIn('if [ "$create_granted" = true ]; then', self.provider)
         self.assertNotIn("--allow-provider-creates", self.provider)
         self.assertLess(
@@ -113,6 +126,8 @@ class SchedulerWorkflowTest(unittest.TestCase):
         for line in self.provider.splitlines():
             if not re.match(r"^      MILK_CREATE_AUTHORITY_", line):
                 continue
+            self.assertIn("github.event_name == 'workflow_dispatch'", line)
+            self.assertIn("inputs.authorize_provider_creates == true", line)
             self.assertIn("needs.gateway-tick.outputs.accepted == 'true'", line)
             self.assertIn("|| ''", line)
             self.assertNotRegex(line, r": \$\{\{ secrets\.")
@@ -280,24 +295,38 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertIn("environment: milk-route-control-prod", self.route)
         self.assertIn("needs.provider-jobs.outputs.route_required == 'true'", self.route)
         self.assertIn("inputs.authorize_provider_creates == true", self.route)
-        self.assertIn("candidate credential proof is unavailable", self.route)
+        route_condition = self.route.split("    runs-on:", 1)[0]
+        self.assertNotIn("route_candidate_ready", route_condition)
         self.assertIn("repository: milkinfrastructure/milk-gateway", self.route)
         self.assertIn("ref: ${{ vars.MILK_GATEWAY_SOURCE_COMMIT }}", self.route)
         self.assertIn("org.opencontainers.image.revision", self.route)
         self.assertIn("npm ci --ignore-scripts --no-audit --no-fund", self.route)
+        self.assertIn('deploy/cloudflare/node_modules/.bin', self.route)
         self.assertIn("openai-production-smoke.mjs", self.route)
         self.assertIn("https://api.dragontales.milkinfrastructure.com/v1", self.route)
         self.assertIn("milk.official-openai-sdk-route-smoke.v1", self.route)
         self.assertIn("milk.official-openai-sdk-route-smoke-intent.v1", self.route)
+        self.assertIn("milk.official-openai-sdk-saturation-fallback-smoke.v1", self.route)
+        self.assertIn(
+            "milk.official-openai-sdk-saturation-fallback-smoke-intent.v1",
+            self.route,
+        )
+        self.assertIn("--saturation-fallback", self.route)
+        self.assertIn('value.get("fallback_route_target") == "openai"', self.route)
         self.assertIn("create_same", self.route)
+        self.assertIn("except FileNotFoundError:", self.route)
+        self.assertNotIn("except urllib.error.HTTPError", self.route)
         self.assertIn("advance-winner-route", self.route)
         self.assertIn("advance_phase canary", self.route)
         self.assertIn("advance_phase zero", self.route)
         self.assertIn("dragontales-publish-route.sh", self.route)
         self.assertIn("DRAGONTALES_ROUTE_SECRET_HEX", self.route)
         self.assertIn('manifest.get("candidate_basis_points") != 100', self.route)
+        self.assertIn('config["route"].get("candidate_max_in_flight") != 1', self.route)
         self.assertIn("smoke traffic key is outside the one-percent canary", self.route)
+        self.assertGreaterEqual(self.route.count('"capture_allowed": False'), 2)
         self.assertIn('remaining=$(seconds_until "$canary_not_after")', self.route)
+        self.assertNotIn('while [ "$remaining" -gt 0 ]', self.route)
         self.assertIn("emergency zero publication failed", self.route)
         self.assertIn("zero_published=true", self.route)
         self.assertNotIn("prepare-route", self.route)
@@ -307,9 +336,187 @@ class SchedulerWorkflowTest(unittest.TestCase):
             "BASETEN_API_KEY",
             "MODAL_TOKEN_",
             "MILK_CREATE_AUTHORITY_",
-            "MILK_GATEWAY_CONTAINER_ADMIN_KEY",
         ):
             self.assertNotIn(forbidden, self.route)
+
+    def test_modal_candidate_credential_is_gateway_owned_and_pipe_only(self):
+        route_job_environment = self.route.split("\n    steps:", 1)[0]
+        self.assertNotIn("MILK_MODAL_CANDIDATE_API_KEY", route_job_environment)
+        self.assertNotIn("MILK_GATEWAY_CONTAINER_ADMIN_KEY", route_job_environment)
+        self.assertNotIn("CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN", route_job_environment)
+        self.assertIn(
+            "MILK_MODAL_CANDIDATE_API_KEY: ${{ github.event_name == 'workflow_dispatch'",
+            self.route,
+        )
+        self.assertIn("prepare-modal-candidate-credential", self.route)
+        self.assertIn("ingest-modal-candidate-credential-ack", self.route)
+        self.assertNotIn("--recover-install", self.route)
+        self.assertIn("dragontales.modal-candidate-credential-preparation.v1", self.route)
+        self.assertIn("dragontales.modal-candidate-credential-ack-write.v1", self.route)
+        self.assertIn('reconcile_candidate ready', self.route)
+        self.assertIn('reconcile_candidate absent', self.route)
+        self.assertLess(
+            self.route.rindex('advance_phase canary'),
+            self.route.rindex('reconcile_candidate ready'),
+        )
+        self.assertIn('[ "$zero_live" = true ] && [ "$candidate_absent" != true ]', self.route)
+        self.assertIn('[ "$MILK_ROUTE_CANDIDATE_READY" = true ]', self.route)
+        self.assertIn('[ "$prepared_provider" = baseten ]', self.route)
+        self.assertIn('"${action}-modal"', self.route)
+        self.assertIn("--admin-key-fd 3", self.route)
+        self.assertIn("--candidate-key-fd 4", self.route)
+        self.assertIn("3< <(printf '%s' \"$gateway_admin_key\")", self.route)
+        self.assertIn("4< <(printf '%s' \"$modal_candidate_key\")", self.route)
+        helper = self.route.split("run_candidate_helper() {", 1)[1].split(
+            "\n          reconcile_candidate() {", 1
+        )[0]
+        self.assertIn("env -i", helper)
+        self.assertNotIn("MILK_GATEWAY_CONTAINER_ADMIN_KEY=", helper)
+        self.assertNotIn("MILK_MODAL_CANDIDATE_API_KEY=", helper)
+        self.assertIn(': >"$helper_stderr"', helper)
+        self.assertIn(': >"$ack"', helper)
+        self.assertIn(': >"$ingest_stdout"', helper)
+        for field in (
+            "MILK_GATEWAY_IMAGE_ADMISSION_SHA256",
+            "MILK_GATEWAY_RELEASE_SHA256",
+            "MILK_GATEWAY_CONTAINER_APPLICATION_ID",
+            "MILK_GATEWAY_CONTAINER_APPLICATION_VERSION",
+            "MILK_GATEWAY_CONTAINER_IMAGE",
+            "MILK_GATEWAY_WORKER_VERSION_ID",
+        ):
+            self.assertIn(field, self.route)
+
+    def test_gateway_deployment_is_bound_before_provider_or_route_mutation(self):
+        arguments = {
+            "source_commit": "--gateway-source-commit",
+            "image_admission_sha256": "--gateway-image-admission-sha256",
+            "release_sha256": "--gateway-release-sha256",
+            "application_id": "--gateway-container-application-id",
+            "application_version": "--gateway-container-application-version",
+            "container_image": "--gateway-container-image",
+            "worker_version_id": "--gateway-worker-version-id",
+        }
+        self.assertEqual(set(arguments), set(GATEWAY_DEPLOYMENT_FIELDS))
+        for argument in arguments.values():
+            self.assertIn(argument, self.provider)
+            self.assertIn(argument, self.route)
+        provider_validate = self.provider.index("--phase route")
+        self.assertLess(provider_validate, self.provider.index("serve-baseten"))
+        validate = self.route.index("--phase route")
+        self.assertLess(validate, self.route.index("advance_phase canary"))
+        self.assertLess(validate, self.route.index("prepare-modal-candidate-credential"))
+        self.assertIn('--gateway-anchor-output "$gateway_anchor"', self.route)
+
+    def test_scheduled_restart_recovers_expired_or_live_canary_without_create(self):
+        start = self.route.index('if [ "$GITHUB_EVENT_NAME" = schedule ]; then')
+        end = self.route.index('\n          if [ "$canary_action" = done ]; then', start)
+        branch = textwrap.dedent(self.route[start:end])
+        self.assertNotIn("reconcile_candidate ready", branch)
+        self.assertNotIn("publish_manifest", branch)
+        self.assertIn("reconcile_candidate absent", branch)
+        reconcile = self.route.split("reconcile_candidate() {", 1)[1].split(
+            "\n          advance_phase() {", 1
+        )[0]
+        self.assertIn('[[ "$candidate_action" =~ ^(remove|verify)$ ]]', reconcile)
+
+        for action, expected in (
+            ("prepare", "ingest-absent-ack\n"),
+            ("observe", "signed-zero\ningest-absent-ack\n"),
+        ):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as directory:
+                events = Path(directory) / "events"
+                output = Path(directory) / "output"
+                script = textwrap.dedent(
+                    f"""
+                    force_zero() {{
+                      printf 'signed-zero\\n' >>"$events"
+                      zero_live=true
+                    }}
+                    reconcile_candidate() {{
+                      [ "$1" = absent ] || return 70
+                      printf 'ingest-absent-ack\\n' >>"$events"
+                      candidate_absent=true
+                    }}
+                    fail() {{ return "${{2:-64}}"; }}
+                    events=$1
+                    GITHUB_OUTPUT=$2
+                    GITHUB_EVENT_NAME=schedule
+                    canary_action={action}
+                    canary_revision={'a' * 64}
+                    zero_needed=false
+                    zero_live=false
+                    candidate_absent=false
+                    {branch}
+                    """
+                )
+                result = subprocess.run(
+                    ["bash", "-s", "--", str(events), str(output)],
+                    input=script,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(events.read_text(encoding="utf-8"), expected)
+
+    def test_modal_failure_after_ready_forces_zero_then_absence(self):
+        cleanup = self.route.split("\n          cleanup() {", 1)[1].split(
+            "\n          trap cleanup EXIT", 1
+        )[0]
+        self.assertLess(cleanup.index("force_zero"), cleanup.index("reconcile_candidate absent"))
+        ready = self.route.rindex("reconcile_candidate ready")
+        self.assertLess(self.route.rindex("zero_needed=true", 0, ready), ready)
+        self.assertLess(ready, self.route.index("proof_evidence candidate check", ready))
+        done = self.route.index('\n          if [ "$canary_action" = done ]; then')
+        done_end = self.route.index("\n          fi", done)
+        done_branch = self.route[done:done_end]
+        self.assertLess(done_branch.index("zero_live=true"), done_branch.index("reconcile_candidate absent"))
+        self.assertLess(done_branch.index("reconcile_candidate absent"), done_branch.index("proof_evidence candidate require-any"))
+
+        with tempfile.TemporaryDirectory() as directory:
+            events = Path(directory) / "events"
+            script = "cleanup() {" + textwrap.dedent(cleanup) + textwrap.dedent(
+                """
+                force_zero() {
+                  printf 'signed-zero\n' >>"$events"
+                  zero_live=true
+                }
+                reconcile_candidate() {
+                  [ "$1" = absent ] && [ "$zero_live" = true ] || return 70
+                  printf 'ingest-absent-ack\n' >>"$events"
+                  candidate_absent=true
+                }
+                docker() { :; }
+                sudo() { :; }
+                events=$1
+                zero_needed=true
+                zero_live=false
+                candidate_absent=false
+                candidate_provider=modal
+                gateway_container_id=
+                docker_config=unused
+                scratch="$RUNNER_TEMP/milk-route-control.injected"
+                modal_candidate_key=redacted
+                gateway_admin_key=redacted
+                cloudflare_candidate_token=redacted
+                false
+                cleanup
+                """
+            )
+            environment = dict(os.environ, RUNNER_TEMP=directory)
+            result = subprocess.run(
+                ["bash", "-s", "--", str(events)],
+                input=script,
+                text=True,
+                capture_output=True,
+                env=environment,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(
+                events.read_text(encoding="utf-8"),
+                "signed-zero\ningest-absent-ack\n",
+            )
 
     def test_only_sanitized_summaries_cross_jobs_or_reach_ops_r2(self):
         self.assertIn('>"$stdout" 2>"$stderr"', self.gateway)

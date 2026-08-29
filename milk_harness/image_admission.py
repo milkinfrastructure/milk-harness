@@ -64,7 +64,12 @@ def _utc(value, label):
     return parsed
 
 
-def _validate_release(release_raw, read_admission, expected_release_sha256=None):
+def _validate_release(
+    release_raw,
+    read_admission,
+    expected_release_sha256=None,
+    read_ops_log=None,
+):
     if not isinstance(release_raw, (bytes, bytearray)):
         raise ValueError("private image release authority is invalid")
     if (
@@ -96,7 +101,7 @@ def _validate_release(release_raw, read_admission, expected_release_sha256=None)
             "started_at",
             "completed_at",
         }
-        or release.get("schema_version") != "milk.private-harness-release.v2"
+        or release.get("schema_version") != "milk.private-harness-release.v3"
         or re.fullmatch(r"[0-9a-f]{40}", release.get("source_commit", "")) is None
         or type(release.get("source_date_epoch")) is not int
         or release["source_date_epoch"] <= 0
@@ -121,11 +126,68 @@ def _validate_release(release_raw, read_admission, expected_release_sha256=None)
     for expected_artifact, release_item in zip(PRIVATE_IMAGE_REPOSITORIES, images):
         if (
             not isinstance(release_item, dict)
-            or set(release_item) != {"admission_sha256", "artifact", "image_reference"}
+            or set(release_item)
+            != {
+                "admission_sha256",
+                "artifact",
+                "image_reference",
+                "ops_log_reference_sha256",
+            }
             or release_item.get("artifact") != expected_artifact
             or HEX64.fullmatch(release_item.get("admission_sha256", "")) is None
+            or HEX64.fullmatch(
+                release_item.get("ops_log_reference_sha256", "")
+            )
+            is None
         ):
             raise ValueError("private image release item is invalid")
+        local_ops_log = None
+        if read_ops_log is not None:
+            ops_log_raw, build_log_raw = read_ops_log(expected_artifact)
+            ops_log = _strict_object(ops_log_raw)
+            build_log = _strict_object(build_log_raw)
+            if (
+                hashlib.sha256(ops_log_raw).hexdigest()
+                != release_item["ops_log_reference_sha256"]
+                or ops_log
+                != {
+                    "schema_version": "milk.private-ops-log-reference.v1",
+                    "authority": "private-release-evidence",
+                    "reference": "build-log.json",
+                    "receipt_sha256": hashlib.sha256(build_log_raw).hexdigest(),
+                    "immutable": True,
+                    "content_retained": False,
+                }
+                or set(build_log)
+                != {
+                    "schema_version",
+                    "artifact",
+                    "exit_code",
+                    "started_at",
+                    "completed_at",
+                    "sha256",
+                    "bytes",
+                    "content_retained",
+                }
+                or build_log.get("schema_version")
+                != "milk.content-free-build-log.v1"
+                or build_log.get("artifact") != expected_artifact
+                or build_log.get("exit_code") != 0
+                or HEX64.fullmatch(build_log.get("sha256", "")) is None
+                or type(build_log.get("bytes")) is not int
+                or build_log["bytes"] < 0
+                or build_log.get("content_retained") is not False
+            ):
+                raise ValueError("private image ops-log reference is invalid")
+            build_started = _utc(
+                build_log.get("started_at"), "image build started_at"
+            )
+            build_completed = _utc(
+                build_log.get("completed_at"), "image build completed_at"
+            )
+            if build_completed < build_started:
+                raise ValueError("private image build log timestamps are invalid")
+            local_ops_log = ops_log
         admission_raw = read_admission(
             expected_artifact,
             release_item["admission_sha256"],
@@ -153,6 +215,8 @@ def _validate_release(release_raw, read_admission, expected_release_sha256=None)
                 "config_sha256",
                 "attestation_manifest_sha256",
                 "attestations",
+                "ops_log_reference",
+                "ops_log_reference_sha256",
                 "platform",
                 "visibility",
                 "builder",
@@ -180,6 +244,37 @@ def _validate_release(release_raw, read_admission, expected_release_sha256=None)
         expected_gateway = None if expected_artifact in {"planner", "jobs"} else gateway
         if admission.get("gateway_image_reference") != expected_gateway:
             raise ValueError("private image gateway binding is invalid")
+        admission_ops_log = admission.get("ops_log_reference")
+        if (
+            not isinstance(admission_ops_log, dict)
+            or set(admission_ops_log)
+            != {
+                "schema_version",
+                "authority",
+                "reference",
+                "receipt_sha256",
+                "immutable",
+                "content_retained",
+            }
+            or admission_ops_log.get("schema_version")
+            != "milk.private-ops-log-reference.v1"
+            or admission_ops_log.get("authority")
+            != "private-release-evidence"
+            or admission_ops_log.get("reference") != "build-log.json"
+            or HEX64.fullmatch(
+                admission_ops_log.get("receipt_sha256", "")
+            )
+            is None
+            or admission_ops_log.get("immutable") is not True
+            or admission_ops_log.get("content_retained") is not False
+            or admission.get("ops_log_reference_sha256")
+            != release_item["ops_log_reference_sha256"]
+            or hashlib.sha256(canonical_json(admission_ops_log)).hexdigest()
+            != release_item["ops_log_reference_sha256"]
+            or local_ops_log is not None
+            and admission_ops_log != local_ops_log
+        ):
+            raise ValueError("private image admission ops-log reference is invalid")
         attestations = admission.get("attestations")
         if (
             not isinstance(attestations, list)
@@ -236,6 +331,10 @@ def load_local_private_image_release(directory):
     return _validate_release(
         release_raw,
         lambda artifact, unused_sha256: read(f"{artifact}/admission.json"),
+        read_ops_log=lambda artifact: (
+            read(f"{artifact}/ops-log-reference.json"),
+            read(f"{artifact}/build-log.json"),
+        ),
     )
 
 def load_published_private_image_release(store, release_sha256):
