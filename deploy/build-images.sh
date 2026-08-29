@@ -51,8 +51,9 @@ if [ -n "$reuse_release_dir" ]; then
     /*) ;;
     *) fail 'reused release directory must be absolute' 64 ;;
   esac
-  [ -d "$reuse_release_dir" ] && [ ! -L "$reuse_release_dir" ] || \
+  if [ ! -d "$reuse_release_dir" ] || [ -L "$reuse_release_dir" ]; then
     fail 'reused release directory is invalid' 64
+  fi
 fi
 
 for command_name in date docker env gh git grep ln python3 sed tar; do
@@ -89,8 +90,9 @@ remote_head=$(git ls-remote --exit-code origin HEAD 2>/dev/null) || \
 # git returns exactly two fields, which are validated immediately below.
 # shellcheck disable=SC2086
 set -- $remote_head
-[ "$#" -eq 2 ] && [ "$1" = "$commit" ] && [ "$2" = HEAD ] || \
+if [ "$#" -ne 2 ] || [ "$1" != "$commit" ] || [ "$2" != HEAD ]; then
   fail 'local HEAD must equal the published origin HEAD' 64
+fi
 case "$evidence_dir/" in
   "$repo"/*) fail 'evidence directory must be outside the release checkout' 64 ;;
 esac
