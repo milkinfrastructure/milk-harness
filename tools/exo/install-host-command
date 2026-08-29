@@ -19,12 +19,12 @@ case "$service_user" in
 esac
 service_uid=$(id -u "$service_user")
 service_gid=$(id -g "$service_user")
-source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+source_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 source_command=$source_dir/milk-managed
-[ -f "$source_command" ] && [ ! -L "$source_command" ] || {
+if [ ! -f "$source_command" ] || [ -L "$source_command" ]; then
   printf 'milk-managed source is invalid\n' >&2
   exit 66
-}
+fi
 
 for path in \
   /opt/milk \

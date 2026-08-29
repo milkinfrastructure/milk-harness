@@ -46,15 +46,15 @@ result() {
 }
 
 mode_of() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
 
 owner_of() {
-  stat -f '%u' "$1" 2>/dev/null || stat -c '%u' "$1" 2>/dev/null
+  stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1" 2>/dev/null
 }
 
 size_of() {
-  stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1" 2>/dev/null
+  stat -c '%s' "$1" 2>/dev/null || stat -f '%z' "$1" 2>/dev/null
 }
 
 valid_hex() {
@@ -75,7 +75,7 @@ canonical_private_dir() {
   [ -d "$directory" ] && [ ! -L "$directory" ] || return 1
   [ "$(owner_of "$directory" || true)" = "$expected_owner" ] || return 1
   [ "$(mode_of "$directory" || true)" = "$expected_mode" ] || return 1
-  canonical_directory=$(CDPATH= cd -- "$directory" 2>/dev/null && pwd -P) || return 1
+  canonical_directory=$(CDPATH='' cd -- "$directory" 2>/dev/null && pwd -P) || return 1
   [ "$canonical_directory" = "$directory" ]
 }
 
@@ -123,6 +123,7 @@ prepare_eval_state() {
   lock_dir=$state_file.lock
 }
 
+# shellcheck disable=SC2317
 cleanup() {
   if [ -n "$consumed_file" ]; then
     rm -f -- "$consumed_file" >/dev/null 2>&1 || :

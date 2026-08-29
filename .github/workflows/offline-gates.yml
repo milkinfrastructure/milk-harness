@@ -40,6 +40,12 @@ jobs:
 
       - name: Verify release scripts
         run: |
+          shellcheck --version
+          shellcheck -s sh \
+            deploy/student-job.sh deploy/student-job.test.sh \
+            deploy/build-images.sh deploy/build-images.test.sh \
+            tools/exo/milk-managed tools/exo/milk-managed.test.sh \
+            tools/exo/install-host-command
           sh deploy/student-job.test.sh
           sh deploy/build-images.test.sh
           sh tools/exo/milk-managed.test.sh

@@ -1,12 +1,12 @@
 #!/bin/sh
 set -eu
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
 command=$root/tools/exo/milk-managed
 installer=$root/tools/exo/install-host-command
 temporary_root=${TMPDIR:-/tmp}
 temporary_root=${temporary_root%/}
-temporary_root=$(CDPATH= cd -- "$temporary_root" && pwd -P)
+temporary_root=$(CDPATH='' cd -- "$temporary_root" && pwd -P)
 test_root=$(mktemp -d "$temporary_root/milk-managed-test.XXXXXX")
 
 cleanup() {
@@ -141,7 +141,7 @@ rm -f "$state" "$dispatch_log" "$list_log" "$view_log"
 [ "$(TEST_GH_DATABASE_ID=101 run reconcile "$eval_id")" = \
   "$(expected true "$eval_id" running running true false)" ]
 [ -f "$state" ] && [ ! -L "$state" ]
-[ "$(stat -f '%Lp' "$state" 2>/dev/null || stat -c '%a' "$state")" = 600 ]
+[ "$(stat -c '%a' "$state" 2>/dev/null || stat -f '%Lp' "$state")" = 600 ]
 [ "$(sed -n '1p' "$state")" = milk-managed-state-v3 ]
 [ "$(sed -n '2p' "$state")" = reconcile ]
 request_id=$(sed -n '3p' "$state")
@@ -224,7 +224,7 @@ duplicate_job_names=$(printf '%s\n%s' \
 [ "$(TEST_GH_OBSERVATION=completed:success \
   TEST_GH_GENERATION_JOB_NAME="$duplicate_job_names" run status "$eval_id")" = \
   "$(expected false "$eval_id" blocked unknown false false)" ]
-[ "$(TEST_GH_OBSERVATION=completed:success TEST_GH_GENERATION_JOB_NAME= \
+[ "$(TEST_GH_OBSERVATION=completed:success TEST_GH_GENERATION_JOB_NAME='' \
   run status "$eval_id")" = \
   "$(expected false "$eval_id" blocked unknown false false)" ]
 
@@ -370,11 +370,11 @@ do
 done
 
 sh -n "$command" "$installer" "$0"
-grep -Fq 'install -d -o root -g "$service_gid" -m 0750 /etc/milk/evals' "$installer"
+grep -Fq "install -d -o root -g \"\$service_gid\" -m 0750 /etc/milk/evals" "$installer"
 grep -Fq '/var/lib/milk /var/lib/milk/evals' "$installer"
 grep -Fq '/opt/milk/bin/milk-managed' "$root/tools/exo/README.md"
 grep -Fq 'sudo install -o root' "$root/tools/exo/README.md"
-grep -Fq '"/etc/milk/evals/$EVAL_ID.json"' "$root/tools/exo/README.md"
+grep -Fq "\"/etc/milk/evals/\$EVAL_ID.json\"" "$root/tools/exo/README.md"
 grep -Fq 'generation_done' "$root/tools/exo/README.md"
 grep -Fq 'Provider reconciliation and dispatch [generation_done=true|false]' "$root/tools/exo/README.md"
 grep -Fq 'exact document SHA-256' "$root/tools/exo/README.md"
