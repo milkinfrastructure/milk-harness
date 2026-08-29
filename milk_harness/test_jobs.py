@@ -11,6 +11,7 @@ import threading
 import types
 import unittest
 from unittest import mock
+import urllib.error
 import urllib.parse
 
 from deploy.baseten import adapter
@@ -918,6 +919,162 @@ def provider_arguments(release_sha256):
 
 
 class BasetenJobsTests(unittest.TestCase):
+    def test_baseten_preflight_requires_live_h100_capacity(self):
+        project = {
+            "training_project": {
+                "id": PROJECT,
+                "name": "milk-production",
+                "created_at": "2026-08-27T20:00:00Z",
+                "updated_at": "2026-08-27T20:00:00Z",
+                "latest_job": None,
+                "team_name": "milk",
+            }
+        }
+        capacity = {
+            "gpu_capacities": [
+                {
+                    "gpu_type": "H100",
+                    "baseline": 1,
+                    "limit": 2,
+                    "usage_count": 0,
+                    "dedicated_usage_count": 0,
+                    "spot_usage_count": 0,
+                }
+            ],
+            "team_gpu_capacities": [],
+        }
+
+        def handler(method, path, body, query):
+            self.assertEqual((method, body, query), ("GET", None, None))
+            return project if path.endswith(PROJECT) else capacity
+
+        with tempfile.TemporaryDirectory() as root:
+            jobs = self.jobs(root, FakeTransport(handler))
+            receipt = jobs.preflight("milk")
+        project_raw = (json.dumps(project, separators=(",", ":")) + "\n").encode()
+        capacity_raw = (json.dumps(capacity, separators=(",", ":")) + "\n").encode()
+        self.assertEqual(receipt["outcome"], "ready")
+        self.assertEqual(
+            receipt["evidence_sha256"],
+            hashlib.sha256(
+                b"milk.baseten-training-preflight.v1\0"
+                + project_raw
+                + b"\0"
+                + capacity_raw
+            ).hexdigest(),
+        )
+
+    def test_baseten_preflight_falls_back_before_create_without_h100_capacity(self):
+        project = {
+            "training_project": {
+                "id": PROJECT,
+                "name": "milk-production",
+                "created_at": "2026-08-27T20:00:00Z",
+                "updated_at": "2026-08-27T20:00:00Z",
+                "latest_job": None,
+                "team_name": "milk",
+            }
+        }
+        capacity = {
+            "gpu_capacities": [
+                {
+                    "gpu_type": "H100",
+                    "baseline": 0,
+                    "limit": 1,
+                    "usage_count": 1,
+                }
+            ],
+            "team_gpu_capacities": [],
+        }
+
+        def handler(_method, path, _body, _query):
+            return project if path.endswith(PROJECT) else capacity
+
+        with tempfile.TemporaryDirectory() as root:
+            jobs = self.jobs(root, FakeTransport(handler))
+            receipt = jobs.preflight("milk")
+        self.assertEqual(
+            (receipt["outcome"], receipt["reason"], receipt["status"]),
+            ("retryable_unavailable", "capability_unavailable", None),
+        )
+        capacity_raw = (json.dumps(capacity, separators=(",", ":")) + "\n").encode()
+        self.assertEqual(
+            receipt["evidence_sha256"], hashlib.sha256(capacity_raw).hexdigest()
+        )
+
+    def test_baseten_preflight_treats_missing_capacity_surface_as_unavailable(self):
+        project = {
+            "training_project": {
+                "id": PROJECT,
+                "name": "milk-production",
+                "created_at": "2026-08-27T20:00:00Z",
+                "updated_at": "2026-08-27T20:00:00Z",
+                "latest_job": None,
+                "team_name": "milk",
+            }
+        }
+
+        def handler(_method, path, _body, _query):
+            if path.endswith(PROJECT):
+                return project
+            return urllib.error.HTTPError(path, 404, "missing", None, None)
+
+        with tempfile.TemporaryDirectory() as root:
+            jobs = self.jobs(root, FakeTransport(handler))
+            receipt = jobs.preflight("milk")
+        self.assertEqual(
+            (receipt["outcome"], receipt["reason"], receipt["status"]),
+            ("retryable_unavailable", "capability_unavailable", None),
+        )
+
+    def test_baseten_preflight_retries_capacity_rate_limit(self):
+        project = {
+            "training_project": {
+                "id": PROJECT,
+                "name": "milk-production",
+                "created_at": "2026-08-27T20:00:00Z",
+                "updated_at": "2026-08-27T20:00:00Z",
+                "latest_job": None,
+                "team_name": "milk",
+            }
+        }
+
+        def handler(_method, path, _body, _query):
+            if path.endswith(PROJECT):
+                return project
+            return urllib.error.HTTPError(path, 429, "limited", None, None)
+
+        with tempfile.TemporaryDirectory() as root:
+            receipt = self.jobs(root, FakeTransport(handler)).preflight("milk")
+        self.assertEqual(
+            (receipt["outcome"], receipt["reason"], receipt["status"]),
+            ("retryable_unavailable", "rate_limited", 429),
+        )
+
+    def test_baseten_preflight_retries_capacity_timeout(self):
+        project = {
+            "training_project": {
+                "id": PROJECT,
+                "name": "milk-production",
+                "created_at": "2026-08-27T20:00:00Z",
+                "updated_at": "2026-08-27T20:00:00Z",
+                "latest_job": None,
+                "team_name": "milk",
+            }
+        }
+
+        def handler(_method, path, _body, _query):
+            if path.endswith(PROJECT):
+                return project
+            return TimeoutError("capacity timed out")
+
+        with tempfile.TemporaryDirectory() as root:
+            receipt = self.jobs(root, FakeTransport(handler)).preflight("milk")
+        self.assertEqual(
+            (receipt["outcome"], receipt["reason"], receipt["status"]),
+            ("retryable_unavailable", "timeout", None),
+        )
+
     def test_modal_preflight_uses_live_1_5_4_identity_surface(self):
         calls = []
 

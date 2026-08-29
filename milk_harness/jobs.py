@@ -5684,6 +5684,81 @@ def _search_matches(raw, project_id, name):
     return [matches[execution_id] for execution_id in sorted(matches)]
 
 
+def _baseten_h100_capacity_available(value, team_name):
+    if (
+        not isinstance(value, dict)
+        or "gpu_capacities" not in value
+        or not {"gpu_capacities", "team_gpu_capacities"}.issuperset(value)
+        or not isinstance(value["gpu_capacities"], list)
+        or not isinstance(value.get("team_gpu_capacities", []), list)
+        or len(value["gpu_capacities"]) > 64
+        or len(value.get("team_gpu_capacities", [])) > 256
+    ):
+        raise ValueError("Baseten training capacity is invalid")
+
+    def available(items, expected_team=None):
+        matches = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("Baseten training capacity is invalid")
+            allowed = {
+                "gpu_type",
+                "baseline",
+                "limit",
+                "usage_count",
+                "dedicated_usage_count",
+                "spot_usage_count",
+                "team_id",
+                "team_name",
+            }
+            if (
+                not {"gpu_type", "limit", "usage_count"}.issubset(item)
+                or not allowed.issuperset(item)
+                or not isinstance(item.get("gpu_type"), str)
+                or type(item.get("limit")) is not int
+                or type(item.get("usage_count")) is not int
+                or item["limit"] < 0
+                or item["usage_count"] < 0
+                or any(
+                    field in item
+                    and (type(item[field]) is not int or item[field] < 0)
+                    for field in (
+                        "baseline",
+                        "dedicated_usage_count",
+                        "spot_usage_count",
+                    )
+                )
+                or expected_team is not None
+                and (
+                    not isinstance(item.get("team_id"), str)
+                    or not item["team_id"]
+                    or not isinstance(item.get("team_name"), str)
+                    or not item["team_name"]
+                )
+            ):
+                raise ValueError("Baseten training capacity is invalid")
+            if item["gpu_type"] == "H100" and (
+                expected_team is None or item["team_name"] == expected_team
+            ):
+                matches.append(item)
+        if len(matches) > 1:
+            raise ValueError("Baseten H100 capacity is ambiguous")
+        return bool(matches) and matches[0]["usage_count"] < matches[0]["limit"]
+
+    global_available = available(value["gpu_capacities"])
+    team_capacities = value.get("team_gpu_capacities", [])
+    team_available = available(team_capacities, team_name)
+    team_has_h100 = any(
+        isinstance(item, dict)
+        and item.get("gpu_type") == "H100"
+        and item.get("team_name") == team_name
+        for item in team_capacities
+    )
+    if team_has_h100:
+        return team_available
+    return global_available
+
+
 class BasetenJobs:
     def __init__(
         self,
@@ -5787,13 +5862,76 @@ class BasetenJobs:
             < _utc(project.get("created_at"), "Baseten project created_at")
         ):
             raise ValueError("Baseten training project preflight is invalid")
+        try:
+            capacity_raw = self._request("GET", "/training/capacity")
+        except urllib.error.HTTPError as error:
+            status = error.code
+            if status == 404:
+                reason = "capability_unavailable"
+                receipt_status = None
+            elif status == 429:
+                reason = "rate_limited"
+                receipt_status = status
+            elif 500 <= status <= 599:
+                reason = "server_unavailable"
+                receipt_status = status
+            else:
+                raise
+            return {
+                "schema_version": BASETEN_TRAINING_PREFLIGHT_SCHEMA,
+                "provider": "baseten",
+                "team_name": team_name,
+                "project_id": self.project_id,
+                "outcome": "retryable_unavailable",
+                "reason": reason,
+                "status": receipt_status,
+                "evidence_sha256": hashlib.sha256(
+                    f"{type(error).__name__}:{status}".encode()
+                ).hexdigest(),
+                "observed_at": observed_at,
+            }
+        except (TimeoutError, urllib.error.URLError) as error:
+            reason = getattr(error, "reason", error)
+            if not isinstance(reason, TimeoutError):
+                raise
+            return {
+                "schema_version": BASETEN_TRAINING_PREFLIGHT_SCHEMA,
+                "provider": "baseten",
+                "team_name": team_name,
+                "project_id": self.project_id,
+                "outcome": "retryable_unavailable",
+                "reason": "timeout",
+                "status": None,
+                "evidence_sha256": hashlib.sha256(
+                    type(reason).__name__.encode()
+                ).hexdigest(),
+                "observed_at": observed_at,
+            }
+        capacity = _strict_object(capacity_raw)
+        if not _baseten_h100_capacity_available(capacity, team_name):
+            return {
+                "schema_version": BASETEN_TRAINING_PREFLIGHT_SCHEMA,
+                "provider": "baseten",
+                "team_name": team_name,
+                "project_id": self.project_id,
+                "outcome": "retryable_unavailable",
+                "reason": "capability_unavailable",
+                "status": None,
+                "evidence_sha256": hashlib.sha256(capacity_raw).hexdigest(),
+                "observed_at": observed_at,
+            }
         return {
             "schema_version": BASETEN_TRAINING_PREFLIGHT_SCHEMA,
             "provider": "baseten",
             "team_name": team_name,
             "project_id": self.project_id,
             "outcome": "ready",
-            "evidence_sha256": hashlib.sha256(raw).hexdigest(),
+            "evidence_sha256": hashlib.sha256(
+                b"milk.baseten-training-preflight.v1\0"
+                + raw
+                + b"\0"
+                + capacity_raw
+            ).hexdigest(),
             "observed_at": observed_at,
         }
 
