@@ -22,9 +22,20 @@ EXO_SERVICE_USER=exo
 sudo tools/exo/install-host-command "$EXO_SERVICE_USER"
 ```
 
-The Exo service environment needs authenticated `gh` access to the target
-repository. Tool initialization supplies only the fixed command path. Replace
-`YOUR_ORG` with the owner of the checkout:
+Install one GitHub token with Actions read/write access to the target repository
+as an owner-only file for the Exo service user. The token is never placed in an
+environment variable, command argument, output, or state file:
+
+```sh
+GITHUB_TOKEN_SOURCE=/absolute/path/github-token
+EXO_SERVICE_USER=exo
+sudo install -o "$EXO_SERVICE_USER" -g "$(id -gn "$EXO_SERVICE_USER")" \
+  -m 0400 "$GITHUB_TOKEN_SOURCE" /etc/milk/github-token
+```
+
+`milk-managed` uses the fixed installed Python standard-library REST helper;
+GitHub CLI is not installed or required. Tool initialization supplies only the
+fixed command path. Replace `YOUR_ORG` with the owner of the checkout:
 
 ```json
 {
@@ -63,9 +74,6 @@ it is not a custom-image self-host template. A compatible fork workflow must
 accept the fixed `managed_eval_id` dispatch input, reject it unless it matches
 the workflow's active eval in every job, and use the same exact
 generation-completion job-name contract described below.
-
-Run the non-dispatching config/control smoke in
-[`examples/self-host`](../../examples/self-host) before installing the command.
 
 ## Admit one eval
 

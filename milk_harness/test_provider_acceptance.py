@@ -131,7 +131,7 @@ class ProviderAcceptanceTest(unittest.TestCase):
             "856f94e25504165c35175edbc6e576b136ca9b69c046af05b9b92c0df18d1683",
         )
 
-    def test_winner_run_id_is_identical_before_baseten_or_modal_selection(self):
+    def test_winner_run_id_is_provider_neutral(self):
         inputs = {
             "campaign_id": "1" * 64,
             "claim_sha256": "2" * 64,
@@ -145,14 +145,13 @@ class ProviderAcceptanceTest(unittest.TestCase):
             "image_admission_sha256": "7" * 64,
         }
 
-        baseten_run = provider_acceptance.winner_run_id(**inputs)
-        modal_run = provider_acceptance.winner_run_id(**dict(inputs))
+        run_id = provider_acceptance.winner_run_id(**inputs)
         provider_derived = hashlib.sha256(
-            (baseten_run + ":baseten:milk").encode()
+            (run_id + ":baseten:milk").encode()
         ).hexdigest()
 
-        self.assertEqual(baseten_run, modal_run)
-        self.assertNotEqual(baseten_run, provider_derived)
+        self.assertEqual(run_id, provider_acceptance.winner_run_id(**inputs))
+        self.assertNotEqual(run_id, provider_derived)
 
     def test_gpu_accepts_exact_baseten_primary_selection(self):
         value = gpu_acceptance()
@@ -162,6 +161,8 @@ class ProviderAcceptanceTest(unittest.TestCase):
         self.assertEqual(raw[-1:], b"\n")
         self.assertEqual(raw.count(b"\n"), 1)
         self.assertEqual(provider_acceptance.validate(value), value)
+        self.assertEqual(provider_acceptance.validate_baseten(value), value)
+        self.assertEqual(provider_acceptance.encode_baseten(value), raw)
 
     def test_gpu_rejects_training_project_as_serving_identity(self):
         value = gpu_acceptance()
@@ -180,7 +181,7 @@ class ProviderAcceptanceTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             provider_acceptance.encode(value)
 
-    def test_modal_accepts_explicit_baseten_capability_absence(self):
+    def test_modal_selection_is_rejected_by_every_acceptance_entrypoint(self):
         value = gpu_acceptance()
         value["selection"] = {
             "selected_provider": "modal",
@@ -209,11 +210,16 @@ class ProviderAcceptanceTest(unittest.TestCase):
             },
         }
 
-        self.assertEqual(provider_acceptance.validate(value), value)
-
-        value["selection"]["primary_preflight"]["status"] = 503
-        with self.assertRaisesRegex(ValueError, "fallback-safe"):
-            provider_acceptance.validate(value)
+        for validate in (
+            provider_acceptance.validate,
+            provider_acceptance.validate_baseten,
+            provider_acceptance.encode,
+            provider_acceptance.encode_baseten,
+            provider_acceptance.sha256,
+        ):
+            with self.subTest(validate=validate.__name__):
+                with self.assertRaisesRegex(ValueError, "Baseten.*selection"):
+                    validate(value)
 
 
 if __name__ == "__main__":

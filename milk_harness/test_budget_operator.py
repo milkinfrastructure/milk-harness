@@ -15,17 +15,12 @@ from milk_harness.budget import (
     ACTIVE_BASETEN_SERVING_PRICING_RECEIPT_KEY,
     ACTIVE_BASETEN_TRAINING_PRICING_RECEIPT_KEY,
     ACTIVE_CAMPAIGN_AUTHORITY_KEY,
-    ACTIVE_MODAL_PRICING_RECEIPT_KEY,
     BASETEN_PRICING_OBSERVATION_PREFIX,
     BASETEN_PRICING_RECEIPT_PREFIX,
     BASETEN_PRICING_SOURCE_BODY_PREFIX,
-    MODAL_PRICING_RECEIPT_PREFIX,
-    MODAL_RATES_SOURCE_BODY_PREFIX,
-    MODAL_RATES_SOURCE_COMMAND,
     CampaignBudget,
     baseten_pricing_observation,
     baseten_provider_identity,
-    modal_provider_identity,
 )
 from milk_harness.evidence import LocalEvidenceStore, canonical_json
 
@@ -35,23 +30,15 @@ NOW = dt.datetime(2026, 8, 27, 20, 0, 0, tzinfo=UTC)
 CAMPAIGN = "c" * 64
 PROJECT = "project_123"
 TEAM = "milk-infrastructure"
-MODAL_WORKSPACE = "ws_123"
-MODAL_ENVIRONMENT = "main"
-MODAL_APP = "milk-gpu-jobs"
 BASETEN_SOURCE_BODY = (
     b"https://docs.baseten.co/deployment/resources\nH100 $0.10833/min\n"
-)
-MODAL_SOURCE_BODY = (
-    b'{"gpu":{"H100":"0.001097"},"sandbox_cpu":"0.00003942",'
-    b'"sandbox_memory":"0.00000667"}\n'
 )
 
 
 def operator_input(observed_at=NOW, source_body=BASETEN_SOURCE_BODY):
-    observed = observed_at.isoformat(timespec="seconds").replace("+00:00", "Z")
     return canonical_json(
         {
-            "schema_version": "milk.budget-authority-operator-input.v1",
+            "schema_version": "milk.budget-authority-operator-input.v2",
             "campaign_id": CAMPAIGN,
             "baseten_project_id": PROJECT,
             "baseten_team_name": TEAM,
@@ -60,25 +47,6 @@ def operator_input(observed_at=NOW, source_body=BASETEN_SOURCE_BODY):
                 hashlib.sha256(source_body).hexdigest(),
                 observed_at,
             ),
-            "modal_rates_receipt": {
-                "schema_version": "milk.modal-workspace-rates.v1",
-                "campaign_id": CAMPAIGN,
-                "provider_identity": modal_provider_identity(
-                    MODAL_WORKSPACE,
-                    MODAL_ENVIRONMENT,
-                    MODAL_APP,
-                ),
-                "source_command": MODAL_RATES_SOURCE_COMMAND,
-                "source_sha256": hashlib.sha256(MODAL_SOURCE_BODY).hexdigest(),
-                "observed_at": observed,
-                "currency": "USD",
-                "rate_unit": "second",
-                "h100_usd_per_second": "0.001097",
-                "sandbox_cpu_usd_per_physical_core_second": "0.00003942",
-                "sandbox_memory_usd_per_gib_second": "0.00000667",
-                "region_mode": "default",
-                "region_multiplier": "1",
-            },
         }
     )
 
@@ -89,7 +57,6 @@ class BudgetOperatorTests(unittest.TestCase):
             store,
             operator_input(observed_at, source_body),
             source_body,
-            MODAL_SOURCE_BODY,
             confirmed_campaign_id=CAMPAIGN,
             now=lambda: observed_at,
         )
@@ -99,6 +66,10 @@ class BudgetOperatorTests(unittest.TestCase):
             store = LocalEvidenceStore(root)
             first = self.apply(store)
             self.assertEqual(first["state"], "ready")
+            self.assertEqual(
+                first["schema_version"],
+                "milk.budget-authority-operator-result.v2",
+            )
             self.assertEqual(
                 store.get(
                     f"{budget_operator.INPUT_PREFIX}/"
@@ -137,21 +108,17 @@ class BudgetOperatorTests(unittest.TestCase):
                 ),
                 BASETEN_SOURCE_BODY,
             )
-            self.assertEqual(
-                store.get(
-                    f"{MODAL_RATES_SOURCE_BODY_PREFIX}/"
-                    f"{hashlib.sha256(MODAL_SOURCE_BODY).hexdigest()}.bin"
-                ),
-                MODAL_SOURCE_BODY,
-            )
-
             later = NOW + dt.timedelta(hours=23)
             second = self.apply(store, later)
             self.assertNotEqual(
                 first["operator_input_sha256"],
                 second["operator_input_sha256"],
             )
-            for role in ("baseten_training", "baseten_serving", "modal"):
+            self.assertEqual(
+                set(first["active_pricing_receipt_sha256s"]),
+                {"baseten_training", "baseten_serving"},
+            )
+            for role in ("baseten_training", "baseten_serving"):
                 self.assertNotEqual(
                     first["active_pricing_receipt_sha256s"][role],
                     second["active_pricing_receipt_sha256s"][role],
@@ -163,7 +130,6 @@ class BudgetOperatorTests(unittest.TestCase):
             for role, prefix in (
                 ("baseten_training", BASETEN_PRICING_RECEIPT_PREFIX),
                 ("baseten_serving", BASETEN_PRICING_RECEIPT_PREFIX),
-                ("modal", MODAL_PRICING_RECEIPT_PREFIX),
             ):
                 digest = first["active_pricing_receipt_sha256s"][role]
                 self.assertEqual(
@@ -188,11 +154,14 @@ class BudgetOperatorTests(unittest.TestCase):
             budget.reserve(run_id, 1, preparation)
 
     def test_invalid_inputs_fail_before_campaign_authority(self):
+        modal_input = json.loads(operator_input())
+        modal_input["modal_rates_receipt"] = {
+            "provider_identity": {"provider": "modal"}
+        }
         cases = (
             (
                 operator_input(),
                 b"wrong source body",
-                MODAL_SOURCE_BODY,
                 CAMPAIGN,
                 NOW,
                 "differs",
@@ -200,7 +169,6 @@ class BudgetOperatorTests(unittest.TestCase):
             (
                 operator_input().rstrip(),
                 BASETEN_SOURCE_BODY,
-                MODAL_SOURCE_BODY,
                 CAMPAIGN,
                 NOW,
                 "canonical",
@@ -208,7 +176,6 @@ class BudgetOperatorTests(unittest.TestCase):
             (
                 operator_input(),
                 BASETEN_SOURCE_BODY,
-                MODAL_SOURCE_BODY,
                 "d" * 64,
                 NOW,
                 "confirmation",
@@ -216,21 +183,19 @@ class BudgetOperatorTests(unittest.TestCase):
             (
                 operator_input(),
                 BASETEN_SOURCE_BODY,
-                MODAL_SOURCE_BODY,
                 CAMPAIGN,
                 NOW + dt.timedelta(hours=24, seconds=1),
                 "stale",
             ),
             (
-                operator_input(),
+                canonical_json(modal_input),
                 BASETEN_SOURCE_BODY,
-                b"wrong Modal source body",
                 CAMPAIGN,
                 NOW,
-                "Modal rates source body differs",
+                "one canonical object",
             ),
         )
-        for input_raw, body, modal_body, confirmation, current, message in cases:
+        for input_raw, body, confirmation, current, message in cases:
             with self.subTest(message=message), tempfile.TemporaryDirectory() as root:
                 store = LocalEvidenceStore(root)
                 with self.assertRaisesRegex(ValueError, message):
@@ -238,7 +203,6 @@ class BudgetOperatorTests(unittest.TestCase):
                         store,
                         input_raw,
                         body,
-                        modal_body,
                         confirmed_campaign_id=confirmation,
                         now=lambda: current,
                     )
@@ -287,46 +251,14 @@ class BudgetOperatorTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "digest|differs"):
                     campaign.reserve(run_id, 1, preparation)
 
-    def test_active_modal_receipt_rechecks_source_body(self):
-        with tempfile.TemporaryDirectory() as root:
-            store = LocalEvidenceStore(root)
-            self.apply(store)
-            source_sha256 = hashlib.sha256(MODAL_SOURCE_BODY).hexdigest()
-            store._path(
-                f"{MODAL_RATES_SOURCE_BODY_PREFIX}/{source_sha256}.bin"
-            ).write_bytes(b"tampered")
-            campaign = CampaignBudget(
-                store,
-                CAMPAIGN,
-                modal_provider_identity(
-                    MODAL_WORKSPACE,
-                    MODAL_ENVIRONMENT,
-                    MODAL_APP,
-                ),
-                now=lambda: NOW,
-            )
-            campaign.initialize()
-            run_id = "d" * 64
-            preparation = hashlib.sha256(run_id.encode()).hexdigest()
-            campaign.prepare(
-                run_id,
-                preparation,
-                int((NOW + dt.timedelta(minutes=1)).timestamp()),
-                int((NOW + dt.timedelta(hours=1)).timestamp()),
-            )
-            with self.assertRaisesRegex(ValueError, "source body differs"):
-                campaign.reserve(run_id, 1, preparation)
-
     def test_command_requires_explicit_store_and_jobs_image_excludes_operator(self):
         current = dt.datetime.now(UTC).replace(microsecond=0)
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)
             input_path = root_path / "input.json"
             source_path = root_path / "source.html"
-            modal_source_path = root_path / "modal-rates.json"
             input_path.write_bytes(operator_input(current))
             source_path.write_bytes(BASETEN_SOURCE_BODY)
-            modal_source_path.write_bytes(MODAL_SOURCE_BODY)
             with (
                 mock.patch.object(
                     budget_operator.R2EvidenceStore,
@@ -341,8 +273,6 @@ class BudgetOperatorTests(unittest.TestCase):
                         str(input_path),
                         "--baseten-source-body",
                         str(source_path),
-                        "--modal-rates-source-body",
-                        str(modal_source_path),
                         "--confirm-campaign-id",
                         CAMPAIGN,
                     ]
@@ -365,8 +295,6 @@ class BudgetOperatorTests(unittest.TestCase):
                             str(input_path),
                             "--baseten-source-body",
                             str(source_path),
-                            "--modal-rates-source-body",
-                            str(modal_source_path),
                             "--confirm-campaign-id",
                             CAMPAIGN,
                             "--local-store",
@@ -396,8 +324,6 @@ class BudgetOperatorTests(unittest.TestCase):
                             str(input_path),
                             "--baseten-source-body",
                             str(source_path),
-                            "--modal-rates-source-body",
-                            str(modal_source_path),
                             "--confirm-campaign-id",
                             CAMPAIGN,
                             "--r2",

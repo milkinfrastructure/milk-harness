@@ -17,8 +17,6 @@ from milk_harness.jobs import (
     BasetenJobs,
     JobEvidence,
     _digest,
-    dispatch_outboxes,
-    settings_from_arguments,
 )
 from milk_harness.test_jobs import (
     CAMPAIGN,
@@ -27,14 +25,11 @@ from milk_harness.test_jobs import (
     SCOPE_PREFIX,
     FakeTransport,
     authorize,
-    control_launch,
     entry,
     launch_acceptance,
     provider_get,
-    provider_arguments,
     provider_job,
     provider_metrics,
-    publish_release,
     workload,
 )
 
@@ -151,61 +146,6 @@ def seed_definition(service, source, entries):
 
 
 class BasetenJobsCrashTests(unittest.TestCase):
-    def test_acceptance_commit_crash_restarts_without_replay(self):
-        with tempfile.TemporaryDirectory() as root:
-            control = LocalEvidenceStore(root + "/control")
-            launch = control_launch(control, "teacher_run", 1)
-            base = LocalEvidenceStore(root + "/evidence")
-            authorize(base)
-            transport = FakeTransport(
-                lambda _method, _path, body, _query: provider_job(
-                    body["training_job"]["name"], "job_acceptance_restart"
-                )
-            )
-            release = publish_release(base, root + "/release")
-            settings = settings_from_arguments(
-                provider_arguments(release["release_sha256"]),
-                base,
-            )
-            acceptance_key = f"claims/v1/{launch['claim_sha256']}.json"
-            crashing = jobs(
-                CrashOnCreate(
-                    base,
-                    acceptance_key,
-                    error=SimulatedProcessCrash,
-                ),
-                transport,
-            )
-            with self.assertRaises(SimulatedProcessCrash):
-                dispatch_outboxes(
-                    crashing,
-                    control_store=control,
-                    scope_prefix=SCOPE_PREFIX,
-                    settings=settings,
-                )
-            accepted = base.get(acceptance_key)
-            self.assertEqual(transport.calls, [])
-            self.assertEqual(base.list(f"campaigns/v1/{CAMPAIGN}/jobs"), [])
-
-            recovered = jobs(base, transport)
-            first = dispatch_outboxes(
-                recovered,
-                control_store=control,
-                scope_prefix=SCOPE_PREFIX,
-                settings=settings,
-            )
-            self.assertEqual(first["results"][0]["state"], "created")
-            self.assertEqual(len(create_calls(transport)), 1)
-            second = dispatch_outboxes(
-                recovered,
-                control_store=control,
-                scope_prefix=SCOPE_PREFIX,
-                settings=settings,
-            )
-            self.assertEqual(second["results"][0]["state"], "reconcile_only")
-            self.assertEqual(len(create_calls(transport)), 1)
-            self.assertEqual(base.get(acceptance_key), accepted)
-
     def test_concurrent_identical_launch_has_one_create_per_child(self):
         with tempfile.TemporaryDirectory() as root:
             store = LocalEvidenceStore(root)

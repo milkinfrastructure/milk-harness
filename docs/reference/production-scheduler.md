@@ -1,118 +1,121 @@
-# Production scheduler and operational records
+# Production scheduler
 
-`.github/workflows/production-loop.yml` is the only scheduler. Every five-minute invocation reloads and validates the exact `MILK_EVAL_CONFIG_JSON`, materializes its runtime configuration, and runs a bounded gateway tick over completed captured traffic and durable per-eval counts before provider reconciliation. Its concurrency group includes the active `MILK_EVAL_ID` and uses the bounded platform queue without cancellation, so attempts for one eval serialize while a later admitted eval has an independent group. Every manual job also requires its fixed `managed_eval_id` input to equal that active ID; a missing or stale ID runs no gateway, provider, or route job. Scheduled runs use the active ID directly. The concurrency setting is defense in depth, not the singleton authority.
+`.github/workflows/production-loop.yml` is the only production scheduler. It
+runs every five minutes, validates the exact active `milk.eval.v1` document,
+performs one bounded pass, and exits. There is no resident scheduler service.
 
-The hosted pilot is single tenant. The customer's one `dt_live_...` Bearer key reaches only the gateway and authorizes chat traffic. Milk Infrastructure, as the hosted operator, owns the eval document, storage credentials, provider credentials, and route authority. A self-host operator must supply those equivalents; customer traffic credentials never enter provider jobs.
+The concurrency key includes `MILK_EVAL_ID` and does not cancel an in-flight
+pass. Every manual run must supply the same eval ID. A missing or stale ID runs
+no gateway, provider, or route job.
 
-The `2/5 * * * *` schedule and an eval-bound, hash-bound manual dispatch with `authorize_provider_creates: false` run gateway state recovery, provider reconciliation, and teardown with create authority fixed false. Either may adopt an existing canary, publish its signed zero successor, and remove an already-installed candidate credential; neither can prepare or publish a new canary, install a missing credential, or create paid provider work. A manual dispatch can operate only when `managed_eval_id` equals the active `MILK_EVAL_ID`, and can create work only when all three additional checks pass:
+## Jobs
 
-1. `authorize_provider_creates` is true;
-2. `confirmed_run_config_sha256` exactly matches the SHA-256 of the reviewed canonical outer eval document;
-3. the separately credentialed gateway tick returns an accepted typed result.
+The workflow has three separately credentialed jobs.
 
-The input hash alone is insufficient. `MILK_EVAL_CONFIG_JSON` must be canonical `milk.eval.v1` JSON. `MILK_EVAL_ID` is the stable 64-character campaign identity, and both `manifest.campaign_id` and `gateway_config.eval_id` must equal it. It is not the document hash. Materialization separately computes the outer document's SHA-256; that exact digest is the manual paid-work authorization boundary. The document's exact fields are `schema_version`, `manifest_sha256`, `manifest`, `gateway_config`, `cloudflare_account_id`, and `locations`. `manifest_sha256` binds the canonical inner manifest bytes, and the manifest's `gateway_config_sha256` binds the inline gateway config. `locations` holds only the evidence, operational-log, create-authority, and route-evidence R2 account and bucket pairs not already present under gateway `stores`. All seven store locations must be distinct. The canonical document is limited to 48 KiB so it fits one GitHub variable.
+### Gateway tick
 
-Each job independently validates the stable eval ID, exact `milk.confirmed-production-run-config.v6` inner schema and hash, gateway-config hash, harness commit and artifact hashes, exact fields, and store locations before materializing two read-only files. Materialization also computes the outer document SHA-256 used by the paid approval and pass receipt. The existing phase checks then verify the actual source, images, provider identities, credential names, pairwise-distinct credential-bound store identities, deployment, teacher contract, limits, and scope. Each credential identity is the canonical pair `account_id + access_key_id`; its bucket and required capabilities are validated separately. The provider check binds the GPU capture and control account/bucket pairs from the eval document to separately configured access-key IDs without reading the provider-side secret values. Provider requests carry the account IDs and expected identity hashes; a provider launch wrapper compares them to the provider-injected access-key IDs before the unchanged GPU image entrypoint can do storage or model work. Winner startup performs the same control identity check before materialization, then removes the control credential before serving. The inner manifest SHA is used only to validate the materialized runtime settings. A mismatched manual document hash reaches no provider create; a valid eval still reaches provider reconciliation when its gateway job fails. Only the provider job receives both provider API credentials. Its Baseten preflight verifies the configured secret names and exact team through metadata-only `GET /v1/secrets`, then verifies H100 capacity. It invokes Modal preflight only after a validated retryable Baseten failure; any Baseten create authority or ambiguous create permanently forbids fallback for that run.
+`milk-gateway-tick-prod` receives the private gateway pull credential and only
+the capture/control R2 roles needed by `gateway tick --once`. It discovers work
+from completed captures, enforces durable per-eval limits, writes immutable
+claims and launch outboxes, and exits.
 
-Repository configuration is two non-secret variables: `MILK_EVAL_CONFIG_JSON` and `MILK_EVAL_ID`. Raw authorities remain individually masked GitHub secrets; there are no JSON credential bundles.
+It receives no Baseten key, evidence writer, route signing key, or provider-side
+R2 secret value.
 
-Modal 1.5.4 does not expose a stable workspace object ID. Live preflight therefore verifies the authenticated workspace name and exact environment and app IDs; the confirmed config and create authorization still bind the reviewed workspace ID. Any exposed identity mismatch fails closed.
+### Baseten reconciliation
 
-The fixed artifact inventory is `contracts/snapshot-analyzer.json`, the teacher profile and model manifest, both student image provenance records, the shared chat template, Qwen profile, and Qwen model manifest. The Prime-only student-train image receives the pinned Qwen base as a read-only mount. The vLLM-only student-branch image receives only gateway-materialized merged candidate files. The worker verifies the committed 13-file Qwen manifest before any training work. The manifest stores hashes only, never prompt text or gateway secrets.
+`milk-provider-jobs-prod` receives:
 
-Each eval owns its teacher decisions and durable object namespace through its stable campaign/eval ID. Its confirmed document also binds the exact teacher runtime image, committed provider/model/profile artifacts, the positive `max_decisions` per-eval ceiling bounded at 4,096, generation-call and GPU-time limits, parallelism, spend limits, data partitions, and deployment/terms hashes. Once `max_decisions` is reached, the gateway creates no new teacher claims while reconciliation and teardown remain available. This first production proof remains pinned to GPT-OSS on the existing GPU path. A hosted GLM teacher is the next typed profile through the same campaign and gateway contracts, not a separate scheduler or research framework; its image and admission changes require a separately reviewed confirmed config.
+- one Baseten management key;
+- a private GHCR pull identity;
+- read-only gateway control discovery;
+- create-authority read/write roles separated by operation;
+- evidence and operational-log writers;
+- the expected access-key IDs and hashes for the two GPU R2 identities.
 
-The first mechanics proof uses one eval with `max_decisions=320`, `max_calls=20`, `max_gpu_seconds=3600`, and `max_parallel_runs=1`. Its validator also requires a 3,600-second winner with a `$7.50` cost bound, derives a `$142.50` maximum reservation from the exact teacher, train, branch, and winner jobs, and rejects any limit drift or total above the `$160` GPU ceiling. Its fixed official-SDK contract uses `gpt-5.4` and SHA-256 `cf9e41c3220544bc163a6dfb82721154a8e078c9db3c9fa86a148a84ea275263`: deployment baseline sends one baseline request, generated mechanics sends 320 baseline requests, candidate sends one candidate request, and saturation fallback sends one candidate plus one baseline request. The total is exactly 324 SDK calls: 322 baseline and two candidate. Short calls cap completion at 128 tokens; the two saturation calls cap it at 3,840. The verified gateway deployment record binds the baseline receipt SHA-256, and the v6 manifest carries that same digest. The proof's separately confirmed envelope is `$175`: `$160` GPU plus `$15` external.
+The full GPU capture/control credential pairs live in Baseten Secrets. A job
+request binds their exact secret names, account IDs, buckets, and expected
+identity hashes. The provider wrapper checks the injected access-key ID before
+storage or model work starts.
 
-Generated mechanics is a separate one-shot operator job, never part of the schedule. It validates the exact outer eval digest, inner v6 manifest, gateway source and tool digests, gateway config, route-evidence credential identity, and proof contract before writing a create-only intent. A matching create-only receipt makes a retry a no-op. An intent without a receipt is ambiguous and permanently prevents replay.
+The jobs entry point requires `BASETEN_API_KEY` and rejects ambient
+`MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET`. The active provider policy is exactly
+`{"only":"baseten"}`. Modal fields, selections, pricing, and stored provider
+authority cannot be used to create work.
 
-The first Baseten-selected 20-call job is the teacher admission gate; no later create is authorized until the gateway run result has 20 ready calls within the live target and the jobs terminal has `logs_source_complete=true`, `oom_source_complete=true`, and `oom_matched_record_count=0`. A failing terminal remains valid evidence but cannot unlock the next create. A Modal-selected result cannot pass the Baseten gate. Sixteen sequential teacher jobs reserve 16 GPU-hours; the complete teacher, train, branch, and winner chain reserves 19 GPU-hours. Captured traces become eligible only after their UTC hour closes, so the confirmed teacher and winner authorizations must cover that interval plus recovery.
+Before a create, the scheduler verifies:
 
-Every provider pass, including reconcile-only cron, must first acquire the evidence-R2 compare-and-swap lease at `state/v1/campaigns/{campaign_id}/provider-pass-lease.json`. The canonical token binds the campaign, scope, owner, holder, revision, acquisition and expiry, exact evidence-store identity, and one immutable create-authorization object. That authorization is written through a dedicated credential in a separate private bucket. The jobs container receives a different read-only credential for that bucket, so it can verify authorization but cannot mint it. There is no caller flag that enables provider creation.
+1. the canonical v7 eval and exact harness source;
+2. immutable image digests, admissions, and release digest;
+3. live Baseten team, project, secret metadata, and H100 capacity;
+4. one unexpired provider-pass lease;
+5. one create-only authority object;
+6. one pessimistic shared-budget reservation;
+7. the confirmed manual eval SHA-256.
 
-`python3 -m milk_harness.jobs` requires the token, verifies both live records before setup and every provider request, and burns a create-only claim so the token cannot start a second process. The same pass reconciles Baseten and Modal, tears down authorized winner deployments, and emits immutable evidence references for gateway-owned winner and teardown results. The 15-minute lease exceeds the workflow's 12-minute hard timeout; the workflow does not release it until the child has exited, gateway handoffs have run, and the pass is archived. An expired lease can be replaced atomically. Production assumes participating runner clocks remain within 30 seconds; the three-minute timeout margin exceeds that bound, while verification still fails at the exact recorded expiry. A local operator must use the same scheduler boundary around exactly one jobs pass; direct jobs invocation is reconcile-only unless it carries a valid external authorization.
+Every provider mutation is preceded by a durable intent. Ambiguous creates are
+resolved by read-only identity search and are never blindly replayed. Teardown
+remains authorized after the create window closes. A pass does not release its
+lease until the child exits, gateway handoffs are ingested, and the pass archive
+is written.
 
-The pass receipt also records the create request, outer document-hash result, actual-configuration verification, and final grant. A failed or mismatched confirmation never reaches provider creation; a valid eval whose gateway job failed still permits reconciliation, never provider creation.
+### Route control
 
-## Credential boundaries
+`milk-route-control-prod` receives the route writer/signing key, verified result
+reader, official-SDK proof credential, and the narrow Cloudflare candidate-secret
+controller. It receives no Baseten management key or provider-create authority.
 
-`milk-gateway-tick-prod` contains one private GHCR pull identity and capture/control object-store credentials. Its gateway configuration is materialized from the repository eval document. It has no provider, evidence, operational-log, route, signing, or registry-write authority.
+The gateway owns the candidate-key state machine. Route control asks it for one
+bounded install, verify, or remove operation, applies that operation to the
+admitted Baseten winner, and ingests the hash-only acknowledgement before another
+mutation. An unacknowledged operation is verified on restart rather than replayed.
 
-`milk-provider-jobs-prod` contains a private GHCR pull identity, read-only gateway control credentials for discovery, read-write evidence credentials, Baseten and Modal API credentials, a dedicated operational-log R2 identity, and `MILK_PROVIDER_GPU_CAPTURE_R2_ACCESS_KEY_ID` plus `MILK_PROVIDER_GPU_CONTROL_R2_ACCESS_KEY_ID` used only for GPU identity binding. The scheduler host receives the create-authority writer only for an accepted, explicitly confirmed manual dispatch; scheduled recovery receives neither create-authority credential. The jobs child receives only the distinct read-only credential when create authority was granted. The GPU access-key IDs remain on the scheduler host. The jobs child receives the content-free expected hashes and provider-side secret names, not their values, for the GPU workloads.
+Scheduled recovery may advance an existing canary directly to signed zero,
+adopt an existing zero, remove an expired candidate credential, and complete
+teardown. It cannot send paid proof traffic or create a provider job.
 
-The same host uses the materialized gateway config, a dedicated gateway control writer under `MILK_GATEWAY_INGEST_CONTROL_R2_*`, and a dedicated route reader under `MILK_GATEWAY_INGEST_ROUTE_R2_*`. None enters the jobs container. After a successful jobs result, the host downloads only the evidence objects named by its bounded typed references and verifies every key, byte count, and SHA-256. It then starts the exact gateway image once per object. Winner ingestion receives only the control writer. Teardown ingestion also receives the route reader. Those gateway containers receive no Baseten token, Modal token, provider-control reader, evidence credential, create-authority credential, signing key, capture credential, or route writer.
+## Manual authority
 
-The gateway-ingest config and its two credential identities are checked against the same admitted manifest before the first mutation. Each result is mounted as one current-owner `0600` file, as required by the gateway input boundary. Each gateway process has a 90-second hard timeout plus a 10-second termination grace period inside the workflow's 12-minute cap. A failed or partial ingest marks the provider pass failed before summary and archive. Recovered references are emitted again on the next pass, and gateway ingestion is immutable and retry-safe.
+Manual dispatch has two independent booleans:
 
-Baseten winner credentials use the gateway repository's `manage-candidate-credential.py`, never jobs code. The workflow checks out the exact `MILK_GATEWAY_SOURCE_COMMIT`, requires it to equal the private gateway image's `org.opencontainers.image.revision`, and installs only the Wrangler version fixed by the gateway repository's lockfile. The helper process receives a cleared environment containing only PATH, the account ID, and a dedicated Cloudflare candidate-secret token. The permanent container-admin key crosses into the helper through an anonymous pipe on descriptor 3; it is never a helper argument, environment value, or file. The helper runs as UID 65532, owns a fresh `0700` runtime directory, and exposes one `0600` Unix socket. The jobs container keeps its admitted UID and receives only that socket at `/run/milk-candidate-key.sock`, not either Cloudflare credential.
+- `authorize_provider_creates`
+- `authorize_mechanics_traffic`
 
-Each helper invocation accepts at most one canonical Baseten install, verify, or remove request. It removes the socket immediately after accepting the verified same-UID client. Therefore a socket that remains after jobs exit proves the helper was idle and can be stopped; an absent socket means a request is in flight and the workflow waits for the bounded helper result. A pass with no candidate transaction stops the idle listener immediately instead of waiting for its outer timeout. Helper and package-manager streams are truncated in private scratch space and only a generic failure contributes to the sanitized scheduler summary.
+Either requires `confirmed_run_config_sha256` to equal the SHA-256 of the exact
+active canonical eval. Neither authority is inferred from the schedule, a model
+tool call, an earlier run, or a provider credential.
 
-The provider job emits only a lowercase-hex student job ID plus `route_required` and `route_candidate_ready` booleans derived from its whitelisted winner and Baseten candidate-credential evidence counts. Every admitted winner starts route control. Baseten must carry the existing delivery proof; Modal readiness comes only from gateway-owned install and verification acknowledgements.
+The first mechanics proof is capped at 324 official-SDK calls and `$175` total:
+`$160` GPU authorization plus `$15` external reserve. The validator derives a
+`$142.50` maximum GPU reservation from the fixed teacher, train, three-branch,
+and winner bounds. The broader campaign ledger remains `$1,000` absolute with an
+`$850` launch cutoff and `$150` teardown reserve.
 
-The separate `milk-route-control-prod` job runs the full paid proof only in the explicitly confirmed manual workflow that created the winner. Scheduled invocations are recovery-only: an existing canary is advanced directly to signed zero; an existing zero is adopted; and an expired canary with no live route uses gateway expiry authority to reconcile candidate absence without publishing another route. Scheduled recovery never receives the Modal candidate key or SDK proof credential, so it cannot install a credential or send paid proof traffic. It extracts the gateway binary from the exact admitted private image, requires the image revision to equal the exact private gateway source checkout, and uses that checkout's signer, credential helper, and locked OpenAI Node SDK. It has route control/read-write credentials and a signing key, but no Baseten token, Modal token, or provider create authority. Its narrowly scoped Cloudflare candidate-secret token and container-admin key are available only in this job. The pre-provisioned Modal candidate key and admin key enter the helper only through anonymous pipe descriptors; neither becomes a helper argument, environment value, or file.
+## Evidence
 
-After publishing or adopting the canary and before sending SDK traffic, the gateway creates the exact Modal install or verification request from the admitted winner and current deployment anchor. The helper emits a canonical hash-only acknowledgement, and the gateway ingests it before preparing the next action. If an install was issued without a durable acknowledgement, the next preparation returns verification instead of replaying the mutation; the observed installed or absent state is ingested before another action. Baseten returns `ready` only after the workflow checks its existing delivery proof. Because the canary is already live, any later credential failure runs the existing signed-zero path before Modal removal.
+R2 is authoritative for counts, claims, reservations, provider results, route
+state, and terminal evidence. GitHub logs are operational evidence only.
 
-Every attempted route-control job also creates and reads back an immutable content-free receipt in the dedicated route-evidence bucket. The receipt binds the harness and gateway commits, student job, workflow run and attempt, private GitHub Actions log reference, route-step outcome, and signed-zero revision when one was published. It contains no request, response, credential, prompt, model output, or free-form log text.
+Each pass emits a content-free archive that identifies the eval, workflow run,
+source, images, provider operation IDs, object keys, digests, byte counts, and
+known collection gaps. Prompts, model outputs, secret values, and raw provider
+logs do not enter that archive.
 
-`advance-winner-route` is the route authority. With no live route it prepares one fixed 100-basis-point, 900-second canary. A retry adopts the exact existing revision and original deadline instead of extending it. Before a new canary is published, the job proves that the owner-only SDK credential is the one configured `capture_allowed: false` traffic key, the exact gateway config reserves one candidate slot, its cohort falls inside that exact 1% HMAC sample, and its model and reasoning setting match the signed manifest. Genuine user keys remain capture-enabled; the fixed proof prompts cannot enter the training corpus. The signer publishes the manifest, and a second advance call must observe the same revision and deadline.
+The paid proof is complete only after the official-SDK baseline, admitted
+teacher/train/eval/winner results, authenticated canary, the OpenAI baseline
+under candidate saturation, active signed-zero route, candidate credential
+removal, winner termination, and zero Baseten compute all have matching
+immutable evidence.
 
-Before each paid SDK proof, the job creates an immutable content-free intent in the dedicated route-evidence bucket. An existing intent without its receipt is ambiguous and is never replayed. The first exact OpenAI Node SDK request must return the expected route revision, `candidate` target, and candidate, artifact, and deployment digests. The fallback proof then holds one eligible streaming request against the winner's single candidate slot and requires a second same-cohort request to return from `openai` under the same route revision. Both content-free receipts are stored create-only and read back. There is no synthetic failure injection. Successful proofs publish signed zero immediately; the 900-second canary interval is a maximum authority, not a required dwell. On any proof or workflow failure after a canary may be live, the job also attempts signed zero immediately and verifies the fixed 0-basis-point, 60-second successor.
+## Credential inventory
 
-After signed zero, route control asks the gateway for the exact Modal removal request, runs the same bounded helper, and ingests an exact `absent` acknowledgement. The next queued, scheduled, or manually started provider pass refuses Modal teardown without that durable absence proof. It then consumes the zero-route authorization, proves zero provider compute, ingests the immutable teardown result, and only then frees the slot. Baseten retains its established provider-pass credential cleanup. The paid proof is complete only when the final provider receipt is present.
+Production uses fourteen distinct R2 identities across seven buckets. Validate
+each identity against its assigned bucket and one forbidden bucket before
+activation. Read-only identities must deny writes. No pair may be reused for a
+different bucket or phase.
 
-A runner hard-kill cannot execute its shell trap. The next scheduled pass therefore runs the same durable state machines with provider creates disabled: gateway tick mints or adopts service-expiry teardown authority, provider reconciliation re-emits the winner reference without tearing down ahead of zero and credential absence, and route recovery publishes zero and ingests the exact absence acknowledgement. The following provider reconciliation proves zero compute and completes teardown. No separate recovery service or mutable receipt is used.
-
-For the first controlled proof, `MILK_GATEWAY_WORKER_VERSION_ID` is the exact Worker version from the verified deployment receipt. Candidate removal advances a scope-wide compare-and-swap lineage record in gateway control storage. Later cycles keep rechecking the static source, image admission, release, application, version, and container image, while the gateway replaces only the seed Worker ID with the prior verified absent acknowledgement's release ID. No operator variable rotation or separate lineage service is required.
-
-The eval manifest carries exact digest references for `milk-gateway`, `milk-jobs`, `milk-student-train`, `milk-student-branch`, and `milk-teacher-gpt-oss`, plus the exact image release SHA-256. The jobs image loads and verifies that immutable release and each image admission from evidence before provider setup. The local Mac neither builds nor runs GPU images; GPU work occurs only in an explicitly authorized cloud provider job.
-
-This document describes the production contract. The current locally validated release sources are gateway `659b1723539fa3126472348b6fc3afb52831dfca` and harness `3553ad5c4f7b8c72a6a071b1510f6104fad57a4d`, with green public offline CI and CodeQL. Gateway release `39760f00e041d5fd91f84990584cf99dd4b2eb7ded9eac07615a53415bd884e4` admits `milk-gateway@sha256:2e0180deda8854c6bc76a1fa0b9ab02e43f49c9d14325c0e0f300c613d30be20` through admission `a3bd04a269f5a81190cc60c4c57b4614ea2e63aad7f5a0a054ed61f4302ae5be`. Its CPU-only build completed in 1 hour 3 minutes 20 seconds and removed its ephemeral builder.
-
-Harness image release `aadbb2fcc88cd775c51e7d976a1256110482a16105570fe5b4007061517830fb` selectively replaces only `milk-jobs`. The jobs image is `milk-jobs@sha256:97e00265eee7c1350b12ba0821a24012fcc312f127f2ce75a463fe991af5e056`, its admission is `6b594d17a39b7ab4e3e782916c4be57d32e3034e3385400840bf1ec85dae9868`, and its build context is `b77f25092b46c979ab8788eae320748a91f5590c48fec2d113134fa2ce50c03e`. That CPU-only selective build completed in 3 minutes 58 seconds, used no local GPU, and removed its ephemeral builder. The release reuses, byte-for-byte, the GPU images from harness `aa294358bede782d1e533fc1f6432615b5366a82`: `milk-student-train@sha256:74890a2b0524ac80067d6ffb499a176e5d70e735c1feddb825b25716de1092c4` through admission `b6cbbedd71ecfe64873045655a09931d0b86ac67a450e5263459fa946e543290`, `milk-student-branch@sha256:d8588f986aaaeefa34b32a43c3970579bb174b975517513ad3b741d73727e948` through admission `14b76ef0f21a6d599fe4d8d3af99088964325494e202468c716239a69fd66c8b`, and `milk-teacher-gpt-oss@sha256:d07a0f794e3a273d4c883606c2fa44728925c2a97379507d35a164b2c9293016` through admission `0e36e77a9f26d86f189e1b4e98a10978be9e6e950d704691aedbf3bec832d18b`. Those retained GPU images embed `milk-gateway@sha256:f5fd6786a5d36870045c9fc8271ac28940ae88809569f5c3fb8fbb2d2582ca4c` from gateway source `bc1b53c45c337d95daa38cd8170da46c246e5a70`; that embedded dependency is not the standalone live gateway image.
-
-Both current release records validate locally. Their current gateway admission and release plus current jobs admission and harness release are not yet published to production R2; the five existing production evidence objects belong to the previous harness release. No hosted cloud proof has run, so the hosted release remains unqualified.
-
-## Operational-log boundary
-
-Provider stdout is limited to canonical `milk.jobs-pass.v3`; provider stderr is never uploaded. Gateway-ingest stdout and stderr are captured in the private scratch directory and truncated immediately. The scheduler accepts only fixed GitHub metadata and whitelisted typed result fields. It discards streams after bounded validation without retaining their contents or hashes. Prompts, model outputs, datasets, secrets, headers, signed URLs, and environment dumps are forbidden.
-
-Each attempt writes one create-only sanitized artifact:
-
-```text
-operational/v1/scheduler-passes/{pass_id}/archive.json
-```
-
-The separate evidence bucket receives only a create-only, content-free reference:
-
-```text
-operational-log-references/v1/scheduler-passes/{pass_id}.json
-```
-
-`pass_id` is derived from the GitHub repository ID, run ID, and run attempt. A retry with different bytes fails instead of overwriting either object. The artifact lists explicit gaps for failures before the archive store is reachable, the current GitHub run log, GHCR client stream, Cloudflare runtime, Baseten terminal stream, Modal, local operator runs, gateway runtime, and live retention-policy observation. It must not be described as literal all-platform log completeness.
-
-## R2 release gate
-
-Before enabling the workflow:
-
-- set repository variables `MILK_EVAL_CONFIG_JSON` and `MILK_EVAL_ID` only; put all non-secret image, provider, deployment, and store-location settings in that reviewed canonical document;
-- use a private R2 bucket dedicated to `MILK_OPS_LOG_R2_*`, with an access key different from control and evidence;
-- use another private R2 bucket for provider create authorizations, with distinct write and read-only credentials; pass only `MILK_CREATE_AUTHORITY_READ_R2_*` into the jobs container and verify that credential cannot create or replace objects;
-- provision Baseten payment-linked resources and long-lived provider credentials only after action-time operator confirmation; the workflow consumes existing credentials and does not create them;
-- restrict `MILK_GATEWAY_INGEST_CONTROL_R2_*` to the gateway control bucket with object read/write and restrict `MILK_GATEWAY_INGEST_ROUTE_R2_*` to route reads; verify neither credential can access the other partition;
-- verify `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` are limited to the confirmed workspace and environment and that every configured Modal name matches its immutable object ID;
-- provision separate teacher and student-train Modal volumes, bind their exact names and object IDs in the eval manifest, and populate the student-train volume root with only the pinned Qwen manifest files;
-- bind the exact gateway source commit in the eval manifest and provide a contents-read-only `MILK_GATEWAY_SOURCE_READ_TOKEN` for that private repository;
-- bind the exact Cloudflare application ID/version, container image, Worker version ID, gateway image-admission SHA-256, gateway release SHA-256, and account ID in the eval document; provision the candidate-secret-only API token and Worker-only container-admin key as raw secrets;
-- bind the canonical gateway config in the repository eval document; create `milk-route-control-prod` with the exact 32-byte lowercase-hex route secret, an owner-only Ed25519 signing key, an owner-only SDK credential whose `capture_allowed: false` traffic cohort is preselected for the fixed 1% canary, and the exact pre-provisioned Modal candidate key whose SHA-256 is bound by the winner admission;
-- restrict `MILK_ROUTE_CONTROL_R2_*` and `MILK_ROUTE_ROUTE_R2_*` to the configured control and route buckets with the read/write access required by gateway publication, and verify neither identity can access the other partition;
-- use a dedicated private `MILK_ROUTE_EVIDENCE_R2_*` bucket or prefix for create-only smoke intents and content-free receipts; lock those records indefinitely and keep its credential out of the gateway process;
-- seed the eval manifest's gateway Worker version ID from the verified deployment receipt; after the first candidate removal, verify that gateway control contains the exact scope-wide lineage acknowledgement used for subsequent cycles;
-- disable public development URLs and custom domains on the private buckets;
-- configure a 90-day bucket lock and a 90-day lifecycle deletion rule for `operational/v1/scheduler-passes/`;
-- configure an indefinite bucket lock for `operational-log-references/v1/scheduler-passes/` in the evidence bucket;
-- leave the mutable `state/v1/campaigns/` lease and budget prefixes outside object-lock rules so conditional replacement remains possible;
-- verify both rules and retain the verification receipt outside the mutable budget/state prefixes.
-
-Cloudflare documents [bucket lock rules](https://developers.cloudflare.com/r2/buckets/bucket-locks/) and [object lifecycle rules](https://developers.cloudflare.com/r2/buckets/object-lifecycles/). The scheduler writer deliberately has no bucket-policy authority and records that it did not observe those rules. Live policy setup and read-back verification remain a deployment gate, not an application assertion.
+The manual
+[`bootstrap-baseten-registry.yml`](../../.github/workflows/bootstrap-baseten-registry.yml)
+copies the protected GHCR pull credential directly to the configured Baseten
+team as the training and winner registry secrets. It validates the active eval
+and reads back secret metadata only. It cannot create GPU work.

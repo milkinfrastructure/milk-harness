@@ -18,11 +18,30 @@ require_command() {
 }
 
 reuse_release_dir=
-if [ "$#" -eq 4 ] && [ "$1" = --reuse-release-dir ]; then
-  reuse_release_dir=$2
-  shift 2
-fi
-[ "$#" -eq 2 ] || fail 'usage: build-images.sh [--reuse-release-dir VERIFIED_RELEASE_DIR] GATEWAY_IMAGE NEW_EVIDENCE_DIR' 64
+cache_dir=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --reuse-release-dir)
+      if [ "$#" -lt 2 ] || [ -n "$reuse_release_dir" ]; then
+        fail 'reused release directory is invalid' 64
+      fi
+      reuse_release_dir=$2
+      shift 2
+      ;;
+    --cache-dir)
+      if [ "$#" -lt 2 ] || [ -n "$cache_dir" ]; then
+        fail 'cache directory is invalid' 64
+      fi
+      cache_dir=$2
+      shift 2
+      ;;
+    --) shift; break ;;
+    -*) fail 'unsupported build option' 64 ;;
+    *) break ;;
+  esac
+done
+[ "$#" -eq 2 ] || \
+  fail 'usage: build-images.sh [--reuse-release-dir VERIFIED_RELEASE_DIR] [--cache-dir ABSOLUTE_DIR] GATEWAY_IMAGE NEW_EVIDENCE_DIR' 64
 gateway_image=$1
 requested_evidence_dir=$2
 
@@ -56,9 +75,10 @@ if [ -n "$reuse_release_dir" ]; then
   fi
 fi
 
-for command_name in date docker env gh git grep ln python3 sed tar; do
+for command_name in date docker env git grep ln python3 sed tar; do
   require_command "$command_name"
 done
+python=$(command -v python3)
 
 credential_names=$(env | sed 's/=.*//' | LC_ALL=C sort)
 if printf '%s\n' "$credential_names" | grep -Eq \
@@ -66,8 +86,17 @@ if printf '%s\n' "$credential_names" | grep -Eq \
   fail 'build shell contains an ambient registry, provider, store, teacher, OpenAI, or Codex credential/configuration' 64
 fi
 
+github_token_file=${MILK_GITHUB_TOKEN_FILE:-}
+case "$github_token_file" in
+  /*) ;;
+  *) fail 'MILK_GITHUB_TOKEN_FILE must name an absolute owner-only file' 64 ;;
+esac
+
 repo=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 cd "$repo"
+"$python" "$repo/deploy/github_rest.py" check "$github_token_file" \
+  >/dev/null 2>&1 || \
+  fail 'MILK_GITHUB_TOKEN_FILE is not a valid owner-only GitHub credential' 77
 top_level=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'release source is not a git checkout' 64
 [ "$top_level" = "$repo" ] || fail 'release script must run from the milk-harness checkout' 64
 commit=$(git rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || fail 'release checkout has no commit' 64
@@ -97,6 +126,60 @@ case "$evidence_dir/" in
   "$repo"/*) fail 'evidence directory must be outside the release checkout' 64 ;;
 esac
 
+cache_method=disabled
+cache_imported=false
+cache_parent=
+if [ -n "$cache_dir" ]; then
+  case "$cache_dir" in
+    /*) ;;
+    *) fail 'cache directory must be absolute' 64 ;;
+  esac
+  cache_validation=$(
+    "$python" - "$cache_dir" "$repo" "$evidence_dir" 2>/dev/null <<'PY'
+import os
+import stat
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+repository = Path(sys.argv[2]).resolve(strict=True)
+evidence = Path(sys.argv[3])
+if path.name in {"", ".", ".."}:
+    raise SystemExit(1)
+parent = path.parent.resolve(strict=True)
+target = parent / path.name
+if target.is_symlink():
+    raise SystemExit(1)
+resolved = target.resolve(strict=False)
+if resolved == repository or repository in resolved.parents:
+    raise SystemExit(1)
+if resolved == evidence or evidence in resolved.parents or resolved in evidence.parents:
+    raise SystemExit(1)
+metadata = parent.stat()
+if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+    raise SystemExit(1)
+imported = False
+if target.exists():
+    metadata = target.stat()
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise SystemExit(1)
+    index = target / "index.json"
+    imported = index.is_file() and not index.is_symlink()
+print(resolved)
+print(parent)
+print("true" if imported else "false")
+PY
+  ) || fail 'cache directory must be owner-only and outside the checkout and evidence' 64
+  cache_dir=$(printf '%s\n' "$cache_validation" | sed -n '1p')
+  cache_parent=$(printf '%s\n' "$cache_validation" | sed -n '2p')
+  cache_imported=$(printf '%s\n' "$cache_validation" | sed -n '3p')
+  cache_method=buildkit-local
+fi
+
 release_inputs='Dockerfile.jobs'
 if [ -z "$reuse_release_dir" ]; then
   release_inputs='deploy/student-train/Dockerfile
@@ -109,8 +192,6 @@ for release_input in $release_inputs; do
 done
 
 docker=$(command -v docker)
-gh=$(command -v gh)
-python=$(command -v python3)
 context=$("$docker" context show 2>/dev/null) || fail 'cannot resolve the Docker context' 69
 [ -n "$context" ] || fail 'Docker context is empty' 69
 endpoint=$("$docker" context inspect "$context" --format '{{ (index .Endpoints "docker").Host }}' 2>/dev/null) || \
@@ -145,6 +226,8 @@ builder_created=0
 scratch=
 docker_config=
 builder=
+cache_work=
+cache_available=$cache_imported
 
 cleanup() {
   status=$?
@@ -174,6 +257,11 @@ PY
   case "$scratch" in
     "${TMPDIR:-/tmp}"/milk-harness-release.*) rm -rf -- "$scratch" ;;
   esac
+  if [ -n "$cache_work" ] && [ -n "$cache_parent" ]; then
+    case "$cache_work" in
+      "$cache_parent"/.milk-harness-cache.*) rm -rf -- "$cache_work" ;;
+    esac
+  fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -183,11 +271,60 @@ trap 'exit 143' TERM
 
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/milk-harness-release.XXXXXX") || \
   fail 'cannot create release scratch directory' 73
+if [ "$cache_method" = buildkit-local ]; then
+  cache_work=$(mktemp -d "$cache_parent/.milk-harness-cache.XXXXXX") || \
+    fail 'cannot create local BuildKit cache export directory' 73
+fi
+"$python" - "$evidence_dir/cache.json" "$cache_method" "$cache_imported" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path, method, imported = sys.argv[1:]
+Path(path).write_text(json.dumps({
+    "schema_version": "milk.local-buildkit-cache.v1",
+    "method": method,
+    "imported": imported == "true",
+}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
 docker_config=$scratch/docker-config
 mkdir -m 0700 -- "$docker_config" || fail 'cannot create isolated Docker configuration' 73
 mkdir -m 0700 -- "$docker_config/cli-plugins" || fail 'cannot create isolated Docker plugin directory' 73
 ln -s -- "$buildx_plugin" "$docker_config/cli-plugins/docker-buildx" || \
   fail 'cannot install docker buildx into the isolated configuration' 73
+failure_stage=registry-auth
+"$python" - "$github_token_file" "$docker_config/config.json" <<'PY' || \
+  fail 'cannot materialize isolated GHCR authentication' 77
+import base64
+import json
+import os
+import stat
+import sys
+
+from deploy.github_rest import read_token_file
+
+token_path, config_path = sys.argv[1:]
+token = read_token_file(token_path).encode("ascii")
+auth = base64.b64encode(b"ShantanuJoshi:" + token).decode("ascii")
+raw = (json.dumps(
+    {"auths": {"ghcr.io": {"auth": auth}}},
+    sort_keys=True,
+    separators=(",", ":"),
+) + "\n").encode("ascii")
+flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+descriptor = os.open(config_path, flags, 0o600)
+try:
+    os.fchmod(descriptor, 0o600)
+    with os.fdopen(descriptor, "wb", closefd=False) as output:
+        output.write(raw)
+        output.flush()
+        os.fsync(output.fileno())
+finally:
+    os.close(descriptor)
+metadata = os.stat(config_path, follow_symlinks=False)
+if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
+    raise ValueError("isolated Docker authentication has invalid permissions")
+PY
 "$docker" --config "$docker_config" buildx version >/dev/null 2>&1 || \
   fail 'docker buildx is unavailable in the isolated configuration' 69
 builder=milk-harness-$(printf '%s' "$commit" | cut -c1-12)-$$
@@ -357,17 +494,11 @@ references.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 fi
 
-failure_stage=registry-login
-if ! "$gh" auth token --hostname github.com | \
-  "$docker" --config "$docker_config" login ghcr.io --username ShantanuJoshi --password-stdin >/dev/null; then
-  fail 'private GHCR login failed' 77
-fi
-
 failure_stage='package-preflight'
 packages=$scratch/packages.tsv
-"$gh" api --hostname github.com --paginate \
-  '/orgs/milkinfrastructure/packages?package_type=container&per_page=100' \
-  --jq '.[] | [.name, .visibility] | @tsv' >"$packages" || fail 'cannot inspect Milk container packages' 77
+"$python" "$repo/deploy/github_rest.py" packages "$github_token_file" \
+  >"$packages" || \
+  fail 'cannot inspect Milk container packages' 77
 "$python" - "$packages" "$reuse_release_dir" <<'PY' || fail 'gateway package is missing/private check failed, or an existing release target is not private' 77
 import sys
 from pathlib import Path
@@ -468,6 +599,19 @@ build_one() {
   if [ "$gateway_required" = yes ]; then
     set -- "$@" --build-arg "MILK_GATEWAY_IMAGE=$gateway_image"
   fi
+  cache_export=
+  if [ "$cache_method" = buildkit-local ]; then
+    cache_export=$cache_work/export
+    if [ -e "$cache_export" ] || [ -L "$cache_export" ]; then
+      fail 'local BuildKit cache export target already exists' 73
+    fi
+    mkdir -m 0700 -- "$cache_export" || \
+      fail 'cannot create local BuildKit cache export target' 73
+    if [ "$cache_available" = true ]; then
+      set -- "$@" --cache-from "type=local,src=$cache_dir"
+    fi
+    set -- "$@" --cache-to "type=local,dest=$cache_export,mode=max"
+  fi
   set -- "$@" "$build_context"
 
   failure_stage=build-$artifact
@@ -517,6 +661,13 @@ target.write_text(json.dumps({
 }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
   [ "$build_status" -eq 0 ] || fail "$artifact image build failed" 70
+  if [ "$cache_method" = buildkit-local ]; then
+    if [ ! -d "$cache_export" ] || [ -L "$cache_export" ] || \
+      [ ! -f "$cache_export/index.json" ] || [ -L "$cache_export/index.json" ]; then
+      fail 'BuildKit cache export is incomplete' 70
+    fi
+    chmod 0700 "$cache_export" || fail 'BuildKit cache export is not owner-only' 70
+  fi
 
   failure_stage=verify-$artifact
   set -- "$repo/deploy/verify-private-image.py" \
@@ -533,7 +684,7 @@ PY
     set -- "$@" --gateway-image-reference "$gateway_image"
   fi
   immutable=$(
-    "$gh" auth token --hostname github.com | "$python" "$@"
+    "$python" "$@" <"$github_token_file"
   ) || fail "$artifact immutable manifest verification failed" 70
   # The verifier returns exactly three fields, which are validated below.
   # shellcheck disable=SC2086
@@ -545,6 +696,25 @@ PY
   printf '%s\t%s\t%s\t%s\t%s\n' \
     "$artifact" "$immutable" "$admission_sha256" \
     "$ops_log_reference_sha256" "$commit" >>"$references"
+  if [ "$cache_method" = buildkit-local ]; then
+    prior_cache=$cache_work/prior
+    if [ -e "$prior_cache" ] || [ -L "$prior_cache" ]; then
+      fail 'local BuildKit cache rotation target already exists' 73
+    fi
+    if [ -e "$cache_dir" ]; then
+      if [ ! -d "$cache_dir" ] || [ -L "$cache_dir" ]; then
+        fail 'local BuildKit cache changed during the build' 73
+      fi
+      mv -- "$cache_dir" "$prior_cache" || \
+        fail 'cannot rotate the local BuildKit cache' 73
+    fi
+    if ! mv -- "$cache_export" "$cache_dir"; then
+      [ ! -e "$prior_cache" ] || mv -- "$prior_cache" "$cache_dir" || :
+      fail 'cannot publish the local BuildKit cache' 73
+    fi
+    [ ! -e "$prior_cache" ] || rm -rf -- "$prior_cache"
+    cache_available=true
+  fi
   printf '%s\n' "$immutable"
 }
 

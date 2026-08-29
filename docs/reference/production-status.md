@@ -1,66 +1,92 @@
-# Production qualification
+# Production status
 
-Last updated: 2026-08-29.
+Observed 2026-08-29. This file records provider and release evidence; it is not a
+substitute for the live proof.
 
-## Current status
+## Source
 
-The gateway and harness release source commits are `659b1723539fa3126472348b6fc3afb52831dfca` and `3553ad5c4f7b8c72a6a071b1510f6104fad57a4d`; both are public, and both repositories' post-merge offline CI and CodeQL runs are green. Gateway release `39760f00e041d5fd91f84990584cf99dd4b2eb7ded9eac07615a53415bd884e4` admits `milk-gateway@sha256:2e0180deda8854c6bc76a1fa0b9ab02e43f49c9d14325c0e0f300c613d30be20` through admission `a3bd04a269f5a81190cc60c4c57b4614ea2e63aad7f5a0a054ed61f4302ae5be`. The current v6 candidate's harness image release uses schema v5 and SHA-256 `aadbb2fcc88cd775c51e7d976a1256110482a16105570fe5b4007061517830fb`. It rebuilds only `milk-jobs`, retaining the three GPU images and admissions from harness `aa294358bede782d1e533fc1f6432615b5366a82` and their embedded gateway dependency from gateway `bc1b53c45c337d95daa38cd8170da46c246e5a70`. The hosted system is not deployed or production-qualified, and runtime OCI images remain private.
+- Public main before this cutover: gateway `24473db`, harness `b374be4`.
+- Baseten-only gateway and harness changes are under review and are not yet the
+  production release.
+- The active contract is `milk.confirmed-production-run-config.v7` with provider
+  policy exactly `{"only":"baseten"}`.
+- Modal is not an authorized production provider. Ambient Modal credentials are
+  rejected by the jobs entry point.
 
-The candidate uses one stable eval identity across the manifest, gateway config, scheduler, and durable object keys: `MILK_EVAL_ID`, `manifest.campaign_id`, and `gateway_config.eval_id` are equal. The separately computed SHA-256 of the canonical outer eval document is the paid-work authorization boundary. The previous harness release's four admission objects and release object were published and received matching Cloudflare metadata/ETag readback. The current v6 gateway and harness evidence is local and unpublished: its three reused GPU admissions already exist in production evidence R2, while the new gateway admission and release plus the new jobs admission and harness release require publication. The resulting current two-object gateway set and five-object harness set then require least-privilege S3 body readback. Exact eval publication/readback and the complete cloud proof also remain required before the candidate can be called released.
+## Infrastructure verified
 
-No paid teacher run or complete provider proof for this candidate is recorded here. No local GPU has run or is required.
+- Cloudflare Workers Paid is active for the production account.
+- Seven R2 buckets exist for capture, control, routes, evidence, route evidence,
+  create authority, and operational logs.
+- Fourteen distinct least-privilege R2 identities were exercised against their
+  assigned bucket and a forbidden bucket. Read/write roles wrote successfully;
+  read-only roles denied writes; cross-bucket access was denied.
+- The route-evidence bucket's object lock correctly prevented deletion of the
+  final credential probe. One zero-part multipart upload is pending its one-day
+  incomplete-upload lifecycle cleanup.
+- The Cloudflare deployer token and narrower candidate-controller token are
+  active and stored only in their intended operator surfaces.
+- All five GHCR runtime packages are private.
+- Baseten has one active production operator key. The capture and control R2
+  credential pairs exist as four separate Baseten secrets.
+- The protected GitHub environments contain the required R2, Baseten,
+  Cloudflare, source, and private-registry credentials. Registry credentials are
+  synced to Baseten only through the manual eval-bound bootstrap workflow.
 
-## Verified release-preparation evidence
+No secret values are recorded here.
 
-- The MIT-licensed source repositories are public in GitHub. Runtime OCI packages remain private.
-- Release commits `659b1723539fa3126472348b6fc3afb52831dfca` for the gateway and `3553ad5c4f7b8c72a6a071b1510f6104fad57a4d` for the harness passed offline CI and CodeQL.
-- A CPU-only native builder produced and independently validated the initial v4 set of five private `linux/amd64` images, their OCI manifests, SLSA provenance, SPDX SBOMs, admission receipts, and immutable source bindings.
-- A CPU-only gateway build from source `659b1723539fa3126472348b6fc3afb52831dfca` completed in 1 hour 3 minutes 20 seconds and removed its ephemeral builder. Its image is `milk-gateway@sha256:2e0180deda8854c6bc76a1fa0b9ab02e43f49c9d14325c0e0f300c613d30be20`, admission is `a3bd04a269f5a81190cc60c4c57b4614ea2e63aad7f5a0a054ed61f4302ae5be`, and release SHA-256 is `39760f00e041d5fd91f84990584cf99dd4b2eb7ded9eac07615a53415bd884e4`.
-- A CPU-only selective jobs rebuild from harness `3553ad5c4f7b8c72a6a071b1510f6104fad57a4d` completed in 3 minutes 58 seconds with no local GPU and removed its ephemeral builder. Its release SHA-256 is `aadbb2fcc88cd775c51e7d976a1256110482a16105570fe5b4007061517830fb`, jobs image is `milk-jobs@sha256:97e00265eee7c1350b12ba0821a24012fcc312f127f2ce75a463fe991af5e056`, jobs admission is `6b594d17a39b7ab4e3e782916c4be57d32e3034e3385400840bf1ec85dae9868`, and jobs context is `b77f25092b46c979ab8788eae320748a91f5590c48fec2d113134fa2ce50c03e`.
-- The harness includes evidence-only, create-once publishers for the gateway release, harness release, and exact eval document. Local temporary-store checks against both real release bundles proved exact body loadback, replay safety, and collision failure. Production R2 remains unchanged.
-- Repository history, assets, examples, installation documentation, security alerts, dependencies, default-branch rulesets, and the current release tag were audited. The stale `v0.1.0-rc.1` tag is intentionally not promoted before live qualification. Runtime GPU images remain private; their complete third-party license inventory is a gate before any public image release.
-- Exact current images are `milk-gateway@sha256:2e0180deda8854c6bc76a1fa0b9ab02e43f49c9d14325c0e0f300c613d30be20`, `milk-jobs@sha256:97e00265eee7c1350b12ba0821a24012fcc312f127f2ce75a463fe991af5e056`, `milk-teacher-gpt-oss@sha256:d07a0f794e3a273d4c883606c2fa44728925c2a97379507d35a164b2c9293016`, `milk-student-train@sha256:74890a2b0524ac80067d6ffb499a176e5d70e735c1feddb825b25716de1092c4`, and `milk-student-branch@sha256:d8588f986aaaeefa34b32a43c3970579bb174b975517513ad3b741d73727e948`. The three GPU digests and admissions are unchanged. Their retained embedded gateway dependency is `milk-gateway@sha256:f5fd6786a5d36870045c9fc8271ac28940ae88809569f5c3fb8fbb2d2582ca4c`; it is not the live gateway image.
-- Recorded compressed sizes are 12.0520439 MiB for `milk-gateway`, 58.23 MiB for `milk-jobs`, 10,420.52 MiB for `milk-teacher-gpt-oss`, 6,371.98 MiB for `milk-student-train`, and 10,836.95 MiB for `milk-student-branch`. Shared vLLM layers reduce unique content across all images to 16.88 GiB.
-- Seven production R2 buckets and the three protected-main-only GitHub production environments exist. Live readback from Cloudflare account `d8a5175f959d3dbd4084db9fcab1c44c` confirms that all seven `milk-prod-*` buckets remain private; six are empty and `milk-prod-evidence` contains exactly five objects.
-- All seven buckets have an enabled one-day (`86400` seconds) abort-incomplete-multipart lifecycle. `milk-prod-ops-log` has an enabled 90-day (`7776000` seconds) lock and 90-day deletion lifecycle on `operational/v1/scheduler-passes/`; `milk-prod-evidence` has an enabled indefinite lock on `operational-log-references/v1/scheduler-passes/`; and `milk-prod-route-evidence` has an enabled indefinite whole-bucket lock.
-- The previous harness release's four artifact-admission objects ending in `b6cbbedd71ecfe64873045655a09931d0b86ac67a450e5263459fa946e543290`, `14b76ef0f21a6d599fe4d8d3af99088964325494e202468c716239a69fd66c8b`, `0e36e77a9f26d86f189e1b4e98a10978be9e6e950d704691aedbf3bec832d18b`, and `a6e3b0bb7a09f9db31cd76b9c0238655141391c9c63e969c5175306112f30790`, plus its release object ending in `cd8a756a384780977a0f9c33cff17297844ed94562bb1bb5f6cd2878d20bf30c`, are published in `milk-prod-evidence`. Cloudflare returned HTTP 200 for every upload. Independent list and metadata readback returned exactly those five keys with exact local byte sizes and matching single-part ETags/MD5; every content-addressed key suffix equals the local SHA-256. This proves publication and metadata/ETag readback for the previous release, not publication of the current release or least-privilege S3 credential/body readback.
-- Authenticated Cloudflare readback confirms that Containers is not enabled and requires the `$5` monthly Workers Paid plan. No Milk Worker or Container application exists. The only account-owned R2 credential is restricted to the development bucket; broader user-owned credentials are not acceptable production identities. The fourteen separately scoped production R2 identities and the Worker/Container deployment credentials remain absent. Each planned credential identity is `account_id + access_key_id`; bucket and capability checks remain separate gates.
-- Authenticated Baseten readback confirms active billing and `$0.92` remaining credits, but no active API keys, provider secrets, training jobs, or dedicated deployments. Billing records `$0.87` of prior H100 use from two deployments that are no longer present; that history is not evidence for this candidate.
-- The production workflow remains disabled. Production least-privilege credentials, eval variables, deployment, provider pull, and paid proof are still missing.
-- Live Modal readback resolves the `shantanujoshi` workspace, `main` environment, deployed `milk-prod-gpu` app, and the separate teacher and student-train volumes; both current apps report zero tasks. The volumes contain the expected external model inventories and prior population evidence is hash-verified. Only older `dragontales-*` secrets exist, so the production registry, config, control, capture, and candidate secret identities still require provisioning. Model weights are not stored in the images.
-- Baseten-primary/Modal-fallback policy is implemented: Modal is eligible only after a validated retryable Baseten failure and never after ambiguous or accepted Baseten create authority.
-- Current evidence does not prove current-release publication, least-privilege production S3 body readback, eval binding, provider pull, deployment, paid execution, route behavior, or provider zero.
+## Image evidence
 
-Alpine cannot materially reduce the pinned CUDA, PyTorch, and vLLM layers in the GPU images. The CPU images are already small; the GPU images are large because of their runtime stacks, while model weights remain external.
+- The last admitted gateway runtime is about 12.05 MiB compressed. Rust and
+  Debian exist only in the build stage; runtime is the shell-free Chainguard
+  glibc image.
+- The Baseten-only jobs image has been built for `linux/amd64`, runs as UID/GID
+  65532, contains no Modal package or source, and is 45.8 MB compressed before
+  the pinned winner deployment client is added.
+- The verified winner-capable jobs image is 119.1 MB compressed and includes the
+  pinned Truss 0.18.25 closure. Its direct-image contract uses
+  `DockerServer(no_build=True)` and passed as UID/GID 65532.
+- GPU images retain their pinned CUDA, PyTorch, Prime-RL, and vLLM bases. Model
+  weights are external. No local GPU is used for builds or tests.
 
-## Hosted pilot boundary
+These are candidate observations. New immutable gateway and harness release
+records, GHCR digests, admissions, and R2 readback are still required after the
+source changes merge.
 
-The pilot is single tenant: one gateway deployment owns one tenant, project, environment, and workload scope. A customer points the official OpenAI SDK at that gateway and sends one `dt_live_...` Bearer key. That key authorizes chat traffic only.
+## Provider gate
 
-Milk Infrastructure is the hosted operator and owns the admitted eval document, storage credentials, provider credentials, route authority, and release evidence. The harness watches that admitted document and completed captured traffic. It stops creating teacher work at the eval's `max_decisions` limit while continuing bounded reconciliation and teardown. Scheduled runs cannot authorize provider creates.
+Baseten currently returns HTTP 403 `PERMISSION_DENIED` for
+`POST /v1/training_projects`: the organization is not authorized for Baseten
+Training. Support issue `#28317` requests Training API access and confirmation
+that the organization may use no-build direct-image winner serving. No human
+response has arrived yet.
 
-One paid eval is planned but not yet executed. The synthetic cloud-mechanics eval uses ID `959caacb397004bf3e60f13613da50f4ed3160a65d18b178c3d996398e29b5a0`, 320 decisions partitioned as 63 TRAIN, 91 DEV, and 166 CALIBRATION, `max_calls=20`, `max_gpu_seconds=3600`, and `max_parallel_runs=1`. No later create is authorized until a Baseten-selected 20-call job proves the exact private image and profile, 20 ready calls within the live target, `logs_source_complete=true`, `oom_source_complete=true`, `oom_matched_record_count=0`, terminal zero compute, and no ambiguous or not-started call. A Modal-selected result cannot pass the Baseten gate. The exact one-hour teacher and winner plus 30-minute student bounds derive a `$142.50` maximum reservation under the separately confirmed `$160` GPU ceiling. A separate `$15` external reserve bounds the one-month Cloudflare entitlement, capped OpenAI baseline traffic, and contingency, so this proof's all-in authorization is `$175`. The provider ledger's `$1,000` ceiling and `$850` launch cutoff govern GPU authorization only. This proves cloud mechanics only; generated traffic and results do not satisfy real-traffic production qualification.
+Baseten showed `$0.92` remaining credits before budget configuration. A `$1,000`
+monthly provider budget is now enabled. Baseten explicitly excludes
+Training and Dedicated Inference from provider-budget enforcement, so the
+application remains the enforceable GPU boundary: `$1,000` absolute authority,
+`$850` launch cutoff, `$150` teardown reserve, and a separate `$175` first-proof
+envelope. No GPU reservation or paid Baseten job has been created.
 
-The fixed official-SDK contract uses `gpt-5.4` and SHA-256 `cf9e41c3220544bc163a6dfb82721154a8e078c9db3c9fa86a148a84ea275263`. Its four steps are deployment baseline (one baseline call), generated mechanics (320 baseline calls), candidate (one candidate call), and saturation fallback (one candidate plus one baseline call): 324 calls total, split 322 baseline and two candidate. Short calls cap completion at 128 tokens and both saturation calls cap it at 3,840. Gateway deployment evidence binds the canonical baseline receipt digest; the v6 eval carries that digest. Generated mechanics uses a create-only one-shot intent and content-free receipt; an intent without a receipt is ambiguous and is never replayed. No intent, receipt, or paid cloud result is recorded yet.
+## Remaining release gates
 
-## Work required before activation
+1. Merge both Baseten-only source changes after protected CI passes.
+2. Build and admit the new `linux/amd64` gateway and jobs images; retain the
+   unchanged admitted GPU images only if their exact dependency contract still
+   validates.
+3. Publish release evidence to R2 and verify metadata plus least-privilege body
+   readback.
+4. Create the canonical v7 eval from the final image, provider project, team,
+   secret, store, and gateway deployment identities.
+5. Run the manual Baseten registry bootstrap and install the exact config secret.
+6. Deploy the gateway to Cloudflare Containers and pass the official-SDK
+   baseline smoke.
+7. After Baseten enables Training, run one explicitly confirmed mechanics proof
+   inside the `$175` envelope.
+8. Verify terminal job evidence, candidate canary, the OpenAI baseline under
+   candidate saturation, signed zero, zero Baseten compute, and retained R2
+   evidence.
 
-1. Publish the current gateway admission and release plus the current jobs admission and harness release, verify the resulting two-object gateway set and five-object harness set through Cloudflare metadata and least-privilege S3 body readback, and publish and read back the exact eval documents.
-2. Enable the Workers Paid plan, provision the exact Cloudflare Container and Baseten resources plus their separately scoped credentials, and record deployment receipts. Continue verifying the installed retention and privacy controls by live readback.
-3. Materialize the exact bounded cloud-mechanics eval above with its outer-document approval digest, 3,600-second winner bound, limits, admission gate, and budget.
-4. Deploy the admitted gateway and enable the scheduler only after every secret, resource identity, and configuration digest is verified.
-
-## Remaining live gates
-
-1. The Cloudflare Worker and Container run the newly admitted gateway image on the production hostname.
-2. An official OpenAI SDK request returns a valid completion through the gateway and its immutable completed trace is present.
-3. The first Baseten-selected 20-call job pulls the exact private image, passes the committed live teacher profile, and returns to zero compute before another create is authorized.
-4. The student eval retains at least 251 usable results: 50 TRAIN, 73 DEV, and 128 CALIBRATION. The current partition should plan for roughly 1,280 eligible captures; skipped traffic may require more. Generated traffic and local fixtures do not count.
-5. One train/merge job and the BF16, dynamic-FP8, and static-FP8 branches complete against the same ordered DEV set.
-6. A deterministic winner receives an authenticated 100-bps canary, and genuine candidate saturation falls back to the baseline.
-7. Route control publishes and verifies the signed zero successor, removes the candidate credential, tears down the winner, and observes zero provider compute.
-8. GPU authorization remains below its `$1,000` provider ceiling, no new GPU work starts at or above `$850`, and the complete proof remains inside its separately confirmed `$175` all-in envelope.
-9. GitHub, R2, Cloudflare, Baseten, Modal, and release receipts agree on the exact eval, source, image, and deployment identities.
-10. Before any GPU image is made public, verify its complete third-party license inventory; cut the next GitHub release only after live qualification.
-
-Anything short of these live gates is release preparation, not production qualification.
+Generated mechanics traffic proves the cloud path only. Production qualification
+also requires retained complete real traffic before generated evals may affect a
+student route.

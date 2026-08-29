@@ -2,7 +2,7 @@
 set -eu
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
-command=$root/tools/exo/milk-managed
+source_command=$root/tools/exo/milk-managed
 installer=$root/tools/exo/install-host-command
 temporary_root=${TMPDIR:-/tmp}
 temporary_root=${temporary_root%/}
@@ -15,49 +15,62 @@ cleanup() {
   esac
 }
 trap cleanup EXIT HUP INT TERM
-mkdir -m 0700 "$test_root/bin" "$test_root/no-gh-bin" "$test_root/state"
+mkdir -m 0700 "$test_root/bin" "$test_root/minimal-bin" "$test_root/state" \
+  "$test_root/command"
 mkdir -m 0750 "$test_root/evals"
+cp "$source_command" "$test_root/command/milk-managed"
+chmod 0700 "$test_root/command/milk-managed"
+command=$test_root/command/milk-managed
+github_token_file=$test_root/github-token
+printf '%s\n' github-secret >"$github_token_file"
+chmod 0400 "$github_token_file"
 
 for utility in id mkdir python3 rmdir sed stat tr wc
 do
-  ln -s "$(command -v "$utility")" "$test_root/no-gh-bin/$utility"
+  ln -s "$(command -v "$utility")" "$test_root/minimal-bin/$utility"
 done
 
-cat >"$test_root/bin/gh" <<'SH'
+cat >"$test_root/command/github-rest.py" <<'SH'
 #!/bin/sh
 set -eu
-case "${1:-} ${2:-}" in
-  'run list')
-    : >"$TEST_GH_LIST_LOG"
-    for argument do printf '%s\n' "$argument" >>"$TEST_GH_LIST_LOG"; done
-    [ "${TEST_GH_LIST_FAIL:-0}" -eq 0 ] || exit 1
-    [ -z "${TEST_GH_DATABASE_ID:-}" ] || printf '%s\n' "$TEST_GH_DATABASE_ID"
+operation=${1:-}
+token_file=${2:-}
+[ -f "$token_file" ] && [ ! -L "$token_file" ]
+[ "$(stat -c '%a' "$token_file" 2>/dev/null || stat -f '%Lp' "$token_file")" = 400 ]
+IFS= read -r token <"$token_file"
+[ "$token" = github-secret ]
+shift 2
+case "$operation" in
+  check)
+    [ "$#" -eq 0 ]
     ;;
-  'run view')
-    printf '%s\n' "${3:-}" >"$TEST_GH_VIEW_LOG"
-    [ "${TEST_GH_VIEW_FAIL:-0}" -eq 0 ] || exit 1
-    job_view=false
-    for argument do
-      [ "$argument" != status,conclusion,jobs ] || job_view=true
-    done
-    printf '%s\n' "${TEST_GH_OBSERVATION:-queued:}"
-    if [ "$job_view" = true ]; then
-      : >"$TEST_GH_JOB_VIEW_LOG"
-      for argument do printf '%s\n' "$argument" >>"$TEST_GH_JOB_VIEW_LOG"; done
-      [ "${TEST_GH_OBSERVATION:-queued:}" != completed:success ] || \
-        printf '%s\n' "$TEST_GH_GENERATION_JOB_NAME"
-    fi
+  correlate)
+    : >"$TEST_GITHUB_LIST_LOG"
+    for argument do printf '%s\n' "$argument" >>"$TEST_GITHUB_LIST_LOG"; done
+    [ "${TEST_GITHUB_LIST_FAIL:-0}" -eq 0 ] || exit 1
+    [ -z "${TEST_GITHUB_DATABASE_ID:-}" ] || \
+      printf '%s\n' "$TEST_GITHUB_DATABASE_ID"
     ;;
-  'workflow run')
-    : >"$TEST_GH_DISPATCH_LOG"
-    for argument do printf '%s\n' "$argument" >>"$TEST_GH_DISPATCH_LOG"; done
-    [ "${TEST_GH_WORKFLOW_SLEEP:-0}" = 0 ] || sleep "$TEST_GH_WORKFLOW_SLEEP"
-    [ "${TEST_GH_WORKFLOW_FAIL:-0}" -eq 0 ] || exit 1
+  view)
+    printf '%s\n' "${5:-}" >"$TEST_GITHUB_VIEW_LOG"
+    [ "${TEST_GITHUB_VIEW_FAIL:-0}" -eq 0 ] || exit 1
+    : >"$TEST_GITHUB_JOB_VIEW_LOG"
+    for argument do printf '%s\n' "$argument" >>"$TEST_GITHUB_JOB_VIEW_LOG"; done
+    printf '%s\n' "${TEST_GITHUB_OBSERVATION:-queued:}"
+    [ "${TEST_GITHUB_OBSERVATION:-queued:}" != completed:success ] || \
+      printf '%s\n' "$TEST_GITHUB_GENERATION_JOB_NAME"
+    ;;
+  dispatch)
+    : >"$TEST_GITHUB_DISPATCH_LOG"
+    for argument do printf '%s\n' "$argument" >>"$TEST_GITHUB_DISPATCH_LOG"; done
+    [ "${TEST_GITHUB_WORKFLOW_SLEEP:-0}" = 0 ] || \
+      sleep "$TEST_GITHUB_WORKFLOW_SLEEP"
+    [ "${TEST_GITHUB_WORKFLOW_FAIL:-0}" -eq 0 ] || exit 1
     ;;
   *) exit 64 ;;
 esac
 SH
-chmod 0700 "$test_root/bin/gh"
+chmod 0700 "$test_root/command/github-rest.py"
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -95,22 +108,23 @@ run() {
   MILK_MANAGED_EVAL_DIR="$test_root/evals" \
   MILK_MANAGED_STATE_ROOT="$test_root/state" \
   MILK_MANAGED_EVAL_OWNER_UID="$(id -u)" \
-  TEST_GH_DATABASE_ID="${TEST_GH_DATABASE_ID:-}" \
-  TEST_GH_OBSERVATION="${TEST_GH_OBSERVATION:-queued:}" \
-  TEST_GH_GENERATION_JOB_NAME="${TEST_GH_GENERATION_JOB_NAME-Provider reconciliation and dispatch [generation_done=false]}" \
-  TEST_GH_LIST_FAIL="${TEST_GH_LIST_FAIL:-0}" \
-  TEST_GH_VIEW_FAIL="${TEST_GH_VIEW_FAIL:-0}" \
-  TEST_GH_WORKFLOW_FAIL="${TEST_GH_WORKFLOW_FAIL:-0}" \
-  TEST_GH_WORKFLOW_SLEEP="${TEST_GH_WORKFLOW_SLEEP:-0}" \
-  TEST_GH_DISPATCH_LOG="$dispatch_log" \
-  TEST_GH_LIST_LOG="$list_log" \
-  TEST_GH_VIEW_LOG="$view_log" \
-  TEST_GH_JOB_VIEW_LOG="$job_view_log" \
+  MILK_MANAGED_GITHUB_TOKEN_FILE="$github_token_file" \
+  TEST_GITHUB_DATABASE_ID="${TEST_GITHUB_DATABASE_ID:-}" \
+  TEST_GITHUB_OBSERVATION="${TEST_GITHUB_OBSERVATION:-queued:}" \
+  TEST_GITHUB_GENERATION_JOB_NAME="${TEST_GITHUB_GENERATION_JOB_NAME-Provider reconciliation and dispatch [generation_done=false]}" \
+  TEST_GITHUB_LIST_FAIL="${TEST_GITHUB_LIST_FAIL:-0}" \
+  TEST_GITHUB_VIEW_FAIL="${TEST_GITHUB_VIEW_FAIL:-0}" \
+  TEST_GITHUB_WORKFLOW_FAIL="${TEST_GITHUB_WORKFLOW_FAIL:-0}" \
+  TEST_GITHUB_WORKFLOW_SLEEP="${TEST_GITHUB_WORKFLOW_SLEEP:-0}" \
+  TEST_GITHUB_DISPATCH_LOG="$dispatch_log" \
+  TEST_GITHUB_LIST_LOG="$list_log" \
+  TEST_GITHUB_VIEW_LOG="$view_log" \
+  TEST_GITHUB_JOB_VIEW_LOG="$job_view_log" \
     "$command" "$@"
 }
 
-run_without_gh() {
-  PATH="$test_root/no-gh-bin" \
+run_without_credential() {
+  PATH="$test_root/minimal-bin" \
   MILK_MANAGED_EVAL_DIR="$test_root/evals" \
   MILK_MANAGED_STATE_ROOT="$test_root/state" \
   MILK_MANAGED_EVAL_OWNER_UID="$(id -u)" \
@@ -128,20 +142,26 @@ state=$state_dir/managed-dispatch.state
 approval=$state_dir/run-confirmed.approval
 second_state=$test_root/state/$second_eval_id/managed-dispatch.state
 
-[ "$(run_without_gh status "$second_eval_id")" = \
+[ "$(run_without_credential status "$second_eval_id")" = \
   "$(expected true "$second_eval_id" idle idle false false)" ]
-[ "$(run_without_gh reconcile "$second_eval_id")" = \
+[ "$(run_without_credential reconcile "$second_eval_id")" = \
   "$(expected false "$second_eval_id" blocked unknown false false)" ]
-[ "$(run_without_gh run_confirmed "$second_eval_id")" = \
+[ "$(run_without_credential run_confirmed "$second_eval_id")" = \
   "$(expected false "$second_eval_id" blocked unknown false false)" ]
 [ ! -e "$second_state" ]
+
+chmod 0644 "$github_token_file"
+[ "$(run reconcile "$second_eval_id")" = \
+  "$(expected false "$second_eval_id" blocked unknown false false)" ]
+[ ! -e "$second_state" ]
+chmod 0400 "$github_token_file"
 
 [ "$(run status "$eval_id")" = \
   "$(expected true "$eval_id" idle idle false false)" ]
 [ -d "$state_dir" ]
 
 first_output=$test_root/first-output
-TEST_GH_WORKFLOW_SLEEP=1 TEST_GH_DATABASE_ID=77 \
+TEST_GITHUB_WORKFLOW_SLEEP=1 TEST_GITHUB_DATABASE_ID=77 \
   run reconcile "$eval_id" >"$first_output" &
 first_pid=$!
 lock_attempts=100
@@ -160,7 +180,7 @@ wait "$first_pid"
 [ ! -e "$state.lock" ]
 rm -f "$state" "$dispatch_log" "$list_log" "$view_log"
 
-[ "$(TEST_GH_DATABASE_ID=101 run reconcile "$eval_id")" = \
+[ "$(TEST_GITHUB_DATABASE_ID=101 run reconcile "$eval_id")" = \
   "$(expected true "$eval_id" running running true false)" ]
 [ -f "$state" ] && [ ! -L "$state" ]
 [ "$(stat -c '%a' "$state" 2>/dev/null || stat -f '%Lp' "$state")" = 600 ]
@@ -178,31 +198,34 @@ managed_title="Milk production loop [managed:$request_id]"
 [ "$(sed -n '5p' "$state")" = "$eval_id" ]
 [ "$(sed -n '6p' "$state")" = "$eval_confirmation_sha256" ]
 [ "$(wc -l <"$state" | tr -d '[:space:]')" = 6 ]
-grep -Fxq 'production-loop.yml' "$dispatch_log"
-grep -Fxq 'github.com/milkinfrastructure/milk-harness' "$dispatch_log"
-grep -Fxq 'main' "$dispatch_log"
-grep -Fxq 'authorize_provider_creates=false' "$dispatch_log"
-grep -Fxq "confirmed_run_config_sha256=$eval_confirmation_sha256" "$dispatch_log"
-grep -Fxq "managed_eval_id=$eval_id" "$dispatch_log"
-grep -Fxq "managed_request_id=$request_id" "$dispatch_log"
-grep -Fxq -- '--all' "$list_log"
-grep -Fxq -- '--branch' "$list_log"
-grep -Fxq -- '--event' "$list_log"
-grep -Fxq 'workflow_dispatch' "$list_log"
-[ "$(run_without_gh status "$eval_id")" = \
+[ "$(sed -n '1p' "$dispatch_log")" = milkinfrastructure ]
+[ "$(sed -n '2p' "$dispatch_log")" = milk-harness ]
+[ "$(sed -n '3p' "$dispatch_log")" = production-loop.yml ]
+[ "$(sed -n '4p' "$dispatch_log")" = main ]
+[ "$(sed -n '5p' "$dispatch_log")" = false ]
+[ "$(sed -n '6p' "$dispatch_log")" = "$eval_confirmation_sha256" ]
+[ "$(sed -n '7p' "$dispatch_log")" = "$eval_id" ]
+[ "$(sed -n '8p' "$dispatch_log")" = "$request_id" ]
+[ "$(sed -n '1p' "$list_log")" = milkinfrastructure ]
+[ "$(sed -n '2p' "$list_log")" = milk-harness ]
+[ "$(sed -n '3p' "$list_log")" = production-loop.yml ]
+[ "$(sed -n '4p' "$list_log")" = main ]
+[ "$(sed -n '5p' "$list_log")" = "$request_id" ]
+[ "$(run_without_credential status "$eval_id")" = \
   "$(expected false "$eval_id" blocked unknown false false)" ]
 
 rm -f "$dispatch_log" "$list_log" "$view_log"
 [ "$(MILK_MANAGED_REPOSITORY=github.com/example/milk-harness \
   MILK_MANAGED_WORKFLOW=self-host-loop.yml \
   MILK_MANAGED_WORKFLOW_REF=stable \
-  TEST_GH_DATABASE_ID=404 run reconcile "$second_eval_id")" = \
+  TEST_GITHUB_DATABASE_ID=404 run reconcile "$second_eval_id")" = \
   "$(expected true "$second_eval_id" running running true false)" ]
-grep -Fxq 'github.com/example/milk-harness' "$dispatch_log"
-grep -Fxq 'self-host-loop.yml' "$dispatch_log"
-grep -Fxq 'stable' "$dispatch_log"
-grep -Fxq "confirmed_run_config_sha256=$second_eval_confirmation_sha256" "$dispatch_log"
-grep -Fxq "managed_eval_id=$second_eval_id" "$dispatch_log"
+[ "$(sed -n '1p' "$dispatch_log")" = example ]
+[ "$(sed -n '2p' "$dispatch_log")" = milk-harness ]
+[ "$(sed -n '3p' "$dispatch_log")" = self-host-loop.yml ]
+[ "$(sed -n '4p' "$dispatch_log")" = stable ]
+[ "$(sed -n '6p' "$dispatch_log")" = "$second_eval_confirmation_sha256" ]
+[ "$(sed -n '7p' "$dispatch_log")" = "$second_eval_id" ]
 
 for invalid_target in \
   'MILK_MANAGED_REPOSITORY=example/milk-harness' \
@@ -226,83 +249,86 @@ do
 done
 
 rm -f "$list_log" "$view_log"
-[ "$(TEST_GH_OBSERVATION=queued: run status "$eval_id")" = \
+[ "$(TEST_GITHUB_OBSERVATION=queued: run status "$eval_id")" = \
   "$(expected true "$eval_id" running running false false)" ]
 [ "$(cat "$view_log")" = 101 ]
 [ ! -e "$list_log" ]
-[ "$(TEST_GH_OBSERVATION=completed:success run status "$eval_id")" = \
+[ "$(TEST_GITHUB_OBSERVATION=completed:success run status "$eval_id")" = \
   "$(expected true "$eval_id" ready succeeded false false)" ]
-grep -Fxq -- '--json' "$job_view_log"
-grep -Fxq status,conclusion,jobs "$job_view_log"
-[ "$(TEST_GH_OBSERVATION=completed:success \
-  TEST_GH_GENERATION_JOB_NAME='Provider reconciliation and dispatch [generation_done=true]' \
+[ "$(sed -n '1p' "$job_view_log")" = milkinfrastructure ]
+[ "$(sed -n '2p' "$job_view_log")" = milk-harness ]
+[ "$(sed -n '3p' "$job_view_log")" = production-loop.yml ]
+[ "$(sed -n '4p' "$job_view_log")" = main ]
+[ "$(sed -n '5p' "$job_view_log")" = 101 ]
+[ "$(TEST_GITHUB_OBSERVATION=completed:success \
+  TEST_GITHUB_GENERATION_JOB_NAME='Provider reconciliation and dispatch [generation_done=true]' \
   run status "$eval_id")" = \
   "$(expected true "$eval_id" ready succeeded false false true)" ]
-[ "$(TEST_GH_OBSERVATION=completed:success \
-  TEST_GH_GENERATION_JOB_NAME='Provider reconciliation and dispatch [generation_done=unknown]' \
+[ "$(TEST_GITHUB_OBSERVATION=completed:success \
+  TEST_GITHUB_GENERATION_JOB_NAME='Provider reconciliation and dispatch [generation_done=unknown]' \
   run status "$eval_id")" = \
   "$(expected false "$eval_id" blocked unknown false false)" ]
 duplicate_job_names=$(printf '%s\n%s' \
   'Provider reconciliation and dispatch [generation_done=false]' \
   'Provider reconciliation and dispatch [generation_done=true]')
-[ "$(TEST_GH_OBSERVATION=completed:success \
-  TEST_GH_GENERATION_JOB_NAME="$duplicate_job_names" run status "$eval_id")" = \
+[ "$(TEST_GITHUB_OBSERVATION=completed:success \
+  TEST_GITHUB_GENERATION_JOB_NAME="$duplicate_job_names" run status "$eval_id")" = \
   "$(expected false "$eval_id" blocked unknown false false)" ]
-[ "$(TEST_GH_OBSERVATION=completed:success TEST_GH_GENERATION_JOB_NAME='' \
+[ "$(TEST_GITHUB_OBSERVATION=completed:success TEST_GITHUB_GENERATION_JOB_NAME='' \
   run status "$eval_id")" = \
   "$(expected false "$eval_id" blocked unknown false false)" ]
 
 rm -f "$dispatch_log" "$approval"
-[ "$(TEST_GH_OBSERVATION=completed:success \
-  TEST_GH_GENERATION_JOB_NAME='Provider reconciliation and dispatch [generation_done=true]' \
-  TEST_GH_DATABASE_ID=201 \
+[ "$(TEST_GITHUB_OBSERVATION=completed:success \
+  TEST_GITHUB_GENERATION_JOB_NAME='Provider reconciliation and dispatch [generation_done=true]' \
+  TEST_GITHUB_DATABASE_ID=201 \
   run reconcile "$eval_id")" = \
   "$(expected true "$eval_id" running running true false true)" ]
-grep -Fxq 'authorize_provider_creates=false' "$dispatch_log"
+[ "$(sed -n '5p' "$dispatch_log")" = false ]
 rm -f "$dispatch_log"
 printf '%s\n' "$eval_confirmation_sha256" >"$approval"
 chmod 0600 "$approval"
-[ "$(TEST_GH_OBSERVATION=completed:success \
-  TEST_GH_GENERATION_JOB_NAME='Provider reconciliation and dispatch [generation_done=true]' \
-  TEST_GH_DATABASE_ID=202 \
+[ "$(TEST_GITHUB_OBSERVATION=completed:success \
+  TEST_GITHUB_GENERATION_JOB_NAME='Provider reconciliation and dispatch [generation_done=true]' \
+  TEST_GITHUB_DATABASE_ID=202 \
   run run_confirmed "$eval_id")" = \
   "$(expected true "$eval_id" running running true false true)" ]
 [ ! -e "$approval" ]
-grep -Fxq 'authorize_provider_creates=true' "$dispatch_log"
-grep -Fxq "confirmed_run_config_sha256=$eval_confirmation_sha256" "$dispatch_log"
-grep -Fxq "managed_eval_id=$eval_id" "$dispatch_log"
+[ "$(sed -n '5p' "$dispatch_log")" = true ]
+[ "$(sed -n '6p' "$dispatch_log")" = "$eval_confirmation_sha256" ]
+[ "$(sed -n '7p' "$dispatch_log")" = "$eval_id" ]
 rm -f "$dispatch_log"
-[ "$(TEST_GH_OBSERVATION=completed:neutral run status "$eval_id")" = \
+[ "$(TEST_GITHUB_OBSERVATION=completed:neutral run status "$eval_id")" = \
   "$(expected false "$eval_id" failed failed false false)" ]
-[ "$(TEST_GH_OBSERVATION=completed:skipped run status "$eval_id")" = \
+[ "$(TEST_GITHUB_OBSERVATION=completed:skipped run status "$eval_id")" = \
   "$(expected false "$eval_id" failed failed false false)" ]
-[ "$(TEST_GH_OBSERVATION=completed:action_required run status "$eval_id")" = \
+[ "$(TEST_GITHUB_OBSERVATION=completed:action_required run status "$eval_id")" = \
   "$(expected true "$eval_id" blocked action_required false true)" ]
-[ "$(TEST_GH_VIEW_FAIL=1 run status "$eval_id")" = \
+[ "$(TEST_GITHUB_VIEW_FAIL=1 run status "$eval_id")" = \
   "$(expected false "$eval_id" blocked unknown false false)" ]
 
 rm -f "$approval" "$dispatch_log"
-[ "$(TEST_GH_OBSERVATION=completed:success run run_confirmed "$eval_id")" = \
+[ "$(TEST_GITHUB_OBSERVATION=completed:success run run_confirmed "$eval_id")" = \
   "$(expected true "$eval_id" waiting_for_confirmation succeeded false true)" ]
 [ ! -e "$dispatch_log" ]
 
 printf '%s\n' "$eval_confirmation_sha256" >"$approval"
 chmod 0600 "$approval"
-[ "$(TEST_GH_OBSERVATION=completed:success TEST_GH_DATABASE_ID=202 run run_confirmed "$eval_id")" = \
+[ "$(TEST_GITHUB_OBSERVATION=completed:success TEST_GITHUB_DATABASE_ID=202 run run_confirmed "$eval_id")" = \
   "$(expected true "$eval_id" running running true false)" ]
 [ ! -e "$approval" ]
 [ "$(sed -n '2p' "$state")" = run_confirmed ]
 request_id=$(sed -n '3p' "$state")
 [ "$(sed -n '4p' "$state")" = 202 ]
-grep -Fxq 'authorize_provider_creates=true' "$dispatch_log"
-grep -Fxq "confirmed_run_config_sha256=$eval_confirmation_sha256" "$dispatch_log"
-grep -Fxq "managed_eval_id=$eval_id" "$dispatch_log"
-grep -Fxq "managed_request_id=$request_id" "$dispatch_log"
+[ "$(sed -n '5p' "$dispatch_log")" = true ]
+[ "$(sed -n '6p' "$dispatch_log")" = "$eval_confirmation_sha256" ]
+[ "$(sed -n '7p' "$dispatch_log")" = "$eval_id" ]
+[ "$(sed -n '8p' "$dispatch_log")" = "$request_id" ]
 
 rm -f "$dispatch_log"
 printf '%s\n' "$second_eval_confirmation_sha256" >"$approval"
 chmod 0600 "$approval"
-[ "$(TEST_GH_OBSERVATION=completed:success run run_confirmed "$eval_id")" = \
+[ "$(TEST_GITHUB_OBSERVATION=completed:success run run_confirmed "$eval_id")" = \
   "$(expected false "$eval_id" blocked succeeded true true)" ]
 [ ! -e "$approval" ]
 [ ! -e "$dispatch_log" ]
@@ -313,7 +339,7 @@ chmod 0640 "$test_root/evals/$eval_id.json"
 printf '{"schema_version":"milk.eval.test.v1","manifest":{"campaign_id":"%s"},"gateway_config":{"eval_id":"%s"},"name":"changed-after-approval"}\n' \
   "$eval_id" "$eval_id" >"$test_root/evals/$eval_id.json"
 chmod 0440 "$test_root/evals/$eval_id.json"
-[ "$(TEST_GH_OBSERVATION=completed:success run run_confirmed "$eval_id")" = \
+[ "$(TEST_GITHUB_OBSERVATION=completed:success run run_confirmed "$eval_id")" = \
   "$(expected false "$eval_id" blocked unknown false false)" ]
 [ -e "$approval" ]
 [ ! -e "$dispatch_log" ]
@@ -326,7 +352,7 @@ chmod 0440 "$test_root/evals/$eval_id.json"
 
 printf '%s\n' "$eval_confirmation_sha256" >"$approval"
 chmod 0600 "$approval"
-[ "$(TEST_GH_OBSERVATION=completed:success TEST_GH_WORKFLOW_FAIL=1 TEST_GH_LIST_FAIL=1 run run_confirmed "$eval_id")" = \
+[ "$(TEST_GITHUB_OBSERVATION=completed:success TEST_GITHUB_WORKFLOW_FAIL=1 TEST_GITHUB_LIST_FAIL=1 run run_confirmed "$eval_id")" = \
   "$(expected false "$eval_id" blocked unknown true false)" ]
 [ ! -e "$approval" ]
 [ "$(sed -n '4p' "$state")" = pending ]
@@ -334,12 +360,12 @@ chmod 0600 "$approval"
 printf '%s\n' "$eval_confirmation_sha256" >"$approval"
 chmod 0600 "$approval"
 rm -f "$dispatch_log"
-[ "$(TEST_GH_LIST_FAIL=1 run run_confirmed "$eval_id")" = \
+[ "$(TEST_GITHUB_LIST_FAIL=1 run run_confirmed "$eval_id")" = \
   "$(expected false "$eval_id" blocked unknown false false)" ]
 [ -e "$approval" ]
 [ ! -e "$dispatch_log" ]
 
-[ "$(TEST_GH_DATABASE_ID=303 TEST_GH_OBSERVATION=queued: run status "$eval_id")" = \
+[ "$(TEST_GITHUB_DATABASE_ID=303 TEST_GITHUB_OBSERVATION=queued: run status "$eval_id")" = \
   "$(expected true "$eval_id" running running false false)" ]
 [ "$(sed -n '4p' "$state")" = 303 ]
 [ -e "$approval" ]
@@ -393,13 +419,30 @@ do
   [ -z "$invalid_output" ]
 done
 
-sh -n "$command" "$installer" "$0"
+sh -n "$source_command" "$command" "$installer" "$0"
 grep -Fq "install -d -o root -g \"\$service_gid\" -m 0750 /etc/milk/evals" "$installer"
 grep -Fq '/var/lib/milk /var/lib/milk/evals' "$installer"
+grep -Fq '/opt/milk/bin/github-rest.py' "$installer"
+if grep -Fq 'command -v gh' "$source_command"; then
+  exit 1
+fi
+if grep -Fq 'gh workflow' "$source_command"; then
+  exit 1
+fi
 grep -Fq '/opt/milk/bin/milk-managed' "$root/tools/exo/README.md"
+grep -Fq '/etc/milk/github-token' "$root/tools/exo/README.md"
 grep -Fq 'sudo install -o root' "$root/tools/exo/README.md"
 grep -Fq "\"/etc/milk/evals/\$EVAL_ID.json\"" "$root/tools/exo/README.md"
 grep -Fq 'generation_done' "$root/tools/exo/README.md"
 grep -Fq 'Provider reconciliation and dispatch [generation_done=true|false]' "$root/tools/exo/README.md"
 grep -Fq 'exact document SHA-256' "$root/tools/exo/README.md"
+for secret_check in "$dispatch_log" "$list_log" "$view_log" "$job_view_log"; do
+  [ ! -f "$secret_check" ] || ! grep -Fq github-secret "$secret_check"
+done
+if grep -R -Fq github-secret "$test_root/state"; then
+  exit 1
+else
+  secret_status=$?
+fi
+[ "$secret_status" -eq 1 ]
 printf 'managed Exo host command tests: ok\n'

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime as dt
-from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import re
@@ -23,9 +22,6 @@ ACTIVE_BASETEN_TRAINING_PRICING_RECEIPT_KEY = (
 ACTIVE_BASETEN_SERVING_PRICING_RECEIPT_KEY = (
     "state/v1/active-baseten-serving-h100-pricing.json"
 )
-ACTIVE_MODAL_PRICING_RECEIPT_KEY = (
-    "state/v1/active-modal-h100-sandbox-pricing.json"
-)
 BASETEN_PRICING_RECEIPT_PREFIX = (
     "authority/v1/baseten-h100-pricing-receipts"
 )
@@ -35,23 +31,11 @@ BASETEN_PRICING_OBSERVATION_PREFIX = (
 BASETEN_PRICING_SOURCE_BODY_PREFIX = (
     "authority/v1/baseten-h100-pricing-source-bodies"
 )
-MODAL_RATES_RECEIPT_PREFIX = "authority/v1/modal-workspace-rates-receipts"
-MODAL_RATES_SOURCE_BODY_PREFIX = (
-    "authority/v1/modal-workspace-rates-source-bodies"
-)
-MODAL_PRICING_RECEIPT_PREFIX = (
-    "authority/v1/modal-h100-sandbox-pricing-receipts"
-)
-MODAL_RATES_SOURCE_COMMAND = "modal billing rates --json"
-MODAL_SANDBOX_CPU_LIMIT_PHYSICAL_CORES = 8
-MODAL_SANDBOX_MEMORY_LIMIT_MIB = 65_536
-MODAL_DEFAULT_REGION_MULTIPLIER_MILLIONTHS = 1_000_000
 MAX_CAS_ATTEMPTS = 32
 PROJECT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 TEAM_NAME = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,126}[A-Za-z0-9])?\Z"
 )
-RATE_TEXT = re.compile(r"0\.[0-9]{0,8}[1-9]\Z")
 
 
 def _object(raw):
@@ -95,15 +79,6 @@ def _parse_utc(value, label):
     return parsed
 
 
-def _opaque_identity(value, label):
-    if (
-        not isinstance(value, str)
-        or not 1 <= len(value) <= 256
-        or value != value.strip()
-        or any(ord(character) < 0x21 or ord(character) > 0x7E for character in value)
-    ):
-        raise ValueError(f"{label} is invalid")
-    return value
 
 
 def baseten_provider_identity(project_id):
@@ -118,16 +93,6 @@ def baseten_serving_provider_identity(team_name):
     return {"provider": "baseten", "team_name": team_name}
 
 
-def modal_provider_identity(workspace_id, environment_name, app_name):
-    return {
-        "provider": "modal",
-        "workspace_id": _opaque_identity(workspace_id, "Modal workspace ID"),
-        "environment_name": _opaque_identity(
-            environment_name,
-            "Modal environment name",
-        ),
-        "app_name": _opaque_identity(app_name, "Modal app name"),
-    }
 
 
 def _validate_provider_identity(value, authority=None):
@@ -143,24 +108,7 @@ def _validate_provider_identity(value, authority=None):
         if authority is not None and value["team_name"] != authority["baseten_team_name"]:
             raise ValueError("Baseten serving identity differs from campaign authority")
     elif provider == "modal":
-        if set(value) != {
-            "provider",
-            "workspace_id",
-            "environment_name",
-            "app_name",
-        }:
-            raise ValueError("Modal provider identity is invalid")
-        expected = modal_provider_identity(
-            value.get("workspace_id"),
-            value.get("environment_name"),
-            value.get("app_name"),
-        )
-        if authority is not None and (
-            value["workspace_id"] != authority["modal_workspace_id"]
-            or value["environment_name"] != authority["modal_environment_name"]
-            or value["app_name"] != authority["modal_app_name"]
-        ):
-            raise ValueError("Modal provider identity differs from campaign authority")
+        raise ValueError("Modal provider identity is not authorized")
     else:
         raise ValueError("provider identity is invalid")
     if value != expected:
@@ -169,8 +117,6 @@ def _validate_provider_identity(value, authority=None):
 
 
 def _provider_role(identity):
-    if identity["provider"] == "modal":
-        return "sandbox"
     return "training" if "project_id" in identity else "serving"
 
 
@@ -178,18 +124,12 @@ def _authority(
     campaign_id,
     baseten_project_id,
     baseten_team_name,
-    modal_workspace_id,
-    modal_environment_name,
-    modal_app_name,
 ):
     return {
-        "schema_version": "milk.active-campaign-authority.v3",
+        "schema_version": "milk.active-campaign-authority.v4",
         "campaign_id": campaign_id,
         "baseten_project_id": baseten_project_id,
         "baseten_team_name": baseten_team_name,
-        "modal_workspace_id": modal_workspace_id,
-        "modal_environment_name": modal_environment_name,
-        "modal_app_name": modal_app_name,
         "absolute_ceiling_microusd": ABSOLUTE_CEILING_MICROUSD,
         "launch_cutoff_microusd": LAUNCH_CUTOFF_MICROUSD,
         "teardown_reserve_microusd": TEARDOWN_RESERVE_MICROUSD,
@@ -251,9 +191,6 @@ def _validate_authority(value, campaign_id):
         "campaign_id",
         "baseten_project_id",
         "baseten_team_name",
-        "modal_workspace_id",
-        "modal_environment_name",
-        "modal_app_name",
         "absolute_ceiling_microusd",
         "launch_cutoff_microusd",
         "teardown_reserve_microusd",
@@ -265,15 +202,10 @@ def _validate_authority(value, campaign_id):
     try:
         baseten_provider_identity(value.get("baseten_project_id"))
         baseten_serving_provider_identity(value.get("baseten_team_name"))
-        modal_provider_identity(
-            value.get("modal_workspace_id"),
-            value.get("modal_environment_name"),
-            value.get("modal_app_name"),
-        )
     except ValueError as error:
         raise ValueError("active campaign authority has invalid provider identities") from error
     if (
-        value.get("schema_version") != "milk.active-campaign-authority.v3"
+        value.get("schema_version") != "milk.active-campaign-authority.v4"
         or value.get("absolute_ceiling_microusd") != ABSOLUTE_CEILING_MICROUSD
         or value.get("launch_cutoff_microusd") != LAUNCH_CUTOFF_MICROUSD
         or value.get("teardown_reserve_microusd") != TEARDOWN_RESERVE_MICROUSD
@@ -389,110 +321,6 @@ def _validate_baseten_pricing_receipt(
     return receipt
 
 
-def _rate_nanousd(value, label):
-    if not isinstance(value, str) or RATE_TEXT.fullmatch(value) is None:
-        raise ValueError(f"{label} must be canonical USD per second")
-    try:
-        scaled = Decimal(value) * Decimal(1_000_000_000)
-    except InvalidOperation as error:
-        raise ValueError(f"{label} must be canonical USD per second") from error
-    if scaled != scaled.to_integral_value() or scaled <= 0:
-        raise ValueError(f"{label} must be exact positive nanousd per second")
-    return int(scaled)
-
-
-def _normalize_modal_rates(raw, authority, current=None):
-    if not isinstance(raw, bytes) or not 1 <= len(raw) <= 16 * 1024:
-        raise ValueError("Modal rates receipt must be bounded bytes")
-    source = _object(raw)
-    if canonical_json(source) != raw or set(source) != {
-        "schema_version",
-        "campaign_id",
-        "provider_identity",
-        "source_command",
-        "source_sha256",
-        "observed_at",
-        "currency",
-        "rate_unit",
-        "h100_usd_per_second",
-        "sandbox_cpu_usd_per_physical_core_second",
-        "sandbox_memory_usd_per_gib_second",
-        "region_mode",
-        "region_multiplier",
-    }:
-        raise ValueError("Modal rates receipt is invalid")
-    identity = _validate_provider_identity(source.get("provider_identity"), authority)
-    if (
-        source.get("schema_version") != "milk.modal-workspace-rates.v1"
-        or source.get("campaign_id") != authority["campaign_id"]
-        or identity["provider"] != "modal"
-        or source.get("source_command") != MODAL_RATES_SOURCE_COMMAND
-        or HEX64.fullmatch(source.get("source_sha256", "")) is None
-        or source.get("currency") != "USD"
-        or source.get("rate_unit") != "second"
-        or source.get("region_mode") != "default"
-        or source.get("region_multiplier") != "1"
-    ):
-        raise ValueError("Modal rates receipt is invalid")
-    _validate_receipt_age(source, current)
-    h100_rate = _rate_nanousd(
-        source["h100_usd_per_second"],
-        "Modal H100 rate",
-    )
-    cpu_rate = _rate_nanousd(
-        source["sandbox_cpu_usd_per_physical_core_second"],
-        "Modal Sandbox CPU rate",
-    )
-    memory_rate = _rate_nanousd(
-        source["sandbox_memory_usd_per_gib_second"],
-        "Modal Sandbox memory rate",
-    )
-    total_nanousd_per_minute = 60 * (
-        h100_rate
-        + cpu_rate * MODAL_SANDBOX_CPU_LIMIT_PHYSICAL_CORES
-        + memory_rate * MODAL_SANDBOX_MEMORY_LIMIT_MIB // 1024
-    )
-    provider_rate = (total_nanousd_per_minute + 999) // 1000
-    if provider_rate > H100_RESERVATION_RATE_MICROUSD_PER_MINUTE:
-        raise ValueError("Modal bounded H100 Sandbox rate exceeds reservation rate")
-    source_digest = hashlib.sha256(raw).hexdigest()
-    return source, {
-        "schema_version": "milk.modal-h100-sandbox-pricing-receipt.v1",
-        "campaign_id": authority["campaign_id"],
-        "provider_role": "sandbox",
-        "provider_identity": identity,
-        "service": "sandbox",
-        "gpu_type": "H100",
-        "gpu_count": 1,
-        "unit": "bounded_sandbox_minute",
-        "source_command": MODAL_RATES_SOURCE_COMMAND,
-        "source_rates_receipt_sha256": source_digest,
-        "observed_at": source["observed_at"],
-        "h100_rate_nanousd_per_second": h100_rate,
-        "sandbox_cpu_rate_nanousd_per_physical_core_second": cpu_rate,
-        "sandbox_memory_rate_nanousd_per_gib_second": memory_rate,
-        "cpu_limit_physical_cores": MODAL_SANDBOX_CPU_LIMIT_PHYSICAL_CORES,
-        "memory_limit_mib": MODAL_SANDBOX_MEMORY_LIMIT_MIB,
-        "region_mode": "default",
-        "region_multiplier_millionths": MODAL_DEFAULT_REGION_MULTIPLIER_MILLIONTHS,
-        "provider_rate_microusd_per_minute": provider_rate,
-        "reservation_rate_microusd_per_minute": H100_RESERVATION_RATE_MICROUSD_PER_MINUTE,
-        "reservation_margin_microusd_per_minute": (
-            H100_RESERVATION_RATE_MICROUSD_PER_MINUTE - provider_rate
-        ),
-        "max_age_seconds": PRICING_RECEIPT_MAX_AGE_SECONDS,
-    }
-
-
-def _validate_modal_rates_source_body(source_body, source):
-    if (
-        not isinstance(source_body, bytes)
-        or not 1 <= len(source_body) <= MAX_OBJECT_BYTES
-        or hashlib.sha256(source_body).hexdigest() != source["source_sha256"]
-    ):
-        raise ValueError("Modal rates source body differs from its receipt")
-
-
 def _immutable_baseten_pricing_observation(
     store,
     digest,
@@ -545,43 +373,6 @@ def _immutable_baseten_pricing(store, raw, authority, current=None):
         raise ValueError("active Baseten pricing receipt is not immutable") from error
     if immutable != raw:
         raise ValueError("active Baseten pricing differs from immutable receipt")
-    return receipt, digest
-
-
-def _immutable_modal_pricing(store, raw, authority, current=None):
-    receipt = _object(raw)
-    if canonical_json(receipt) != raw:
-        raise ValueError("active Modal pricing receipt is not canonical")
-    source_digest = receipt.get("source_rates_receipt_sha256")
-    if not isinstance(source_digest, str) or HEX64.fullmatch(source_digest) is None:
-        raise ValueError("active Modal pricing receipt is invalid")
-    try:
-        source_raw = store.get(f"{MODAL_RATES_RECEIPT_PREFIX}/{source_digest}.json")
-    except FileNotFoundError as error:
-        raise ValueError("Modal source rates receipt is not immutable") from error
-    if hashlib.sha256(source_raw).hexdigest() != source_digest:
-        raise ValueError("Modal source rates receipt digest is invalid")
-    source, expected = _normalize_modal_rates(
-        source_raw,
-        authority,
-        current,
-    )
-    try:
-        source_body = store.get(
-            f"{MODAL_RATES_SOURCE_BODY_PREFIX}/{source['source_sha256']}.bin"
-        )
-    except FileNotFoundError as error:
-        raise ValueError("Modal rates source body is not immutable") from error
-    _validate_modal_rates_source_body(source_body, source)
-    if receipt != expected:
-        raise ValueError("active Modal pricing receipt is invalid")
-    digest = hashlib.sha256(raw).hexdigest()
-    try:
-        immutable = store.get(f"{MODAL_PRICING_RECEIPT_PREFIX}/{digest}.json")
-    except FileNotFoundError as error:
-        raise ValueError("active Modal pricing receipt is not immutable") from error
-    if immutable != raw:
-        raise ValueError("active Modal pricing differs from immutable receipt")
     return receipt, digest
 
 
@@ -680,85 +471,14 @@ def refresh_baseten_pricing(
     raise RuntimeError("Baseten pricing receipt CAS contention exceeded its bound")
 
 
-def refresh_modal_pricing(
-    store,
-    campaign_id,
-    rates_receipt_raw,
-    *,
-    rates_source_body,
-    now=lambda: dt.datetime.now(dt.timezone.utc),
-):
-    authority = _validate_authority(
-        _object(store.get(ACTIVE_CAMPAIGN_AUTHORITY_KEY)),
-        campaign_id,
-    )
-    source, receipt = _normalize_modal_rates(
-        rates_receipt_raw,
-        authority,
-        _utc(now(), "clock"),
-    )
-    _validate_modal_rates_source_body(rates_source_body, source)
-    source_raw = canonical_json(source)
-    source_digest = hashlib.sha256(source_raw).hexdigest()
-    create_same(
-        store,
-        f"{MODAL_RATES_SOURCE_BODY_PREFIX}/{source['source_sha256']}.bin",
-        rates_source_body,
-        "application/octet-stream",
-    )
-    create_same(
-        store,
-        f"{MODAL_RATES_RECEIPT_PREFIX}/{source_digest}.json",
-        source_raw,
-        "application/json",
-    )
-    raw = canonical_json(receipt)
-    digest = hashlib.sha256(raw).hexdigest()
-    create_same(
-        store,
-        f"{MODAL_PRICING_RECEIPT_PREFIX}/{digest}.json",
-        raw,
-        "application/json",
-    )
-    if store.create(ACTIVE_MODAL_PRICING_RECEIPT_KEY, raw, "application/json"):
-        return "created"
-    for _ in range(MAX_CAS_ATTEMPTS):
-        existing_raw, etag = store.get_versioned(ACTIVE_MODAL_PRICING_RECEIPT_KEY)
-        existing, unused_digest = _immutable_modal_pricing(
-            store,
-            existing_raw,
-            authority,
-        )
-        del unused_digest
-        if existing_raw == raw:
-            return "existing"
-        if _parse_utc(existing["observed_at"], "pricing observation") >= _parse_utc(
-            receipt["observed_at"], "pricing observation"
-        ):
-            raise ValueError("pricing refresh must advance the observation time")
-        if store.replace(
-            ACTIVE_MODAL_PRICING_RECEIPT_KEY,
-            raw,
-            etag,
-            "application/json",
-        ):
-            return "updated"
-    raise RuntimeError("Modal pricing receipt CAS contention exceeded its bound")
-
-
 def prepare_campaign_authority(
     store,
     campaign_id,
     baseten_project_id,
     baseten_team_name,
-    modal_workspace_id,
-    modal_environment_name,
-    modal_app_name,
     *,
     baseten_pricing_observation_raw,
     baseten_pricing_source_body,
-    modal_rates_receipt_raw,
-    modal_rates_source_body,
     now=lambda: dt.datetime.now(dt.timezone.utc),
 ):
     """Create the singleton authority; call only from trusted operator tooling."""
@@ -768,19 +488,11 @@ def prepare_campaign_authority(
         raise ValueError("clock must be callable")
     baseten_provider_identity(baseten_project_id)
     baseten_serving_provider_identity(baseten_team_name)
-    modal_provider_identity(
-        modal_workspace_id,
-        modal_environment_name,
-        modal_app_name,
-    )
     current = _utc(now(), "clock")
     value = _authority(
         campaign_id,
         baseten_project_id,
         baseten_team_name,
-        modal_workspace_id,
-        modal_environment_name,
-        modal_app_name,
     )
     _validate_authority(value, campaign_id)
     if not isinstance(baseten_pricing_observation_raw, bytes):
@@ -816,13 +528,6 @@ def prepare_campaign_authority(
             baseten_observation,
             current,
         )
-    modal_source, unused_modal_receipt = _normalize_modal_rates(
-        modal_rates_receipt_raw,
-        value,
-        current,
-    )
-    del unused_modal_receipt
-    _validate_modal_rates_source_body(modal_rates_source_body, modal_source)
     state = create_same(
         store,
         ACTIVE_CAMPAIGN_AUTHORITY_KEY,
@@ -838,13 +543,6 @@ def prepare_campaign_authority(
             pricing_source_body=baseten_pricing_source_body,
             now=lambda: current,
         )
-    refresh_modal_pricing(
-        store,
-        campaign_id,
-        modal_rates_receipt_raw,
-        rates_source_body=modal_rates_source_body,
-        now=lambda: current,
-    )
     return state
 
 
@@ -880,13 +578,10 @@ class CampaignBudget:
         self.authority = _validate_authority(authority, self.campaign_id)
         _validate_provider_identity(self.provider_identity, self.authority)
         self.policy = {
-            "schema_version": "milk.campaign-budget-policy.v3",
+            "schema_version": "milk.campaign-budget-policy.v4",
             "campaign_id": self.campaign_id,
             "baseten_project_id": self.authority["baseten_project_id"],
             "baseten_team_name": self.authority["baseten_team_name"],
-            "modal_workspace_id": self.authority["modal_workspace_id"],
-            "modal_environment_name": self.authority["modal_environment_name"],
-            "modal_app_name": self.authority["modal_app_name"],
             "absolute_ceiling_microusd": ABSOLUTE_CEILING_MICROUSD,
             "launch_cutoff_microusd": LAUNCH_CUTOFF_MICROUSD,
             "teardown_reserve_microusd": TEARDOWN_RESERVE_MICROUSD,
@@ -915,22 +610,20 @@ class CampaignBudget:
 
     def _current_pricing(self):
         authority = self._authorized()
-        provider = self.provider_identity["provider"]
         if self.provider_role == "training":
             key = ACTIVE_BASETEN_TRAINING_PRICING_RECEIPT_KEY
-        elif self.provider_role == "serving":
-            key = ACTIVE_BASETEN_SERVING_PRICING_RECEIPT_KEY
         else:
-            key = ACTIVE_MODAL_PRICING_RECEIPT_KEY
+            key = ACTIVE_BASETEN_SERVING_PRICING_RECEIPT_KEY
         try:
             raw = self.store.get(key)
         except FileNotFoundError as error:
-            raise ValueError(f"active {provider} pricing receipt is missing") from error
+            raise ValueError("active Baseten pricing receipt is missing") from error
         current = _utc(self.now(), "clock")
-        receipt, digest = (
-            _immutable_baseten_pricing(self.store, raw, authority, current)
-            if provider == "baseten"
-            else _immutable_modal_pricing(self.store, raw, authority, current)
+        receipt, digest = _immutable_baseten_pricing(
+            self.store,
+            raw,
+            authority,
+            current,
         )
         if receipt["provider_identity"] != self.provider_identity:
             raise ValueError("active pricing receipt has the wrong provider identity")
@@ -969,21 +662,16 @@ class CampaignBudget:
             or type(reservation_rate) is not int
         ):
             raise ValueError("budget pricing binding is invalid")
-        prefix = (
-            BASETEN_PRICING_RECEIPT_PREFIX
-            if identity["provider"] == "baseten"
-            else MODAL_PRICING_RECEIPT_PREFIX
-        )
         try:
-            raw = self.store.get(f"{prefix}/{digest}.json")
+            raw = self.store.get(f"{BASETEN_PRICING_RECEIPT_PREFIX}/{digest}.json")
         except FileNotFoundError as error:
             raise ValueError("budget pricing receipt is missing") from error
         if hashlib.sha256(raw).hexdigest() != digest:
             raise ValueError("budget pricing receipt digest is invalid")
-        receipt, unused_digest = (
-            _immutable_baseten_pricing(self.store, raw, authority)
-            if identity["provider"] == "baseten"
-            else _immutable_modal_pricing(self.store, raw, authority)
+        receipt, unused_digest = _immutable_baseten_pricing(
+            self.store,
+            raw,
+            authority,
         )
         del unused_digest
         if receipt["provider_identity"] != identity:

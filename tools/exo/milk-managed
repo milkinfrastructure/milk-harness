@@ -8,6 +8,13 @@ workflow_ref=${MILK_MANAGED_WORKFLOW_REF:-main}
 eval_dir=${MILK_MANAGED_EVAL_DIR:-/etc/milk/evals}
 state_root=${MILK_MANAGED_STATE_ROOT:-/var/lib/milk/evals}
 eval_owner_uid=${MILK_MANAGED_EVAL_OWNER_UID:-0}
+github_token_file=${MILK_MANAGED_GITHUB_TOKEN_FILE:-/etc/milk/github-token}
+case "$0" in
+  */*) command_dir=${0%/*} ;;
+  *) command_dir=. ;;
+esac
+command_dir=$(CDPATH='' cd -- "$command_dir" 2>/dev/null && pwd -P) || exit 70
+github_rest=$command_dir/github-rest.py
 lock_acquired=false
 consumed_file=
 generation_done=false
@@ -45,11 +52,13 @@ result() {
     "$1" "$eval_id" "$2" "$3" "$generation_done" "$4" "$5"
 }
 
-require_gh() {
-  command -v gh >/dev/null 2>&1 || {
+require_github() {
+  if [ ! -f "$github_rest" ] || [ -L "$github_rest" ] || \
+    [ ! -x "$github_rest" ] || \
+    ! "$github_rest" check "$github_token_file" >/dev/null 2>&1; then
     result false blocked unknown false false
     exit 0
-  }
+  fi
 }
 
 mode_of() {
@@ -215,15 +224,9 @@ write_state() {
 
 correlated_database_id=
 correlate_once() {
-  correlated_database_id=$(gh run list \
-    --repo "$repository" \
-    --workflow "$workflow" \
-    --all \
-    --branch "$workflow_ref" \
-    --event workflow_dispatch \
-    --limit 100 \
-    --json databaseId,displayTitle \
-    --jq ".[] | select(.displayTitle == \"Milk production loop [managed:$state_request_id]\") | .databaseId" \
+  correlated_database_id=$("$github_rest" correlate \
+    "$github_token_file" "$repository_owner" "$repository_name" \
+    "$workflow" "$workflow_ref" "$state_request_id" \
     2>/dev/null) || return 2
   case "$correlated_database_id" in
     '') return 1 ;;
@@ -243,10 +246,9 @@ refresh_state() {
       return 2
     fi
   fi
-  run_view=$(gh run view "$state_database_id" \
-    --repo "$repository" \
-    --json status,conclusion,jobs \
-    --jq '(.status + ":" + (.conclusion // "")), (.jobs[].name | select(startswith("Provider reconciliation and dispatch [generation_done=")))' \
+  run_view=$("$github_rest" view \
+    "$github_token_file" "$repository_owner" "$repository_name" \
+    "$workflow" "$workflow_ref" "$state_database_id" "$state_request_id" \
     2>/dev/null) || return 2
   observation=$(printf '%s\n' "$run_view" | sed -n '1p')
   case "$observation" in
@@ -285,7 +287,7 @@ report_status() {
     fi
     exit 0
   fi
-  require_gh
+  require_github
   if refresh_state; then
     :
   else
@@ -356,13 +358,10 @@ guard_previous_dispatch() {
 }
 
 dispatch() {
-  gh workflow run "$workflow" \
-    --repo "$repository" \
-    --ref "$workflow_ref" \
-    --raw-field "authorize_provider_creates=$1" \
-    --raw-field "confirmed_run_config_sha256=$eval_confirmation_sha256" \
-    --raw-field "managed_eval_id=$eval_id" \
-    --raw-field "managed_request_id=$state_request_id" \
+  "$github_rest" dispatch \
+    "$github_token_file" "$repository_owner" "$repository_name" \
+    "$workflow" "$workflow_ref" "$1" "$eval_confirmation_sha256" \
+    "$eval_id" "$state_request_id" \
     >/dev/null 2>&1
 }
 
@@ -435,7 +434,7 @@ if [ "$action" = status ]; then
   report_status
 fi
 
-require_gh
+require_github
 guard_previous_dispatch
 
 if [ "$action" = reconcile ]; then

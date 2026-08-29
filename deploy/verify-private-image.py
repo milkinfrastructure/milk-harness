@@ -12,6 +12,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import github_rest
+
 
 SOURCE_REPOSITORY = "https://github.com/milkinfrastructure/milk-harness"
 GITHUB_USERNAME = "ShantanuJoshi"
@@ -144,7 +146,8 @@ def _open_bytes(request, limit, label):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _SafeRedirect())
     try:
         with opener.open(request, timeout=60) as response:
-            if urllib.parse.urlsplit(response.url).scheme != "https":
+            parsed = urllib.parse.urlsplit(response.url)
+            if parsed.scheme != "https":
                 raise ValueError(f"{label} left HTTPS")
             declared = response.headers.get("Content-Length")
             if declared is not None:
@@ -753,15 +756,7 @@ def verify(arguments, github_token):
         raise ValueError("SLSA v1 provenance and SPDX SBOM are both required")
     statements.sort(key=lambda item: (item["predicate_type"], item["layer_sha256"]))
 
-    visibility = _run(
-        "gh",
-        "api",
-        "--hostname",
-        "github.com",
-        f"/orgs/milkinfrastructure/packages/container/{package}",
-        "--jq",
-        ".visibility",
-    ).decode("utf-8", errors="strict").strip()
+    visibility = github_rest.package_visibility(github_token, package)
     if visibility != "private":
         raise ValueError(f"{package} package is not private")
 

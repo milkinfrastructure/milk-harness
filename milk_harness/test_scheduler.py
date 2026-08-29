@@ -88,11 +88,8 @@ class SchedulerTest(unittest.TestCase):
         out, err = self.streams(
             canonical_json(
                 {
-                    "schema_version": "milk.jobs-pass.v3",
-                    "provider_policy": {
-                        "primary": "baseten",
-                        "fallback": "modal",
-                    },
+                    "schema_version": "milk.jobs-pass.v4",
+                    "provider_policy": {"only": "baseten"},
                     "provider_creates_authorized": authorized,
                     "provider_pass_claim_sha256": HEX,
                     "create_authorization_sha256": HEX if authorized else None,
@@ -832,26 +829,6 @@ class SchedulerTest(unittest.TestCase):
         provider_runtime = {
             "baseten_team_name": "milk-production",
             "winner_model_alias": "gpt-5.4",
-            "modal_workspace_id": "ws-1",
-            "modal_workspace_name": "milk-workspace",
-            "modal_environment_id": "en-1",
-            "modal_environment_name": "milk-production",
-            "modal_app_id": "ap-1",
-            "modal_app_name": "milk-gpu",
-            "modal_registry_secret_name": "modal-registry",
-            "modal_registry_secret_id": "st-registry",
-            "modal_config_secret_name": "modal-config",
-            "modal_config_secret_id": "st-config",
-            "modal_control_secret_name": "modal-control",
-            "modal_control_secret_id": "st-control",
-            "modal_capture_secret_name": "modal-capture",
-            "modal_capture_secret_id": "st-capture",
-            "modal_candidate_secret_name": "modal-candidate",
-            "modal_candidate_secret_id": "st-candidate",
-            "modal_teacher_volume_name": "modal-teacher",
-            "modal_teacher_volume_id": "vo-teacher",
-            "modal_student_train_volume_name": "modal-student",
-            "modal_student_train_volume_id": "vo-student",
         }
         store_identities = {
             "gateway_capture": store_identity_sha256(
@@ -896,8 +873,8 @@ class SchedulerTest(unittest.TestCase):
             ),
         }
         manifest = {
-            "schema_version": "milk.confirmed-production-run-config.v6",
-            "provider_policy": {"primary": "baseten", "fallback": "modal"},
+            "schema_version": "milk.confirmed-production-run-config.v7",
+            "provider_policy": {"only": "baseten"},
             "harness_source_commit": source_commit,
             "campaign_id": campaign_id,
             "provider_project_id": "project_1",
@@ -1120,15 +1097,31 @@ class SchedulerTest(unittest.TestCase):
                 "route-routes-access",
                 "0" * 64,
             )
-        v5_manifest = {
+        v6_manifest = {
             **manifest,
-            "schema_version": "milk.confirmed-production-run-config.v5",
+            "schema_version": "milk.confirmed-production-run-config.v6",
         }
-        v5_raw = canonical_json(v5_manifest)
+        v6_raw = canonical_json(v6_manifest)
         with self.assertRaisesRegex(ValueError, "confirmed run config is invalid"):
             verify_gateway_run_config(
-                v5_raw,
-                hashlib.sha256(v5_raw).hexdigest(),
+                v6_raw,
+                hashlib.sha256(v6_raw).hexdigest(),
+                source_commit,
+                root,
+                gateway_raw,
+                images["gateway"],
+                "gateway-capture-access",
+                "gateway-control-access",
+            )
+        fallback_manifest = {
+            **manifest,
+            "provider_policy": {"primary": "baseten", "fallback": "modal"},
+        }
+        fallback_raw = canonical_json(fallback_manifest)
+        with self.assertRaisesRegex(ValueError, "confirmed run config is invalid"):
+            verify_gateway_run_config(
+                fallback_raw,
+                hashlib.sha256(fallback_raw).hexdigest(),
                 source_commit,
                 root,
                 gateway_raw,
@@ -1247,9 +1240,8 @@ class SchedulerTest(unittest.TestCase):
                     )
                 },
             )
-        changed_runtime = dict(provider_runtime)
-        changed_runtime["modal_app_id"] = "ap-other"
-        with self.assertRaises(ValueError):
+        modal_runtime = {**provider_runtime, "modal_app_id": "ap-1"}
+        with self.assertRaisesRegex(ValueError, "provider runtime settings"):
             verify_provider_run_config(
                 manifest_raw,
                 confirmed,
@@ -1261,7 +1253,7 @@ class SchedulerTest(unittest.TestCase):
                 images=images,
                 image_release_sha256="f" * 64,
                 gateway_deployment=gateway_deployment,
-                provider_runtime=changed_runtime,
+                provider_runtime=modal_runtime,
                 provider_secret_names=provider_secrets,
                 store_identities={
                     name: store_identities[name]
@@ -1393,8 +1385,8 @@ class SchedulerTest(unittest.TestCase):
             }
 
         value = {
-            "schema_version": "milk.jobs-pass.v3",
-            "provider_policy": {"primary": "baseten", "fallback": "modal"},
+            "schema_version": "milk.jobs-pass.v4",
+            "provider_policy": {"only": "baseten"},
             "scope_prefix": scope,
             "provider_creates_authorized": False,
             "provider_pass_claim_sha256": HEX,
@@ -1417,6 +1409,18 @@ class SchedulerTest(unittest.TestCase):
                 )
             ],
         }
+        fallback = {
+            **value,
+            "provider_policy": {"primary": "baseten", "fallback": "modal"},
+        }
+        with self.assertRaisesRegex(ValueError, "provider jobs result identity"):
+            stage_gateway_ingest(
+                evidence,
+                canonical_json(fallback),
+                campaign,
+                scope,
+                self.root / "unused-gateway-ingest",
+            )
         output_dir = self.root / "gateway-ingest"
         output_dir.mkdir(mode=0o700)
         staged = stage_gateway_ingest(
@@ -1581,7 +1585,7 @@ class SchedulerTest(unittest.TestCase):
             },
         )
         self.assertNotIn("steps", authority)
-        self.assertEqual(len(artifact["coverage"]), 9)
+        self.assertEqual(len(artifact["coverage"]), 8)
 
         changed = dict(arguments)
         changed["event"] = "workflow_dispatch"

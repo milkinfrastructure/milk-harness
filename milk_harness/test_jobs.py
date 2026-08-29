@@ -19,10 +19,8 @@ from deploy.baseten import adapter
 import milk_harness.jobs as jobs_module
 from milk_harness.budget import (
     CampaignBudget,
-    MODAL_RATES_SOURCE_COMMAND,
     baseten_pricing_observation,
     baseten_provider_identity,
-    modal_provider_identity,
     prepare_campaign_authority,
 )
 from milk_harness.evidence import LocalEvidenceStore, canonical_json, create_same
@@ -43,21 +41,18 @@ from milk_harness.scheduler import (
 from milk_harness.jobs import (
     BasetenJobs,
     BasetenTransport,
-    GPU_LAUNCH_SCAN_LIMIT,
     JobEvidence,
     RESERVATION_RATE_MICROUSD_PER_MINUTE,
+    _image_settings_from_arguments,
+    _provider_settings_from_arguments,
     _require_separate_control_store,
-    dispatch_outboxes,
-    settings_from_arguments,
 )
 
 
 UTC = dt.timezone.utc
 CAMPAIGN = "c" * 64
 PROJECT = "project_123"
-MODAL_WORKSPACE = "ws_123"
-MODAL_ENVIRONMENT = "main"
-MODAL_APP = "milk-gpu-jobs"
+TEAM = "milk"
 NOW = dt.datetime(2026, 8, 27, 20, 0, 0, tzinfo=UTC)
 EVIDENCE_R2_ENVIRONMENT = {
     "MILK_EVIDENCE_R2_ACCOUNT_ID": "0" * 32,
@@ -199,43 +194,13 @@ def authorize(store, campaign_id=CAMPAIGN):
             NOW,
         )
     )
-    modal_source_body = (
-        b'{"gpu":"H100","gpuPrice":"0.001097",'
-        b'"cpuPrice":"0.00003942","memoryPrice":"0.00000667"}\n'
-    )
-    modal_rates = canonical_json(
-        {
-            "schema_version": "milk.modal-workspace-rates.v1",
-            "campaign_id": campaign_id,
-            "provider_identity": modal_provider_identity(
-                MODAL_WORKSPACE,
-                MODAL_ENVIRONMENT,
-                MODAL_APP,
-            ),
-            "source_command": MODAL_RATES_SOURCE_COMMAND,
-            "source_sha256": hashlib.sha256(modal_source_body).hexdigest(),
-            "observed_at": "2026-08-27T20:00:00Z",
-            "currency": "USD",
-            "rate_unit": "second",
-            "h100_usd_per_second": "0.001097",
-            "sandbox_cpu_usd_per_physical_core_second": "0.00003942",
-            "sandbox_memory_usd_per_gib_second": "0.00000667",
-            "region_mode": "default",
-            "region_multiplier": "1",
-        }
-    )
     authority = prepare_campaign_authority(
         store,
         campaign_id,
         PROJECT,
-        "milk",
-        MODAL_WORKSPACE,
-        MODAL_ENVIRONMENT,
-        MODAL_APP,
+        TEAM,
         baseten_pricing_observation_raw=baseten_observation,
         baseten_pricing_source_body=baseten_source_body,
-        modal_rates_receipt_raw=modal_rates,
-        modal_rates_source_body=modal_source_body,
         now=lambda: NOW,
     )
     create_same(
@@ -611,8 +576,8 @@ def control_launch(
     elif kind == "student_winner_deployment":
         identity = hashlib.sha256(f"winner-student-{nonce}".encode()).hexdigest()
         authority = {
-            "schema_version": "dragontales.winner-deployment-authority.v2",
-            "provider_policy": {"primary": "baseten", "fallback": "modal"},
+            "schema_version": "dragontales.winner-deployment-authority.v3",
+            "provider_policy": {"only": "baseten"},
             "provider_terms_sha256": hashlib.sha256(
                 f"winner-terms-{nonce}".encode()
             ).hexdigest(),
@@ -1176,140 +1141,51 @@ class BasetenJobsTests(unittest.TestCase):
             ("retryable_unavailable", "timeout", None),
         )
 
-    def test_modal_preflight_uses_live_1_5_4_identity_surface(self):
-        calls = []
 
-        class WorkspaceHandle:
-            name = "milk-production"
 
-            def hydrate(self):
-                calls.append("workspace")
-
-        class EnvironmentHandle:
-            object_id = "en-main"
-            name = "main"
-
-            def hydrate(self):
-                calls.append("environment")
-
-        class AppHandle:
-            app_id = "ap-production"
-            name = "milk-gpu-jobs"
-
-        sdk = types.SimpleNamespace(
-            __version__="1.5.4",
-            Workspace=types.SimpleNamespace(from_context=lambda: WorkspaceHandle()),
-            Environment=types.SimpleNamespace(
-                from_name=lambda name, **unused: EnvironmentHandle()
-            ),
-            App=types.SimpleNamespace(
-                lookup=lambda name, **unused: AppHandle()
-            ),
-        )
-        with tempfile.TemporaryDirectory() as root:
-            runtime = jobs_module.ModalJobs(
-                store=LocalEvidenceStore(Path(root) / "evidence"),
-                request_guard=lambda: None,
-                modal_sdk=sdk,
-            )
-            with self.assertRaisesRegex(ValueError, "plans differ by campaign"):
-                jobs_module.modal_ready_preflight(
-                    runtime,
-                    {
-                        "workspace_id": "ws-production",
-                        "workspace_name": "milk-production",
-                        "environment_id": "en-main",
-                        "environment_name": "main",
-                        "app_id": "ap-production",
-                        "app_name": "milk-gpu-jobs",
-                    },
-                    {},
-                )
-        self.assertEqual(calls, ["workspace", "environment"])
-
-    def test_modal_model_volumes_are_distinct_and_used_only_when_needed(self):
-        arguments = types.SimpleNamespace(
-            modal_registry_secret_name="registry",
-            modal_registry_secret_id="st-registry",
-            modal_config_secret_name="config",
-            modal_config_secret_id="st-config",
-            modal_control_secret_name="control",
-            modal_control_secret_id="st-control",
-            modal_capture_secret_name="capture",
-            modal_capture_secret_id="st-capture",
-            modal_candidate_secret_name="candidate",
-            modal_candidate_secret_id="st-candidate",
-            modal_teacher_volume_name="teacher-model",
-            modal_teacher_volume_id="vo-teacher",
-            modal_student_train_volume_name="student-model",
-            modal_student_train_volume_id="vo-student",
-        )
-        settings = {
-            "control_store_session_token_secret": None,
-            "capture_store_session_token_secret": None,
-        }
-        resources = jobs_module._modal_resources_from_arguments(arguments, settings)
-        self.assertEqual(
-            resources["student_train_volume"],
-            {
-                "name": "student-model",
-                "object_id": "vo-student",
-                "mount_path": adapter.STUDENT_MODEL_MOUNT,
-                "read_only": True,
-            },
-        )
-        self.assertEqual(
-            jobs_module._modal_plan_resources(
-                resources, "student_train_merge"
-            )["volumes"],
-            [resources["student_train_volume"]],
-        )
-        self.assertEqual(
-            jobs_module._modal_plan_resources(resources, "student_branch")[
-                "volumes"
-            ],
-            [],
-        )
-        arguments.modal_student_train_volume_id = arguments.modal_teacher_volume_id
-        with self.assertRaisesRegex(ValueError, "pairwise distinct"):
-            jobs_module._modal_resources_from_arguments(arguments, settings)
-
-    def test_cross_provider_policy_requires_both_provider_credentials(self):
+    def test_production_requires_baseten_and_rejects_ambient_modal(self):
         self.assertNotIn(
             "gpu_provider",
             inspect.signature(
-                jobs_module.dispatch_cross_provider_outboxes
+                jobs_module.dispatch_baseten_outboxes
             ).parameters,
         )
         self.assertNotIn(
-            "allow_modal_winner_fallback",
+            "modal_jobs",
             inspect.signature(
-                jobs_module.dispatch_cross_provider_outboxes
+                jobs_module.dispatch_baseten_outboxes
             ).parameters,
         )
         with mock.patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(ValueError, "primary provider"):
+            with self.assertRaisesRegex(ValueError, "BASETEN_API_KEY"):
                 jobs_module._required_provider_credentials()
         with mock.patch.dict(
             os.environ,
             {"BASETEN_API_KEY": "baseten-key"},
             clear=True,
         ):
-            with self.assertRaisesRegex(ValueError, "provider fallback"):
-                jobs_module._required_provider_credentials()
-        with mock.patch.dict(
-            os.environ,
-            {
-                "BASETEN_API_KEY": "baseten-key",
-                "MODAL_TOKEN_ID": "modal-id",
-                "MODAL_TOKEN_SECRET": "modal-secret",
-            },
-            clear=True,
-        ):
             self.assertEqual(
                 jobs_module._required_provider_credentials(),
                 "baseten-key",
             )
+        for ambient in (
+            {"MODAL_TOKEN_ID": "modal-id"},
+            {"MODAL_TOKEN_SECRET": "modal-secret"},
+            {
+                "MODAL_TOKEN_ID": "modal-id",
+                "MODAL_TOKEN_SECRET": "modal-secret",
+            },
+        ):
+            with (
+                self.subTest(ambient=tuple(ambient)),
+                mock.patch.dict(
+                    os.environ,
+                    {"BASETEN_API_KEY": "baseten-key", **ambient},
+                    clear=True,
+                ),
+                self.assertRaisesRegex(ValueError, "forbidden"),
+            ):
+                jobs_module._required_provider_credentials()
 
     def test_production_api_has_no_operator_candidate_key_escape_hatch(self):
         self.assertNotIn(
@@ -1319,8 +1195,16 @@ class BasetenJobsTests(unittest.TestCase):
         self.assertNotIn(
             "winner_candidate_keys_by_run_id",
             inspect.signature(
-                jobs_module.dispatch_cross_provider_outboxes
+                jobs_module.dispatch_baseten_outboxes
             ).parameters,
+        )
+        self.assertFalse(
+            any(
+                "modal" in name
+                for name in inspect.signature(
+                    jobs_module.dispatch_baseten_outboxes
+                ).parameters
+            )
         )
         self.assertNotIn(
             "needs_model_scoped_candidate_key",
@@ -1881,7 +1765,11 @@ class BasetenJobsTests(unittest.TestCase):
                     self.subTest(label=label),
                     mock.patch.dict(
                         os.environ,
-                        {**EVIDENCE_R2_ENVIRONMENT, **CREATE_AUTHORITY_R2_ENVIRONMENT},
+                        {
+                            **EVIDENCE_R2_ENVIRONMENT,
+                            **CREATE_AUTHORITY_R2_ENVIRONMENT,
+                            "BASETEN_API_KEY": "baseten-test-key",
+                        },
                         clear=True,
                     ),
                     mock.patch.object(
@@ -1956,122 +1844,23 @@ class BasetenJobsTests(unittest.TestCase):
             store = LocalEvidenceStore(Path(root) / "evidence")
             release = publish_release(store, Path(root) / "release")
             arguments = provider_arguments(release["release_sha256"])
+            image_settings = _image_settings_from_arguments(arguments, store)
             self.assertEqual(
-                settings_from_arguments(arguments, store)["control_store_access_key_secret"],
+                _provider_settings_from_arguments(arguments, image_settings)[
+                    "control_store_access_key_secret"
+                ],
                 "control-access",
             )
             arguments.control_store_access_key_secret = "capture-access"
             with self.assertRaisesRegex(ValueError, "pairwise distinct"):
-                settings_from_arguments(arguments, store)
+                _provider_settings_from_arguments(arguments, image_settings)
             arguments = provider_arguments(release["release_sha256"])
             arguments.control_store_identity_sha256 = (
                 arguments.capture_store_identity_sha256
             )
+            image_settings = _image_settings_from_arguments(arguments, store)
             with self.assertRaisesRegex(ValueError, "store identities"):
-                settings_from_arguments(arguments, store)
-
-    def test_modal_commands_bind_expected_provider_store_identities(self):
-        settings = {
-            "capture_store_account_id": "capture-account",
-            "capture_store_identity_sha256": "5" * 64,
-            "control_store_account_id": "control-account",
-            "control_store_identity_sha256": "6" * 64,
-        }
-        teacher_command, teacher_environment = jobs_module._modal_execution_command(
-            {"kind": "teacher_run", "teacher_run_id": "7" * 64},
-            settings,
-        )
-        self.assertEqual(
-            teacher_environment,
-            {
-                "DRAGONTALES_TEACHER_RUN_ID": "7" * 64,
-                "MILK_CAPTURE_STORE_ACCOUNT_ID": "capture-account",
-                "MILK_EXPECTED_CAPTURE_STORE_IDENTITY_SHA256": "5" * 64,
-                "MILK_CONTROL_STORE_ACCOUNT_ID": "control-account",
-                "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": "6" * 64,
-            },
-        )
-        self.assertLess(
-            teacher_command[2].index("hashlib.sha256(raw).hexdigest()"),
-            teacher_command[2].index("/opt/dragontales/job.sh"),
-        )
-        student_command, student_environment = jobs_module._modal_execution_command(
-            {"kind": "student_train_merge", "student_job_id": "8" * 64},
-            settings,
-        )
-        self.assertEqual(
-            student_environment,
-            {
-                "DRAGONTALES_STUDENT_JOB_ID": "8" * 64,
-                "MILK_CONTROL_STORE_ACCOUNT_ID": "control-account",
-                "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": "6" * 64,
-            },
-        )
-        self.assertLess(
-            student_command[2].index("hashlib.sha256(raw).hexdigest()"),
-            student_command[2].index("/opt/dragontales/deploy/student-job.sh"),
-        )
-        winner_command, winner_environment = jobs_module._modal_winner_command(
-            "8" * 64,
-            "milk-student",
-            settings,
-        )
-        self.assertEqual(
-            winner_environment,
-            {
-                "DRAGONTALES_MODEL_ALIAS": "milk-student",
-                "DRAGONTALES_STUDENT_JOB_ID": "8" * 64,
-                "MILK_CONTROL_STORE_ACCOUNT_ID": "control-account",
-                "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": "6" * 64,
-            },
-        )
-        self.assertLess(
-            winner_command[2].index("hashlib.sha256(raw).hexdigest()"),
-            winner_command[2].index("materialize-student-winner"),
-        )
-        self.assertLess(
-            winner_command[2].index(
-                "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256; cat"
-            ),
-            winner_command[2].index("student-job.sh serve"),
-        )
-
-    def test_modal_winner_rejects_wrong_control_identity_before_storage(self):
-        settings = {
-            "control_store_account_id": "control-account",
-            "control_store_identity_sha256": "0" * 64,
-        }
-        command, environment = jobs_module._modal_winner_command(
-            "8" * 64,
-            "milk-student",
-            settings,
-        )
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
-            marker = root / "gateway-called"
-            gateway = root / "gateway"
-            gateway.write_text(
-                f"#!/bin/sh\n: > {marker}\nexit 0\n",
-                encoding="utf-8",
-            )
-            gateway.chmod(0o700)
-            shell = command[2].replace(
-                "/usr/local/bin/dragontales-gateway", str(gateway)
-            ).replace("/tmp/dragontales", str(root / "dragontales"))
-            result = subprocess.run(
-                ["/bin/sh", "-c", shell],
-                env={
-                    **environment,
-                    "DRAGONTALES_CONFIG_JSON": "{}",
-                    "DRAGONTALES_CANDIDATE_API_KEY": "candidate-key",
-                    "MILK_CONTROL_STORE_ACCESS_KEY_ID": "control-access",
-                    "MILK_CONTROL_STORE_SECRET_ACCESS_KEY": "control-secret",
-                },
-                capture_output=True,
-                check=False,
-            )
-            self.assertEqual(result.returncode, 64)
-            self.assertFalse(marker.exists())
+                _provider_settings_from_arguments(arguments, image_settings)
 
     def test_provider_images_are_exact_private_milk_repositories(self):
         with tempfile.TemporaryDirectory() as root:
@@ -2079,7 +1868,9 @@ class BasetenJobsTests(unittest.TestCase):
             release = publish_release(store, Path(root) / "release")
             arguments = provider_arguments(release["release_sha256"])
             self.assertEqual(
-                settings_from_arguments(arguments, store)["student_branch_image"],
+                _image_settings_from_arguments(arguments, store)[
+                    "student_branch_image"
+                ],
                 arguments.student_branch_image,
             )
             for field, image in (
@@ -2099,13 +1890,13 @@ class BasetenJobsTests(unittest.TestCase):
                 rejected = provider_arguments(release["release_sha256"])
                 setattr(rejected, field, image)
                 with self.assertRaisesRegex(ValueError, "private Milk repository"):
-                    settings_from_arguments(rejected, store)
+                    _image_settings_from_arguments(rejected, store)
             rejected = provider_arguments(release["release_sha256"])
             rejected.jobs_image = (
                 "ghcr.io/milkinfrastructure/not-the-jobs@sha256:" + "4" * 64
             )
             with self.assertRaisesRegex(ValueError, "private Milk repository"):
-                settings_from_arguments(rejected, store)
+                _image_settings_from_arguments(rejected, store)
             for field, image in (
                 (
                     "student_train_image",
@@ -2119,13 +1910,13 @@ class BasetenJobsTests(unittest.TestCase):
                 mismatched = provider_arguments(release["release_sha256"])
                 setattr(mismatched, field, image)
                 with self.assertRaisesRegex(ValueError, "private build admission"):
-                    settings_from_arguments(mismatched, store)
+                    _image_settings_from_arguments(mismatched, store)
             same_digest = provider_arguments(release["release_sha256"])
             same_digest.student_train_image = (
                 "ghcr.io/milkinfrastructure/milk-student-train@sha256:" + "f" * 64
             )
             with self.assertRaisesRegex(ValueError, "distinct digests"):
-                settings_from_arguments(same_digest, store)
+                _image_settings_from_arguments(same_digest, store)
 
     def test_private_image_release_publish_replays_and_loads_without_local_files(self):
         with tempfile.TemporaryDirectory() as root:
@@ -2159,208 +1950,9 @@ class BasetenJobsTests(unittest.TestCase):
             arguments = provider_arguments(release_sha)
             self.assertFalse(hasattr(arguments, "image_release_evidence_dir"))
             self.assertEqual(
-                settings_from_arguments(arguments, store)["jobs_image"],
+                _image_settings_from_arguments(arguments, store)["jobs_image"],
                 arguments.jobs_image,
             )
-
-    def test_control_outbox_accepts_all_operations_and_restart_never_replays(self):
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
-            control = LocalEvidenceStore(root / "control")
-            launches = [
-                control_launch(control, "teacher_run", 1),
-                control_launch(control, "student_train_merge", 2),
-                control_launch(control, "student_fanout", 3),
-            ]
-            evidence = LocalEvidenceStore(root / "evidence")
-            authorize(evidence)
-            release = publish_release(evidence, root / "release")
-            settings = settings_from_arguments(
-                provider_arguments(release["release_sha256"]),
-                evidence,
-            )
-            transport = FakeTransport(
-                lambda _method, _path, body, _query: provider_job(
-                    body["training_job"]["name"],
-                    "job_" + hashlib.sha256(
-                        body["training_job"]["name"].encode()
-                    ).hexdigest()[:16],
-                )
-            )
-            service = BasetenJobs(
-                store=evidence,
-                campaign_id=CAMPAIGN,
-                project_id=PROJECT,
-                transport=transport,
-                now=lambda: NOW,
-            )
-            first = dispatch_outboxes(
-                service,
-                control_store=control,
-                scope_prefix=SCOPE_PREFIX,
-                settings=settings,
-            )
-            self.assertEqual(first["frontier_scan_limit"], GPU_LAUNCH_SCAN_LIMIT)
-            self.assertEqual(first["verified"], 3)
-            self.assertEqual(first["dispatched"], 3)
-            self.assertEqual(len(transport.calls), 5)
-            for launch in launches:
-                acceptance = json.loads(
-                    evidence.get(
-                        f"claims/v1/{launch['claim_sha256']}.json"
-                    )
-                )
-                self.assertEqual(
-                    acceptance["schema_version"],
-                    "milk.gateway-launch-acceptance.v1",
-                )
-                self.assertEqual(
-                    acceptance["launch_source"]["claim_object_key"],
-                    launch["claim_key"],
-                )
-            second = dispatch_outboxes(
-                service,
-                control_store=control,
-                scope_prefix=SCOPE_PREFIX,
-                settings=settings,
-            )
-            self.assertEqual(
-                [item["state"] for item in second["results"]],
-                ["reconcile_only"] * 3,
-            )
-            self.assertEqual(len(transport.calls), 5)
-
-    def test_all_frontier_chains_verify_before_any_acceptance_or_provider_call(self):
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
-            control = LocalEvidenceStore(root / "control")
-            control_launch(control, "teacher_run", 1)
-            control_launch(
-                control,
-                "student_train_merge",
-                2,
-                claim_mutator=lambda claim: claim.__setitem__("unknown", True),
-            )
-            evidence = LocalEvidenceStore(root / "evidence")
-            authorize(evidence)
-            release = publish_release(evidence, root / "release")
-            settings = settings_from_arguments(
-                provider_arguments(release["release_sha256"]),
-                evidence,
-            )
-            transport = FakeTransport(
-                lambda *_arguments: self.fail("provider called before verification")
-            )
-            service = BasetenJobs(
-                store=evidence,
-                campaign_id=CAMPAIGN,
-                project_id=PROJECT,
-                transport=transport,
-                now=lambda: NOW,
-            )
-            with self.assertRaisesRegex(ValueError, "claim is invalid"):
-                dispatch_outboxes(
-                    service,
-                    control_store=control,
-                    scope_prefix=SCOPE_PREFIX,
-                    settings=settings,
-                )
-            self.assertEqual(transport.calls, [])
-            self.assertEqual(evidence.list("claims/v1"), [])
-
-    def test_control_frontier_rejects_hash_mismatch_and_nineteenth_entry(self):
-        class OverrideGet:
-            def __init__(self, store, key, raw):
-                self.store = store
-                self.key = key
-                self.raw = raw
-
-            def list(self, *arguments, **keywords):
-                return self.store.list(*arguments, **keywords)
-
-            def get(self, key):
-                return self.raw if key == self.key else self.store.get(key)
-
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
-            control = LocalEvidenceStore(root / "control-hash")
-            launch = control_launch(control, "teacher_run", 1)
-            evidence = LocalEvidenceStore(root / "evidence-hash")
-            authorize(evidence)
-            service = BasetenJobs(
-                store=evidence,
-                campaign_id=CAMPAIGN,
-                project_id=PROJECT,
-                transport=FakeTransport(
-                    lambda *_arguments: self.fail("provider called")
-                ),
-                now=lambda: NOW,
-            )
-            release = publish_release(evidence, root / "release-hash")
-            settings = settings_from_arguments(
-                provider_arguments(release["release_sha256"]),
-                evidence,
-            )
-            with self.assertRaisesRegex(ValueError, "claim hash differs"):
-                dispatch_outboxes(
-                    service,
-                    control_store=OverrideGet(
-                        control,
-                        launch["claim_key"],
-                        launch["claim_raw"] + b" ",
-                    ),
-                    scope_prefix=SCOPE_PREFIX,
-                    settings=settings,
-                )
-            self.assertEqual(service.transport.calls, [])
-
-            crowded = LocalEvidenceStore(root / "control-crowded")
-            for nonce in range(1, GPU_LAUNCH_SCAN_LIMIT + 1):
-                control_launch(crowded, "teacher_run", nonce)
-            with self.assertRaisesRegex(ValueError, "hard active bound"):
-                dispatch_outboxes(
-                    service,
-                    control_store=crowded,
-                    scope_prefix=SCOPE_PREFIX,
-                    settings=settings,
-                )
-            self.assertEqual(service.transport.calls, [])
-
-    def test_expired_frontier_is_not_discovered(self):
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
-            control = LocalEvidenceStore(root / "control")
-            control_launch(
-                control,
-                "teacher_run",
-                1,
-                created=NOW - dt.timedelta(hours=2),
-                expires=NOW - dt.timedelta(hours=1),
-            )
-            evidence = LocalEvidenceStore(root / "evidence")
-            authorize(evidence)
-            release = publish_release(evidence, root / "release")
-            service = BasetenJobs(
-                store=evidence,
-                campaign_id=CAMPAIGN,
-                project_id=PROJECT,
-                transport=FakeTransport(
-                    lambda *_arguments: self.fail("expired launch reached provider")
-                ),
-                now=lambda: NOW,
-            )
-            summary = dispatch_outboxes(
-                service,
-                control_store=control,
-                scope_prefix=SCOPE_PREFIX,
-                settings=settings_from_arguments(
-                    provider_arguments(release["release_sha256"]),
-                    evidence,
-                ),
-            )
-            self.assertEqual(summary["verified"], 0)
-            self.assertEqual(summary["state"], "hold")
-            self.assertEqual(service.transport.calls, [])
 
     def test_jobs_has_no_gateway_process_or_capture_authority_surface(self):
         source = Path(jobs_module.__file__).read_text(encoding="utf-8")
@@ -2581,76 +2173,6 @@ class BasetenJobsTests(unittest.TestCase):
             self.assertEqual(result["state"], "created")
             self.assertEqual(len(result["executions"]), 3)
 
-    def test_baseten_reconcile_ignores_modal_outstanding_work(self):
-        with tempfile.TemporaryDirectory() as root:
-            service = self.jobs(
-                root,
-                FakeTransport(
-                    lambda *_arguments: self.fail("provider must not be called")
-                ),
-            )
-            modal_budget = CampaignBudget(
-                service.store,
-                CAMPAIGN,
-                modal_provider_identity(
-                    MODAL_WORKSPACE,
-                    MODAL_ENVIRONMENT,
-                    MODAL_APP,
-                ),
-                now=lambda: NOW,
-            )
-            modal_budget.initialize()
-            baseten_run = "a" * 64
-            modal_run = "b" * 64
-            for budget, run_id in (
-                (service.budget, baseten_run),
-                (modal_budget, modal_run),
-            ):
-                budget.prepare(
-                    run_id,
-                    hashlib.sha256(run_id.encode()).hexdigest(),
-                    int((NOW + dt.timedelta(minutes=1)).timestamp()),
-                    int((NOW + dt.timedelta(hours=1)).timestamp()),
-                )
-            visited = []
-
-            def reconcile(run_id):
-                visited.append(run_id)
-                return {
-                    "schema_version": "milk.test-reconciliation.v1",
-                    "run_id": run_id,
-                    "evidence_complete": True,
-                }
-
-            service.reconcile = reconcile
-            summary = service.reconcile_all(1)
-            self.assertEqual(visited, [baseten_run])
-            self.assertEqual(summary["processed"], 1)
-            self.assertFalse(summary["backlog"])
-            outstanding = service.budget.status()["outstanding"]
-            self.assertEqual(
-                [
-                    run_id
-                    for run_id, item in outstanding.items()
-                    if item["provider_identity"]
-                    == modal_provider_identity(
-                        MODAL_WORKSPACE,
-                        MODAL_ENVIRONMENT,
-                        MODAL_APP,
-                    )
-                ],
-                [modal_run],
-            )
-            cursor = json.loads(
-                service.store.get(
-                    f"state/v1/campaigns/{CAMPAIGN}/providers/"
-                    "baseten/reconcile-cursor.json"
-                )
-            )
-            self.assertEqual(
-                cursor["provider_identity"],
-                baseten_provider_identity(PROJECT),
-            )
 
     def test_active_campaign_authority_blocks_budget_reset(self):
         with tempfile.TemporaryDirectory() as root:

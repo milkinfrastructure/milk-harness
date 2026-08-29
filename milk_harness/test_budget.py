@@ -6,31 +6,25 @@ import threading
 import unittest
 
 from milk_harness.budget import (
+    ABSOLUTE_CEILING_MICROUSD,
     ACTIVE_CAMPAIGN_AUTHORITY_KEY,
     ACTIVE_BASETEN_SERVING_PRICING_RECEIPT_KEY,
     ACTIVE_BASETEN_TRAINING_PRICING_RECEIPT_KEY,
-    ACTIVE_MODAL_PRICING_RECEIPT_KEY,
     BASETEN_H100_PROVIDER_RATE_MICROUSD_PER_MINUTE,
     BASETEN_H100_PRICING_SOURCE,
     BASETEN_PRICING_OBSERVATION_PREFIX,
     BASETEN_PRICING_RECEIPT_PREFIX,
     BASETEN_PRICING_SOURCE_BODY_PREFIX,
     H100_RESERVATION_RATE_MICROUSD_PER_MINUTE,
-    MODAL_DEFAULT_REGION_MULTIPLIER_MILLIONTHS,
-    MODAL_PRICING_RECEIPT_PREFIX,
-    MODAL_RATES_RECEIPT_PREFIX,
-    MODAL_RATES_SOURCE_COMMAND,
-    MODAL_SANDBOX_CPU_LIMIT_PHYSICAL_CORES,
-    MODAL_SANDBOX_MEMORY_LIMIT_MIB,
+    LAUNCH_CUTOFF_MICROUSD,
     PRICING_RECEIPT_MAX_AGE_SECONDS,
+    TEARDOWN_RESERVE_MICROUSD,
     CampaignBudget,
     baseten_pricing_observation,
     baseten_provider_identity,
     baseten_serving_provider_identity,
-    modal_provider_identity,
     prepare_campaign_authority,
     refresh_baseten_pricing,
-    refresh_modal_pricing,
 )
 from milk_harness.evidence import LocalEvidenceStore, canonical_json, create_same
 
@@ -43,64 +37,13 @@ PROVIDER_RATE_MICROUSD_PER_MINUTE = (
 )
 PROJECT = "project_123"
 TEAM = "milk-infrastructure"
-MODAL_WORKSPACE = "ws_123"
-MODAL_ENVIRONMENT = "main"
-MODAL_APP = "milk-gpu-jobs"
 BASETEN_IDENTITY = baseten_provider_identity(PROJECT)
 BASETEN_SERVING_IDENTITY = baseten_serving_provider_identity(TEAM)
-MODAL_IDENTITY = modal_provider_identity(
-    MODAL_WORKSPACE,
-    MODAL_ENVIRONMENT,
-    MODAL_APP,
-)
 BASETEN_PRICING_SOURCE_BODY = (
     b"https://docs.baseten.co/deployment/resources\nH100 $0.10833/min\n"
 )
-MODAL_RATES_SOURCE_BODY = (
-    b'{"gpu":{"H100":"0.001097"},"sandbox_cpu":"0.00003942",'
-    b'"sandbox_memory":"0.00000667"}\n'
-)
 PREPARATION_DEADLINE = int((NOW + dt.timedelta(minutes=1)).timestamp())
 PROVIDER_DEADLINE = int((NOW + dt.timedelta(hours=1)).timestamp())
-
-
-def modal_rates_raw(
-    observed_at=NOW,
-    *,
-    campaign_id=CAMPAIGN,
-    workspace_id=MODAL_WORKSPACE,
-    environment_name=MODAL_ENVIRONMENT,
-    app_name=MODAL_APP,
-    h100="0.001097",
-    cpu="0.00003942",
-    memory="0.00000667",
-    region_mode="default",
-    region_multiplier="1",
-):
-    return canonical_json(
-        {
-            "schema_version": "milk.modal-workspace-rates.v1",
-            "campaign_id": campaign_id,
-            "provider_identity": modal_provider_identity(
-                workspace_id,
-                environment_name,
-                app_name,
-            ),
-            "source_command": MODAL_RATES_SOURCE_COMMAND,
-            "source_sha256": hashlib.sha256(MODAL_RATES_SOURCE_BODY).hexdigest(),
-            "observed_at": observed_at.isoformat(timespec="seconds").replace(
-                "+00:00",
-                "Z",
-            ),
-            "currency": "USD",
-            "rate_unit": "second",
-            "h100_usd_per_second": h100,
-            "sandbox_cpu_usd_per_physical_core_second": cpu,
-            "sandbox_memory_usd_per_gib_second": memory,
-            "region_mode": region_mode,
-            "region_multiplier": region_multiplier,
-        }
-    )
 
 
 def baseten_pricing_observation_raw(
@@ -136,19 +79,11 @@ class CampaignBudgetTests(unittest.TestCase):
             campaign_id,
             PROJECT,
             TEAM,
-            MODAL_WORKSPACE,
-            MODAL_ENVIRONMENT,
-            MODAL_APP,
             baseten_pricing_observation_raw=baseten_pricing_observation_raw(
                 observed_at,
                 campaign_id=campaign_id,
             ),
             baseten_pricing_source_body=BASETEN_PRICING_SOURCE_BODY,
-            modal_rates_receipt_raw=modal_rates_raw(
-                observed_at,
-                campaign_id=campaign_id,
-            ),
-            modal_rates_source_body=MODAL_RATES_SOURCE_BODY,
             now=lambda: now,
         )
 
@@ -173,12 +108,18 @@ class CampaignBudgetTests(unittest.TestCase):
             self.assertEqual(self.authorize(store), "created")
             self.assertEqual(self.authorize(store), "existing")
             authority = json.loads(store.get(ACTIVE_CAMPAIGN_AUTHORITY_KEY))
-            self.assertEqual(authority["campaign_id"], CAMPAIGN)
-            self.assertEqual(authority["baseten_project_id"], PROJECT)
-            self.assertEqual(authority["baseten_team_name"], TEAM)
-            self.assertEqual(authority["modal_workspace_id"], MODAL_WORKSPACE)
-            self.assertEqual(authority["modal_environment_name"], MODAL_ENVIRONMENT)
-            self.assertEqual(authority["modal_app_name"], MODAL_APP)
+            self.assertEqual(
+                authority,
+                {
+                    "schema_version": "milk.active-campaign-authority.v4",
+                    "campaign_id": CAMPAIGN,
+                    "baseten_project_id": PROJECT,
+                    "baseten_team_name": TEAM,
+                    "absolute_ceiling_microusd": ABSOLUTE_CEILING_MICROUSD,
+                    "launch_cutoff_microusd": LAUNCH_CUTOFF_MICROUSD,
+                    "teardown_reserve_microusd": TEARDOWN_RESERVE_MICROUSD,
+                },
+            )
             pricing = json.loads(
                 store.get(ACTIVE_BASETEN_TRAINING_PRICING_RECEIPT_KEY)
             )
@@ -212,198 +153,86 @@ class CampaignBudgetTests(unittest.TestCase):
                 serving["provider_rate_microusd_per_minute"],
                 PROVIDER_RATE_MICROUSD_PER_MINUTE,
             )
-            modal = json.loads(store.get(ACTIVE_MODAL_PRICING_RECEIPT_KEY))
             self.assertEqual(
-                modal["provider_rate_microusd_per_minute"],
-                110_355,
-            )
-            self.assertEqual(
-                modal["reservation_margin_microusd_per_minute"],
-                14_645,
+                store.list("state/v1"),
+                [
+                    ACTIVE_BASETEN_SERVING_PRICING_RECEIPT_KEY,
+                    ACTIVE_BASETEN_TRAINING_PRICING_RECEIPT_KEY,
+                ],
             )
             budget.initialize()
-
-    def test_modal_rates_are_strictly_normalized_and_bound(self):
-        with tempfile.TemporaryDirectory() as root:
-            store = LocalEvidenceStore(root)
-            self.authorize(store)
-            source_raw = modal_rates_raw()
-            source_sha256 = hashlib.sha256(source_raw).hexdigest()
             self.assertEqual(
-                store.get(f"{MODAL_RATES_RECEIPT_PREFIX}/{source_sha256}.json"),
-                source_raw,
-            )
-            pricing_raw = store.get(ACTIVE_MODAL_PRICING_RECEIPT_KEY)
-            pricing_sha256 = hashlib.sha256(pricing_raw).hexdigest()
-            self.assertEqual(
-                store.get(f"{MODAL_PRICING_RECEIPT_PREFIX}/{pricing_sha256}.json"),
-                pricing_raw,
-            )
-            self.assertEqual(
-                json.loads(pricing_raw),
+                json.loads(store.get(f"campaigns/v1/{CAMPAIGN}/policy.json")),
                 {
-                    "schema_version": "milk.modal-h100-sandbox-pricing-receipt.v1",
+                    "schema_version": "milk.campaign-budget-policy.v4",
                     "campaign_id": CAMPAIGN,
-                    "provider_role": "sandbox",
-                    "provider_identity": MODAL_IDENTITY,
-                    "service": "sandbox",
-                    "gpu_type": "H100",
-                    "gpu_count": 1,
-                    "unit": "bounded_sandbox_minute",
-                    "source_command": MODAL_RATES_SOURCE_COMMAND,
-                    "source_rates_receipt_sha256": source_sha256,
-                    "observed_at": "2026-08-27T20:00:00Z",
-                    "h100_rate_nanousd_per_second": 1_097_000,
-                    "sandbox_cpu_rate_nanousd_per_physical_core_second": 39_420,
-                    "sandbox_memory_rate_nanousd_per_gib_second": 6_670,
-                    "cpu_limit_physical_cores": (
-                        MODAL_SANDBOX_CPU_LIMIT_PHYSICAL_CORES
-                    ),
-                    "memory_limit_mib": MODAL_SANDBOX_MEMORY_LIMIT_MIB,
-                    "region_mode": "default",
-                    "region_multiplier_millionths": (
-                        MODAL_DEFAULT_REGION_MULTIPLIER_MILLIONTHS
-                    ),
-                    "provider_rate_microusd_per_minute": 110_355,
-                    "reservation_rate_microusd_per_minute": (
-                        H100_RESERVATION_RATE_MICROUSD_PER_MINUTE
-                    ),
-                    "reservation_margin_microusd_per_minute": 14_645,
-                    "max_age_seconds": PRICING_RECEIPT_MAX_AGE_SECONDS,
+                    "baseten_project_id": PROJECT,
+                    "baseten_team_name": TEAM,
+                    "absolute_ceiling_microusd": ABSOLUTE_CEILING_MICROUSD,
+                    "launch_cutoff_microusd": LAUNCH_CUTOFF_MICROUSD,
+                    "teardown_reserve_microusd": TEARDOWN_RESERVE_MICROUSD,
                 },
             )
-            budget = CampaignBudget(
-                store,
-                CAMPAIGN,
-                MODAL_IDENTITY,
-                now=lambda: NOW,
-            )
-            budget.initialize()
-            reservation = reserve(budget, "a" * 64, 100_000_000)
-            self.assertEqual(reservation["provider_identity"], MODAL_IDENTITY)
-            self.assertEqual(
-                reservation["pricing_receipt_sha256"],
-                pricing_sha256,
-            )
-            self.assertEqual(
-                reservation["provider_rate_microusd_per_minute"],
-                110_355,
-            )
-            settlement = budget.settle("a" * 64, 90_000_000)
-            self.assertEqual(settlement["provider_identity"], MODAL_IDENTITY)
-            self.assertEqual(
-                settlement["pricing_receipt_sha256"],
-                pricing_sha256,
-            )
-            self.assertEqual(
-                budget.finalize("a" * 64)["provider_identity"],
-                MODAL_IDENTITY,
-            )
 
-    def test_modal_rates_reject_wrong_identity_region_and_non_integer_units(self):
+    def test_modal_identity_and_authority_fields_are_rejected(self):
         with tempfile.TemporaryDirectory() as root:
             store = LocalEvidenceStore(root)
             self.authorize(store)
-            for label, raw in (
-                (
-                    "workspace",
-                    modal_rates_raw(
-                        NOW + dt.timedelta(seconds=1),
-                        workspace_id="wrong_workspace",
-                    ),
-                ),
-                (
-                    "environment",
-                    modal_rates_raw(
-                        NOW + dt.timedelta(seconds=1),
-                        environment_name="wrong_environment",
-                    ),
-                ),
-                (
-                    "app",
-                    modal_rates_raw(
-                        NOW + dt.timedelta(seconds=1),
-                        app_name="wrong_app",
-                    ),
-                ),
-            ):
-                with self.subTest(label=label):
-                    with self.assertRaisesRegex(
-                        ValueError,
-                        "differs from campaign authority",
-                    ):
-                        refresh_modal_pricing(
-                            store,
-                            CAMPAIGN,
-                            raw,
-                            rates_source_body=MODAL_RATES_SOURCE_BODY,
-                            now=lambda: NOW + dt.timedelta(seconds=1),
-                        )
-            for label, raw, message in (
-                (
-                    "region",
-                    modal_rates_raw(
-                        NOW + dt.timedelta(seconds=1),
-                        region_mode="us-east",
-                    ),
-                    "receipt is invalid",
-                ),
-                (
-                    "surcharge",
-                    modal_rates_raw(
-                        NOW + dt.timedelta(seconds=1),
-                        region_multiplier="1.5",
-                    ),
-                    "receipt is invalid",
-                ),
-                (
-                    "too expensive",
-                    modal_rates_raw(
-                        NOW + dt.timedelta(seconds=1),
-                        h100="0.002",
-                    ),
-                    "exceeds reservation rate",
-                ),
-                (
-                    "non-canonical rate",
-                    modal_rates_raw(
-                        NOW + dt.timedelta(seconds=1)
-                    ).replace(b'"0.001097"', b"0.001097", 1),
-                    "canonical evidence JSON supports",
-                ),
-            ):
-                with self.subTest(label=label):
-                    with self.assertRaisesRegex(ValueError, message):
-                        refresh_modal_pricing(
-                            store,
-                            CAMPAIGN,
-                            raw,
-                            rates_source_body=MODAL_RATES_SOURCE_BODY,
-                            now=lambda: NOW + dt.timedelta(seconds=1),
-                        )
+            with self.assertRaisesRegex(ValueError, "Modal.*not authorized"):
+                CampaignBudget(
+                    store,
+                    CAMPAIGN,
+                    {
+                        "provider": "modal",
+                        "workspace_id": "ws_123",
+                        "environment_name": "main",
+                        "app_name": "milk-gpu-jobs",
+                    },
+                    now=lambda: NOW,
+                )
+            authority_raw, etag = store.get_versioned(
+                ACTIVE_CAMPAIGN_AUTHORITY_KEY
+            )
+            authority = json.loads(authority_raw)
+            authority["modal_workspace_id"] = "ws_123"
+            self.assertTrue(
+                store.replace(
+                    ACTIVE_CAMPAIGN_AUTHORITY_KEY,
+                    canonical_json(authority),
+                    etag,
+                    "application/json",
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "authority is invalid"):
+                CampaignBudget(
+                    store,
+                    CAMPAIGN,
+                    BASETEN_IDENTITY,
+                    now=lambda: NOW,
+                ).initialize()
 
     def test_provider_switch_is_allowed_only_before_reservation_intent(self):
         with tempfile.TemporaryDirectory() as root:
             store = LocalEvidenceStore(root)
             self.authorize(store)
-            baseten = CampaignBudget(
+            training = CampaignBudget(
+                store,
+                CAMPAIGN,
+                BASETEN_IDENTITY,
+                now=lambda: NOW,
+            )
+            serving = CampaignBudget(
                 store,
                 CAMPAIGN,
                 BASETEN_SERVING_IDENTITY,
                 now=lambda: NOW,
             )
-            modal = CampaignBudget(
-                store,
-                CAMPAIGN,
-                MODAL_IDENTITY,
-                now=lambda: NOW,
-            )
-            baseten.initialize()
-            modal.initialize()
+            training.initialize()
+            serving.initialize()
             run_id = "a" * 64
             preparation_sha256 = hashlib.sha256(run_id.encode()).hexdigest()
             self.assertEqual(
-                baseten.prepare(
+                training.prepare(
                     run_id,
                     preparation_sha256,
                     PREPARATION_DEADLINE,
@@ -412,7 +241,7 @@ class CampaignBudgetTests(unittest.TestCase):
                 "created",
             )
             self.assertEqual(
-                modal.prepare(
+                serving.prepare(
                     run_id,
                     preparation_sha256,
                     PREPARATION_DEADLINE,
@@ -420,14 +249,17 @@ class CampaignBudgetTests(unittest.TestCase):
                 ),
                 "switched",
             )
-            reservation = modal.reserve(
+            reservation = serving.reserve(
                 run_id,
                 100_000_000,
                 preparation_sha256,
             )
-            self.assertEqual(reservation["provider_identity"], MODAL_IDENTITY)
+            self.assertEqual(
+                reservation["provider_identity"],
+                BASETEN_SERVING_IDENTITY,
+            )
             with self.assertRaisesRegex(ValueError, "provider is frozen"):
-                baseten.prepare(
+                training.prepare(
                     run_id,
                     preparation_sha256,
                     PREPARATION_DEADLINE,
@@ -444,12 +276,8 @@ class CampaignBudgetTests(unittest.TestCase):
             serving = CampaignBudget(
                 store, CAMPAIGN, BASETEN_SERVING_IDENTITY, now=lambda: NOW
             )
-            modal = CampaignBudget(
-                store, CAMPAIGN, MODAL_IDENTITY, now=lambda: NOW
-            )
             training.initialize()
             serving.initialize()
-            modal.initialize()
             run_id = "9" * 64
             preparation = hashlib.sha256(run_id.encode()).hexdigest()
             self.assertEqual(
@@ -486,14 +314,13 @@ class CampaignBudgetTests(unittest.TestCase):
                 reservation["provider_rate_microusd_per_minute"],
                 PROVIDER_RATE_MICROUSD_PER_MINUTE,
             )
-            for budget in (training, modal):
-                with self.assertRaisesRegex(ValueError, "provider is frozen"):
-                    budget.prepare(
-                        run_id,
-                        preparation,
-                        PREPARATION_DEADLINE,
-                        PROVIDER_DEADLINE,
-                    )
+            with self.assertRaisesRegex(ValueError, "provider is frozen"):
+                training.prepare(
+                    run_id,
+                    preparation,
+                    PREPARATION_DEADLINE,
+                    PROVIDER_DEADLINE,
+                )
             with self.assertRaisesRegex(ValueError, "different provider"):
                 training.settle(run_id, 90_000_000)
             settlement = serving.settle(run_id, 90_000_000)
@@ -600,23 +427,23 @@ class CampaignBudgetTests(unittest.TestCase):
             store = LocalEvidenceStore(root)
             self.authorize(store)
             paused_store = PauseIntentCreate(store)
-            baseten = CampaignBudget(
+            serving = CampaignBudget(
                 paused_store,
                 CAMPAIGN,
                 BASETEN_SERVING_IDENTITY,
                 now=lambda: NOW,
             )
-            modal = CampaignBudget(
+            training = CampaignBudget(
                 store,
                 CAMPAIGN,
-                MODAL_IDENTITY,
+                BASETEN_IDENTITY,
                 now=lambda: NOW,
             )
-            baseten.initialize()
-            modal.initialize()
+            serving.initialize()
+            training.initialize()
             run_id = "a" * 64
             preparation_sha256 = hashlib.sha256(run_id.encode()).hexdigest()
-            baseten.prepare(
+            serving.prepare(
                 run_id,
                 preparation_sha256,
                 PREPARATION_DEADLINE,
@@ -625,10 +452,10 @@ class CampaignBudgetTests(unittest.TestCase):
             results = []
             failures = []
 
-            def reserve_baseten():
+            def reserve_serving():
                 try:
                     results.append(
-                        baseten.reserve(
+                        serving.reserve(
                             run_id,
                             100_000_000,
                             preparation_sha256,
@@ -637,11 +464,11 @@ class CampaignBudgetTests(unittest.TestCase):
                 except Exception as error:
                     failures.append(error)
 
-            thread = threading.Thread(target=reserve_baseten)
+            thread = threading.Thread(target=reserve_serving)
             thread.start()
             self.assertTrue(paused_store.before.wait(5))
             self.assertEqual(
-                modal.prepare(
+                training.prepare(
                     run_id,
                     preparation_sha256,
                     PREPARATION_DEADLINE,
@@ -655,7 +482,7 @@ class CampaignBudgetTests(unittest.TestCase):
                 ValueError,
                 "different reservation intent",
             ):
-                modal.reserve(run_id, 100_000_000, preparation_sha256)
+                training.reserve(run_id, 100_000_000, preparation_sha256)
             paused_store.release_return.set()
             thread.join(5)
             self.assertFalse(thread.is_alive())
@@ -664,105 +491,108 @@ class CampaignBudgetTests(unittest.TestCase):
             self.assertEqual(
                 results[0]["provider_identity"], BASETEN_SERVING_IDENTITY
             )
-            status = baseten.status()
+            status = serving.status()
             self.assertEqual(status["reserved_microusd"], 100_000_000)
             self.assertEqual(
                 status["outstanding"][run_id]["provider_identity"],
                 BASETEN_SERVING_IDENTITY,
             )
 
-    def test_modal_pricing_replay_and_staleness_are_provider_local(self):
+    def test_training_and_serving_pricing_are_role_local(self):
         with tempfile.TemporaryDirectory() as root:
             store = LocalEvidenceStore(root)
             self.authorize(store)
-            modal = CampaignBudget(
+            serving = CampaignBudget(
                 store,
                 CAMPAIGN,
-                MODAL_IDENTITY,
+                BASETEN_SERVING_IDENTITY,
                 now=lambda: NOW,
             )
-            modal.initialize()
-            original = reserve(modal, "a" * 64, 100_000_000)
+            serving.initialize()
+            original = reserve(serving, "a" * 64, 100_000_000)
             stale_now = NOW + dt.timedelta(
                 seconds=PRICING_RECEIPT_MAX_AGE_SECONDS + 1
             )
-            stale_modal = CampaignBudget(
+            stale_serving = CampaignBudget(
                 store,
                 CAMPAIGN,
-                MODAL_IDENTITY,
+                BASETEN_SERVING_IDENTITY,
                 now=lambda: stale_now,
             )
-            stale_modal.initialize()
+            stale_serving.initialize()
             preparation_sha256 = hashlib.sha256(("b" * 64).encode()).hexdigest()
-            stale_modal.prepare(
+            stale_serving.prepare(
                 "b" * 64,
                 preparation_sha256,
                 int((stale_now + dt.timedelta(minutes=1)).timestamp()),
                 int((stale_now + dt.timedelta(hours=1)).timestamp()),
             )
             with self.assertRaisesRegex(ValueError, "stale"):
-                stale_modal.reserve("b" * 64, 1, preparation_sha256)
-            settlement = stale_modal.settle("a" * 64, 90_000_000)
+                stale_serving.reserve("b" * 64, 1, preparation_sha256)
+            settlement = stale_serving.settle("a" * 64, 90_000_000)
             self.assertEqual(
                 settlement["pricing_receipt_sha256"],
                 original["pricing_receipt_sha256"],
             )
-            stale_modal.finalize("a" * 64)
+            stale_serving.finalize("a" * 64)
 
             refresh_baseten_pricing(
                 store,
                 CAMPAIGN,
-                "serving",
+                "training",
                 pricing_observation_raw=baseten_pricing_observation_raw(
                     stale_now,
                 ),
                 pricing_source_body=BASETEN_PRICING_SOURCE_BODY,
                 now=lambda: stale_now,
             )
-            baseten = CampaignBudget(
+            training = CampaignBudget(
                 store,
                 CAMPAIGN,
-                BASETEN_SERVING_IDENTITY,
+                BASETEN_IDENTITY,
                 now=lambda: stale_now,
             )
-            baseten.initialize()
-            baseten_preparation = hashlib.sha256(("c" * 64).encode()).hexdigest()
-            baseten.prepare(
+            training.initialize()
+            training_preparation = hashlib.sha256(("c" * 64).encode()).hexdigest()
+            training.prepare(
                 "c" * 64,
-                baseten_preparation,
+                training_preparation,
                 int((stale_now + dt.timedelta(minutes=1)).timestamp()),
                 int((stale_now + dt.timedelta(hours=1)).timestamp()),
             )
             self.assertEqual(
-                baseten.reserve("c" * 64, 1, baseten_preparation)[
+                training.reserve("c" * 64, 1, training_preparation)[
                     "provider_identity"
                 ],
-                BASETEN_SERVING_IDENTITY,
+                BASETEN_IDENTITY,
             )
+            with self.assertRaisesRegex(ValueError, "stale"):
+                stale_serving.reserve("b" * 64, 1, preparation_sha256)
 
             later = stale_now + dt.timedelta(seconds=1)
             self.assertEqual(
-                refresh_modal_pricing(
+                refresh_baseten_pricing(
                     store,
                     CAMPAIGN,
-                    modal_rates_raw(later),
-                    rates_source_body=MODAL_RATES_SOURCE_BODY,
+                    "serving",
+                    pricing_observation_raw=baseten_pricing_observation_raw(later),
+                    pricing_source_body=BASETEN_PRICING_SOURCE_BODY,
                     now=lambda: later,
                 ),
                 "updated",
             )
-            refreshed_modal = CampaignBudget(
+            refreshed_serving = CampaignBudget(
                 store,
                 CAMPAIGN,
-                MODAL_IDENTITY,
+                BASETEN_SERVING_IDENTITY,
                 now=lambda: later,
             )
-            refreshed_modal.initialize()
+            refreshed_serving.initialize()
             self.assertEqual(
-                refreshed_modal.reserve("b" * 64, 1, preparation_sha256)[
+                refreshed_serving.reserve("b" * 64, 1, preparation_sha256)[
                     "provider_identity"
                 ],
-                MODAL_IDENTITY,
+                BASETEN_SERVING_IDENTITY,
             )
 
     def test_v4_keys_roles_and_price_provenance_are_exact(self):
@@ -1035,33 +865,6 @@ class CampaignBudgetTests(unittest.TestCase):
                     baseten_serving_provider_identity("another-team"),
                     now=lambda: NOW,
                 ).initialize()
-            for identity in (
-                modal_provider_identity(
-                    "wrong_workspace",
-                    MODAL_ENVIRONMENT,
-                    MODAL_APP,
-                ),
-                modal_provider_identity(
-                    MODAL_WORKSPACE,
-                    "wrong_environment",
-                    MODAL_APP,
-                ),
-                modal_provider_identity(
-                    MODAL_WORKSPACE,
-                    MODAL_ENVIRONMENT,
-                    "wrong_app",
-                ),
-            ):
-                with self.assertRaisesRegex(
-                    ValueError,
-                    "differs from campaign authority",
-                ):
-                    CampaignBudget(
-                        store,
-                        CAMPAIGN,
-                        identity,
-                        now=lambda: NOW,
-                    ).initialize()
 
     def test_stale_future_and_invalid_authority_are_rejected(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1080,15 +883,10 @@ class CampaignBudgetTests(unittest.TestCase):
                     CAMPAIGN,
                     PROJECT,
                     "-invalid",
-                    MODAL_WORKSPACE,
-                    MODAL_ENVIRONMENT,
-                    MODAL_APP,
                     baseten_pricing_observation_raw=(
                         baseten_pricing_observation_raw()
                     ),
                     baseten_pricing_source_body=BASETEN_PRICING_SOURCE_BODY,
-                    modal_rates_receipt_raw=modal_rates_raw(),
-                    modal_rates_source_body=MODAL_RATES_SOURCE_BODY,
                     now=lambda: NOW,
                 )
             self.assertEqual(store.list("authority/v1"), [])
@@ -1230,11 +1028,11 @@ class CampaignBudgetTests(unittest.TestCase):
             self.assertEqual(status["reserved_microusd"], 600_000_000)
             self.assertEqual(len(status["open"]), 1)
 
-    def test_training_serving_and_modal_share_one_concurrent_cutoff(self):
+    def test_training_and_serving_share_one_concurrent_cutoff(self):
         with tempfile.TemporaryDirectory() as root:
             store = LocalEvidenceStore(root)
             self.authorize(store)
-            baseten = CampaignBudget(
+            training = CampaignBudget(
                 store,
                 CAMPAIGN,
                 BASETEN_IDENTITY,
@@ -1246,19 +1044,11 @@ class CampaignBudgetTests(unittest.TestCase):
                 BASETEN_SERVING_IDENTITY,
                 now=lambda: NOW,
             )
-            modal = CampaignBudget(
-                store,
-                CAMPAIGN,
-                MODAL_IDENTITY,
-                now=lambda: NOW,
-            )
-            baseten.initialize()
+            training.initialize()
             serving.initialize()
-            modal.initialize()
             budgets = (
-                (baseten, "a" * 64),
+                (training, "a" * 64),
                 (serving, "b" * 64),
-                (modal, "c" * 64),
             )
             preparations = {}
             for budget, run_id in budgets:
@@ -1270,7 +1060,7 @@ class CampaignBudgetTests(unittest.TestCase):
                     PREPARATION_DEADLINE,
                     PROVIDER_DEADLINE,
                 )
-            barrier = threading.Barrier(4)
+            barrier = threading.Barrier(3)
             results = []
             failures = []
 
@@ -1280,7 +1070,7 @@ class CampaignBudgetTests(unittest.TestCase):
                     results.append(
                         budget.reserve(
                             run_id,
-                            400_000_000,
+                            500_000_000,
                             preparations[run_id],
                         )
                     )
@@ -1299,9 +1089,43 @@ class CampaignBudgetTests(unittest.TestCase):
             self.assertEqual(failures, [])
             self.assertEqual(
                 sorted(result["state"] for result in results),
-                ["blocked", "reserved", "reserved"],
+                ["blocked", "reserved"],
             )
-            self.assertEqual(baseten.status()["reserved_microusd"], 800_000_000)
+            self.assertEqual(training.status()["reserved_microusd"], 500_000_000)
+
+    def test_exact_mechanics_reservation_uses_one_shared_head(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = LocalEvidenceStore(root)
+            self.authorize(store)
+            training = CampaignBudget(
+                store,
+                CAMPAIGN,
+                BASETEN_IDENTITY,
+                now=lambda: NOW,
+            )
+            serving = CampaignBudget(
+                store,
+                CAMPAIGN,
+                BASETEN_SERVING_IDENTITY,
+                now=lambda: NOW,
+            )
+            training.initialize()
+            serving.initialize()
+            for budget, run_id, amount_microusd in (
+                (training, "1" * 64, 120_000_000),
+                (training, "2" * 64, 3_750_000),
+                (training, "3" * 64, 11_250_000),
+                (serving, "4" * 64, 7_500_000),
+            ):
+                self.assertEqual(
+                    reserve(budget, run_id, amount_microusd)["state"],
+                    "reserved",
+                )
+            self.assertEqual(
+                training.status()["reserved_microusd"],
+                142_500_000,
+            )
+            self.assertEqual(serving.status(), training.status())
 
     def test_reservation_receipt_is_stable_after_another_head_revision(self):
         with tempfile.TemporaryDirectory() as root:

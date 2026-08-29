@@ -21,6 +21,13 @@ assert_absent() {
   [ "$grep_status" -eq 1 ]
 }
 
+assert_docker_config_cleaned() {
+  docker_config_path=$(sed -n \
+    's/^docker|--config|\([^|]*\)|.*/\1/p' "$test_root/commands.log" | sed -n '1p')
+  [ -n "$docker_config_path" ]
+  [ ! -e "$docker_config_path" ]
+}
+
 python3 - "$root" <<'PY'
 import ast
 import re
@@ -31,9 +38,9 @@ root = Path(sys.argv[1])
 dockerfile = root.joinpath("Dockerfile.jobs").read_text(encoding="utf-8")
 context = root.joinpath("Dockerfile.jobs.dockerignore").read_text(encoding="utf-8")
 lock = root.joinpath(
-    "third_party/modal/requirements-linux-amd64-cp312.lock"
+    "third_party/truss/requirements-linux-amd64-cp312.lock"
 ).read_text(encoding="utf-8")
-notices = root.joinpath("third_party/modal/THIRD_PARTY_NOTICES.md").read_text(
+notices = root.joinpath("third_party/truss/THIRD_PARTY_NOTICES.md").read_text(
     encoding="utf-8"
 )
 
@@ -48,26 +55,25 @@ for line in lock.splitlines():
     name, version, digest = match.groups()
     assert name not in requirements
     requirements[name] = (version, digest)
-assert len(requirements) == 29
+assert len(requirements) == 76
 assert list(requirements) == sorted(requirements)
-assert requirements["modal"] == (
-    "1.5.4",
-    "3e54e26037c445af42f9a9ef9862b66bdd2e0b1faeced5fcc7adf3e5f59e44ed",
+assert requirements["truss"] == (
+    "0.18.25",
+    "386ec68ecb5bcb1c582d26765cc47c34192ef092ffd1934224ed308c063b8b5a",
 )
-assert requirements["rich"][0] == "15.0.0"
-assert requirements["watchfiles"][0] == "1.2.0"
+assert requirements["truss-transfer"][0] == "0.0.43"
+assert requirements["watchfiles"][0] == "0.19.0"
 assert not {
     "aiohttp-socks",
     "async-timeout",
     "backports-tarfile",
     "exceptiongroup",
     "importlib-metadata",
+    "modal",
     "python-socks",
-    "truss",
-    "truss-transfer",
     "zipp",
 } & requirements.keys()
-assert "Public PyPI wheels only: 29 files, 7,020,953 bytes" in lock
+assert "Public PyPI wheels only: 76 files, 56,207,642 bytes" in lock
 assert "--require-hashes --requirement requirements-linux-amd64-cp312.lock" in lock
 
 assert "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7" in dockerfile
@@ -81,13 +87,17 @@ for required in (
     "JOBS-PYTHON-THIRD-PARTY-NOTICES.md",
     "milk_harness/provider_acceptance.py",
     "milk_harness/baseten_winner.py",
-    "milk_harness/modal_jobs.py",
     "milk_harness/scheduler.py",
     "deploy/baseten/winner.py",
     "deploy/baseten/adapter.py",
-    "deploy/modal/admit.py",
-    "import modal",
-    'version("modal") == "1.5.4"',
+    "deploy/winner_admission.py",
+    'version("truss") == "0.18.25"',
+    "/usr/local/bin/truss --version",
+    "truss-direct-image-runtime-v1",
+    "/usr/local/bin/truss --non-interactive push --help",
+    "--disable-truss-download",
+    "COLUMNS=240 TRUSS_NO_UPDATE_CHECK=true",
+    "chmod 0555 ./milk_harness ./deploy ./deploy/baseten",
 ):
     assert required in dockerfile, required
 for forbidden in (
@@ -96,25 +106,30 @@ for forbidden in (
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
     "PIP_EXTRA_INDEX_URL",
-    "import modal, truss",
-    'version("truss")',
-    "/usr/local/bin/truss",
+    "import modal",
+    "milk_harness/modal_jobs.py",
+    "third_party/modal/",
+    "deploy/modal/admit.py",
 ):
     assert forbidden not in dockerfile
 
 for included in (
     "!milk_harness/provider_acceptance.py",
     "!milk_harness/baseten_winner.py",
-    "!milk_harness/modal_jobs.py",
     "!milk_harness/scheduler.py",
     "!deploy/baseten/winner.py",
     "!deploy/baseten/adapter.py",
-    "!deploy/modal/admit.py",
-    "!third_party/modal/requirements-linux-amd64-cp312.lock",
-    "!third_party/modal/THIRD_PARTY_NOTICES.md",
+    "!deploy/winner_admission.py",
+    "!third_party/truss/requirements-linux-amd64-cp312.lock",
+    "!third_party/truss/THIRD_PARTY_NOTICES.md",
 ):
     assert included in context
-assert "publish_image_admission" not in context
+for forbidden in (
+    "publish_image_admission",
+    "modal_jobs",
+    "deploy/modal",
+):
+    assert forbidden not in context
 
 copied_paths = set(
     re.findall(r"(?:milk_harness|deploy)/[a-z0-9_/]+\.py", dockerfile)
@@ -122,12 +137,11 @@ copied_paths = set(
 required_runtime_paths = {
     "milk_harness/provider_acceptance.py",
     "milk_harness/baseten_winner.py",
-    "milk_harness/modal_jobs.py",
     "milk_harness/scheduler.py",
     "milk_harness/jobs.py",
     "deploy/baseten/winner.py",
     "deploy/baseten/adapter.py",
-    "deploy/modal/admit.py",
+    "deploy/winner_admission.py",
 }
 assert required_runtime_paths <= copied_paths
 
@@ -169,13 +183,16 @@ assert all(
     and (re.search(r"`[0-9a-f]{64}`", evidence) or evidence.startswith("Metadata only;"))
     for _, license_name, evidence in notice_entries
 )
-assert "| rich 15.0.0 | MIT |" in notices
-assert "| watchfiles 1.2.0 | MIT |" in notices
-assert "| truss " not in notices
+assert "| truss 0.18.25 | MIT |" in notices
+assert "| truss-transfer 0.0.43 | MIT |" in notices
+assert "| modal " not in notices
 PY
 
 mkdir "$test_root/bin"
 mkdir -p "$test_root/home/.docker/cli-plugins"
+github_token_file=$test_root/github-token
+printf '%s\n' 'ephemeral-test-password' >"$github_token_file"
+chmod 0400 "$github_token_file"
 cat >"$test_root/home/.docker/cli-plugins/docker-buildx" <<'EOF'
 #!/bin/sh
 exit 0
@@ -417,30 +434,6 @@ case "$*" in
 esac
 EOF
 
-cat >"$test_root/bin/gh" <<'EOF'
-#!/bin/sh
-set -eu
-command_log=gh
-for argument do command_log=$command_log'|'$argument; done
-printf '%s\n' "$command_log" >>"$TEST_COMMAND_LOG"
-case "$*" in
-  'auth token --hostname github.com') printf '%s\n' 'ephemeral-test-password' ;;
-  *'/orgs/milkinfrastructure/packages?package_type=container&per_page=100'*)
-    printf 'milk-gateway\tprivate\n'
-    if [ "${TEST_PUBLIC_PACKAGE:-0}" -eq 0 ]; then
-      printf 'milk-student-train\tprivate\n'
-    else
-      printf 'milk-student-train\tpublic\n'
-    fi
-    printf 'milk-student-branch\tprivate\n'
-    printf 'milk-teacher-gpt-oss\tprivate\n'
-    printf 'milk-jobs\tprivate\n'
-    ;;
-  *'/orgs/milkinfrastructure/packages/container/'*) printf '%s\n' 'private' ;;
-  *) exit 91 ;;
-esac
-EOF
-
 cat >"$test_root/bin/docker" <<'EOF'
 #!/bin/sh
 set -eu
@@ -451,16 +444,30 @@ if [ "${1:-}" = --config ]; then
   config=$2
   [ -x "$config/cli-plugins/docker-buildx" ]
   [ "$(readlink "$config/cli-plugins/docker-buildx")" = "$HOME/.docker/cli-plugins/docker-buildx" ]
+  "$TEST_REAL_PYTHON" - "$config/config.json" <<'PY'
+import base64
+import json
+import stat
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+expected = (json.dumps(
+    {"auths": {"ghcr.io": {"auth": base64.b64encode(
+        b"ShantanuJoshi:ephemeral-test-password"
+    ).decode("ascii")}}},
+    sort_keys=True,
+    separators=(",", ":"),
+) + "\n").encode("ascii")
+assert path.read_bytes() == expected
+assert stat.S_IMODE(path.stat().st_mode) == 0o600
+PY
   shift 2
 fi
 case "${1:-} ${2:-}" in
   'context show') printf '%s\n' 'desktop-linux' ;;
   'context inspect') printf '%s\n' 'unix:///tmp/docker.sock' ;;
   'buildx version') printf '%s\n' 'github.com/docker/buildx v0.25.0' ;;
-  'login ghcr.io')
-    read -r password
-    [ "$password" = ephemeral-test-password ]
-    ;;
   'buildx create') printf '%s\n' 'test-builder' ;;
   'buildx inspect')
     printf '%s\n' \
@@ -472,9 +479,16 @@ case "${1:-} ${2:-}" in
   'buildx build')
     metadata=
     tag=
+    cache_export=
     while [ "$#" -gt 0 ]; do
       if [ "$1" = --metadata-file ]; then metadata=$2; shift 2; continue; fi
       if [ "$1" = --tag ]; then tag=$2; shift 2; continue; fi
+      if [ "$1" = --cache-to ]; then
+        cache_export=${2#type=local,dest=}
+        cache_export=${cache_export%,mode=max}
+        shift 2
+        continue
+      fi
       shift
     done
     if [ "${TEST_FAIL_BUILD:-0}" -eq 1 ]; then
@@ -485,6 +499,10 @@ case "${1:-} ${2:-}" in
     [ -n "$tag" ]
     printf '{"containerimage.digest":"sha256:%s","image.name":"%s"}\n' \
       "$TEST_INDEX_DIGEST" "$tag" >"$metadata"
+    if [ -n "$cache_export" ]; then
+      mkdir -p "$cache_export"
+      printf '%s\n' '{"cache":"updated"}' >"$cache_export/index.json"
+    fi
     printf '%s\n' 'contentful fake build output'
     ;;
   'buildx imagetools')
@@ -504,6 +522,22 @@ EOF
 cat >"$test_root/bin/python3" <<'EOF'
 #!/bin/sh
 set -eu
+if [ "${1:-} ${2:-}" = "$TEST_REPO/deploy/github_rest.py packages" ]; then
+  token_file=$3
+  IFS= read -r token <"$token_file"
+  [ "$token" = ephemeral-test-password ]
+  printf '%s\n' 'github-rest|list-container-packages' >>"$TEST_COMMAND_LOG"
+  printf 'milk-gateway\tprivate\n'
+  if [ "${TEST_PUBLIC_PACKAGE:-0}" -eq 0 ]; then
+    printf 'milk-student-train\tprivate\n'
+  else
+    printf 'milk-student-train\tpublic\n'
+  fi
+  printf 'milk-student-branch\tprivate\n'
+  printf 'milk-teacher-gpt-oss\tprivate\n'
+  printf 'milk-jobs\tprivate\n'
+  exit 0
+fi
 if [ "${1:-}" = "$TEST_REPO/deploy/verify-private-image.py" ]; then
   shift
   exec "$TEST_REAL_PYTHON" "$TEST_FAKE_VERIFIER" "$@"
@@ -511,12 +545,13 @@ fi
 exec "$TEST_REAL_PYTHON" "$@"
 EOF
 chmod 0700 \
-  "$test_root/bin/git" "$test_root/bin/gh" "$test_root/bin/docker" \
+  "$test_root/bin/git" "$test_root/bin/docker" \
   "$test_root/bin/python3"
 
 test_env() {
   env -i \
     HOME="$test_root/home" \
+    MILK_GITHUB_TOKEN_FILE="$github_token_file" \
     PATH="$test_root/bin:$PATH" \
     TEST_REPO="$root" \
     TEST_REAL_PYTHON="$(command -v python3)" \
@@ -542,6 +577,7 @@ run_builder "$gateway" "$output" >"$test_root/stdout"
 
 [ -s "$output/input.json" ]
 [ -s "$output/builder.json" ]
+[ -s "$output/cache.json" ]
 [ -s "$output/release.json" ]
 [ ! -e "$output/failure.json" ]
 for artifact in student-train student-branch teacher-gpt-oss jobs; do
@@ -559,11 +595,13 @@ for artifact in student-train student-branch teacher-gpt-oss jobs; do
 done
 [ -z "$(find "$output" -type f -name '*.log' -print)" ]
 assert_absent -R -Fq 'ephemeral-test-password' "$output" "$test_root/commands.log"
+assert_absent -Fq '|login|ghcr.io' "$test_root/commands.log"
+assert_docker_config_cleaned
 
 [ "$(grep -c '^docker|.*buildx|build|' "$test_root/commands.log")" -eq 4 ]
 [ "$(grep -c '^docker|.*buildx|imagetools|inspect|--raw|' "$test_root/commands.log")" -eq 12 ]
 [ "$(grep -c '^verifier|' "$test_root/commands.log")" -eq 4 ]
-[ "$(grep -c '^gh|auth|token|--hostname|github.com$' "$test_root/commands.log")" -eq 5 ]
+[ "$(grep -c '^github-rest|list-container-packages$' "$test_root/commands.log")" -eq 1 ]
 build_order=$(grep '^docker|.*buildx|build|' "$test_root/commands.log" | \
   sed -n 's/.*|--tag|ghcr.io\/milkinfrastructure\/milk-\([^:|]*\):source-[^|]*|.*/\1/p')
 [ "$build_order" = "$(printf '%s\n' jobs student-train student-branch teacher-gpt-oss)" ]
@@ -630,6 +668,11 @@ expected_attestations = [
 input_receipt = json.loads(root.joinpath("input.json").read_bytes())
 assert input_receipt["source_context_method"] == "git-archive-tar-v1"
 assert input_receipt["source_context_sha256"] == context_sha256
+assert json.loads(root.joinpath("cache.json").read_bytes()) == {
+    "schema_version": "milk.local-buildkit-cache.v1",
+    "method": "disabled",
+    "imported": False,
+}
 release_by_artifact = {item["artifact"]: item for item in release["images"]}
 for artifact in ("student-train", "student-branch", "teacher-gpt-oss", "jobs"):
     receipt = json.loads(root.joinpath(artifact, "receipt.json").read_bytes())
@@ -732,6 +775,37 @@ for artifact in ("student-train", "student-branch", "teacher-gpt-oss", "jobs"):
     assert left == right
 PY
 
+rm -f -- "$test_root/commands.log"
+cache_parent=$test_root/cache-root
+mkdir -m 0700 "$cache_parent"
+cache=$cache_parent/buildkit
+mkdir -m 0700 "$cache"
+cache=$(CDPATH='' cd -- "$cache" && pwd -P)
+printf '%s\n' '{"secret":"cache-content"}' >"$cache/index.json"
+cached=$test_root/evidence-cached
+run_builder --cache-dir "$cache" "$gateway" "$cached" \
+  >"$test_root/cache-stdout" 2>"$test_root/cache-stderr"
+[ "$(grep -c '^docker|.*buildx|build|' "$test_root/commands.log")" -eq 4 ]
+[ "$(grep -o -- "--cache-from|type=local,src=$cache" "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
+[ "$(grep -o -- '--cache-to|type=local,dest=[^|]*,mode=max' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
+[ "$(grep -o -- '--platform|linux/amd64' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
+[ "$(cat "$cache/index.json")" = '{"cache":"updated"}' ]
+python3 - "$cached/cache.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+assert json.loads(Path(sys.argv[1]).read_bytes()) == {
+    "schema_version": "milk.local-buildkit-cache.v1",
+    "method": "buildkit-local",
+    "imported": True,
+}
+PY
+assert_absent -R -Fq "$cache" \
+  "$cached" "$test_root/cache-stdout" "$test_root/cache-stderr"
+assert_absent -R -Fq 'cache-content' \
+  "$cached" "$test_root/cache-stdout" "$test_root/cache-stderr"
+
 seed=$test_root/verified-v5
 PYTHONPATH=$root python3 - "$seed" <<'PY'
 import hashlib
@@ -773,9 +847,12 @@ PY
 
 rm -f -- "$test_root/commands.log"
 selective=$test_root/evidence-selective
-run_builder --reuse-release-dir "$seed" "$gateway" "$selective" \
+run_builder --reuse-release-dir "$seed" --cache-dir "$cache" \
+  "$gateway" "$selective" \
   >"$test_root/selective-stdout"
 [ "$(grep -c '^docker|.*buildx|build|' "$test_root/commands.log")" -eq 1 ]
+[ "$(grep -o -- "--cache-from|type=local,src=$cache" "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 1 ]
+[ "$(grep -o -- '--cache-to|type=local,dest=[^|]*,mode=max' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 1 ]
 [ "$(grep -c '^docker|.*buildx|imagetools|inspect|--raw|' "$test_root/commands.log")" -eq 3 ]
 [ "$(grep -c '^verifier|' "$test_root/commands.log")" -eq 1 ]
 grep -Fq -- "--tag|ghcr.io/milkinfrastructure/milk-jobs:source-$revision" \
@@ -785,6 +862,7 @@ if grep '^docker|.*buildx|build|' "$test_root/commands.log" | \
   exit 1
 fi
 [ ! -e "$selective/planner" ]
+assert_absent -R -Fq "$cache" "$selective" "$test_root/selective-stdout"
 for artifact in student-train student-branch teacher-gpt-oss; do
   cmp "$seed/evidence/harness/$artifact/admission.json" \
     "$selective/$artifact/admission.json"
@@ -876,6 +954,44 @@ assert_rejected unpublished test_env "TEST_REMOTE_REVISION=$(printf '%040d' 9)" 
 mkdir "$test_root/existing"
 assert_rejected existing test_env \
   "$builder" "$gateway" "$test_root/existing"
+assert_rejected relative-cache test_env \
+  "$builder" --cache-dir relative-cache "$gateway" \
+  "$test_root/rejected-relative-cache"
+public_cache_parent=$test_root/public-cache-parent
+mkdir -m 0755 "$public_cache_parent"
+assert_rejected public-cache-parent test_env \
+  "$builder" --cache-dir "$public_cache_parent/cache" "$gateway" \
+  "$test_root/rejected-public-cache-parent"
+assert_rejected relative-token-file test_env MILK_GITHUB_TOKEN_FILE=relative-token \
+  "$builder" "$gateway" "$test_root/rejected-relative-token-file"
+
+assert_credential_rejected() {
+  name=$1
+  token_path=$2
+  rm -f -- "$test_root/commands.log"
+  set +e
+  test_env MILK_GITHUB_TOKEN_FILE="$token_path" \
+    "$builder" "$gateway" "$test_root/rejected-$name" >/dev/null 2>&1
+  status=$?
+  set -e
+  [ "$status" -eq 77 ]
+  [ ! -e "$test_root/commands.log" ]
+  [ ! -e "$test_root/rejected-$name" ]
+}
+
+bad_mode_token=$test_root/bad-mode-token
+printf '%s\n' 'ephemeral-test-password' >"$bad_mode_token"
+chmod 0644 "$bad_mode_token"
+assert_credential_rejected bad-token-mode "$bad_mode_token"
+token_symlink=$test_root/token-symlink
+ln -s "$github_token_file" "$token_symlink"
+assert_credential_rejected token-symlink "$token_symlink"
+multiline_token=$test_root/multiline-token
+printf 'one\ntwo\n' >"$multiline_token"
+chmod 0400 "$multiline_token"
+assert_credential_rejected multiline-token "$multiline_token"
+assert_credential_rejected missing-token "$test_root/missing-token"
+
 assert_rejected registry-credential test_env GH_TOKEN=secret \
   "$builder" "$gateway" "$test_root/rejected-registry-credential"
 assert_rejected provider-credential test_env BASETEN_API_KEY=secret \
@@ -952,6 +1068,7 @@ assert failure["stage"] == "verify-jobs"
 PY
 assert_absent -R -Fq 'ephemeral-test-password' \
   "$test_root/verify-failure" "$test_root/commands.log"
+assert_docker_config_cleaned
 
 for dockerfile in \
   "$root/deploy/student-train/Dockerfile" \
@@ -966,24 +1083,35 @@ assert_absent -Eq '^(ADD|RUN)[[:space:]]' "$teacher_dockerfile"
 [ "$(grep -c '^COPY .*--link' "$teacher_dockerfile")" -eq \
   "$(grep -c '^COPY ' "$teacher_dockerfile")" ]
 grep -Fq -- '--sbom=true' "$builder"
+assert_absent -Fq 'command -v gh' "$builder"
+assert_absent -Fq "\"\$gh\"" "$builder"
+assert_absent -Fq ' login ghcr.io' "$builder"
+assert_absent -Fq 'password-stdin' "$builder"
+grep -Fq 'MILK_GITHUB_TOKEN_FILE' "$builder"
+grep -Fq 'deploy/github_rest.py' "$builder"
 grep -Fxq 'USER 65532:65532' "$root/Dockerfile.jobs"
-grep -Fq 'import modal' "$root/Dockerfile.jobs"
-assert_absent -Fq 'truss' "$root/Dockerfile.jobs"
+assert_absent -Fq 'import modal' "$root/Dockerfile.jobs"
+assert_absent -Fq 'milk_harness/modal_jobs.py' "$root/Dockerfile.jobs"
+grep -Fq '/usr/local/bin/truss --version' "$root/Dockerfile.jobs"
+grep -Fq 'truss-direct-image-runtime-v1' "$root/Dockerfile.jobs"
 grep -Fq 'milk_harness/image_admission.py' "$root/Dockerfile.jobs"
 grep -Fq 'milk_harness/provider_acceptance.py' "$root/Dockerfile.jobs"
 grep -Fq 'deploy/baseten/winner.py' "$root/Dockerfile.jobs"
-grep -Fq 'deploy/modal/admit.py' "$root/Dockerfile.jobs"
+grep -Fq 'deploy/winner_admission.py' "$root/Dockerfile.jobs"
 assert_absent -Fq 'publish_image_admission.py' "$root/Dockerfile.jobs"
 assert_absent -Eq 'MILK_GATEWAY_IMAGE|dragontales-gateway|--from=gateway|/usr/share/licenses/dragontales|gpt-oss-120b/profile' \
   "$root/Dockerfile.jobs"
 grep -Fxq '**' "$root/Dockerfile.jobs.dockerignore"
 grep -Fxq '!milk_harness/image_admission.py' "$root/Dockerfile.jobs.dockerignore"
+grep -Fxq '!deploy/winner_admission.py' "$root/Dockerfile.jobs.dockerignore"
+assert_absent -Fiq 'modal' "$root/Dockerfile.jobs.dockerignore"
 assert_absent -Fq '!milk_harness/publish_image_admission.py' "$root/Dockerfile.jobs.dockerignore"
 assert_absent -Fq '!deploy/teacher/' "$root/Dockerfile.jobs.dockerignore"
 
 sh -n "$builder" "$0"
 python3 -m py_compile "$root/deploy/verify-private-image.py"
 python3 -m unittest "$root/deploy/test_verify_private_image.py"
+python3 -m unittest "$root/deploy/test_github_rest.py"
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -s sh "$builder" "$0"
 fi

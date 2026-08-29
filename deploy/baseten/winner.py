@@ -18,7 +18,7 @@ from . import adapter as shared
 from milk_harness import provider_acceptance
 
 
-ADMISSION_PATH = Path(__file__).resolve().parents[1] / "modal/admit.py"
+ADMISSION_PATH = Path(__file__).resolve().parents[1] / "winner_admission.py"
 SERVING_AUTOSCALING = {
     "min_replica": 0,
     "max_replica": 1,
@@ -29,12 +29,33 @@ SERVING_AUTOSCALING = {
 }
 MAX_RESPONSE_BYTES = 1024 * 1024
 TRUSS_VERSION = "0.18.25"
+TRUSS_EXECUTABLE = "/usr/local/bin/truss"
+TRUSS_VERSION_ARGV = (TRUSS_EXECUTABLE, "--version")
 TRUSS_VERSION_OUTPUT = f"truss, version {TRUSS_VERSION}\n".encode()
-DIRECT_IMAGE_RUNTIME_VERIFIED = False
-DIRECT_IMAGE_RUNTIME_BLOCKER = (
-    "Baseten winner is disabled until no-build is provider-enabled and an "
-    "admitted non-root image can start from a pre-materialized winner without "
-    "receiving control-store secrets"
+TRUSS_RUNTIME_PROBE_OUTPUT = b"truss-direct-image-runtime-v1\n"
+TRUSS_RUNTIME_PROBE_ARGV = (
+    "/usr/local/bin/python3",
+    "-I",
+    "-c",
+    "from importlib.metadata import version; "
+    "from truss.base.truss_config import DockerServer; "
+    f'assert version("truss") == "{TRUSS_VERSION}"; '
+    "value = DockerServer.model_validate({"
+    '"no_build": True, "server_port": 8000, '
+    '"predict_endpoint": "/v1/chat/completions", '
+    '"readiness_endpoint": "/health", "liveness_endpoint": "/health"}); '
+    "assert value.no_build is True and value.start_command is None; "
+    'print("truss-direct-image-runtime-v1")',
+)
+TRUSS_PUSH_HELP_ARGV = (TRUSS_EXECUTABLE, "--non-interactive", "push", "--help")
+TRUSS_PUSH_REQUIRED_OPTIONS = (
+    "--publish",
+    "--disable-truss-download",
+    "--deployment-name",
+    "--wait",
+    "--team",
+    "--labels",
+    "--output",
 )
 MATERIALIZATION_SCHEMA = "dragontales.student-winner-materialization-receipt.v1"
 PROBE_SCHEMA = "dragontales.winner-admission-probe.v1"
@@ -355,7 +376,7 @@ def push_argv(truss_dir, run_id, claim_sha256, team_name):
     if not _matches(provider_acceptance.TEAM_NAME, team_name):
         raise ValueError("Baseten team name is invalid")
     return [
-        "/usr/local/bin/truss",
+        TRUSS_EXECUTABLE,
         "--non-interactive",
         "push",
         truss_dir,
@@ -607,7 +628,9 @@ def result_bytes(result):
             raise ValueError("winner deployment scope is invalid")
     admission = result.get("admission")
     receipt_bytes(admission)
-    acceptance = provider_acceptance.validate(result.get("provider_acceptance"))
+    acceptance = provider_acceptance.validate_baseten(
+        result.get("provider_acceptance")
+    )
     if scope["eval_id"] != acceptance["campaign_id"]:
         raise ValueError("winner deployment eval differs from its campaign")
     ordered = {key: result[key] for key in RESULT_KEY_ORDER}

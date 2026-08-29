@@ -64,8 +64,8 @@ def gateway_line(value, *, newline=False):
 
 def gateway_claim():
     authority = {
-        "schema_version": "dragontales.winner-deployment-authority.v2",
-        "provider_policy": {"primary": "baseten", "fallback": "modal"},
+        "schema_version": "dragontales.winner-deployment-authority.v3",
+        "provider_policy": {"only": "baseten"},
         "provider_terms_sha256": "5" * 64,
         "student_branch_runtime_image_reference": IMAGE,
         "admission_program_sha256": hashlib.sha256(
@@ -120,7 +120,7 @@ def gateway_claim():
         ),
         "deployment_claim_sha256": hashlib.sha256(claim_raw).hexdigest(),
         "provider_binding_sha256": CLAIM_BINDING,
-        "provider_policy": {"primary": "baseten", "fallback": "modal"},
+        "provider_policy": {"only": "baseten"},
         "student_branch_runtime_image_reference": IMAGE,
         "max_wall_seconds": 1800,
         "max_cost_microusd": 10_000_000,
@@ -232,6 +232,22 @@ class RuntimeOpener:
             raise AssertionError("unexpected Baseten request")
         response = self.responses.pop(0)
         return response if isinstance(response, RuntimeResponse) else RuntimeResponse(response)
+
+
+def capable_truss_result(argv):
+    if tuple(argv) == contract.TRUSS_VERSION_ARGV:
+        stdout = contract.TRUSS_VERSION_OUTPUT
+    elif tuple(argv) == contract.TRUSS_RUNTIME_PROBE_ARGV:
+        stdout = contract.TRUSS_RUNTIME_PROBE_OUTPUT
+    elif tuple(argv) == contract.TRUSS_PUSH_HELP_ARGV:
+        stdout = ("\n".join(contract.TRUSS_PUSH_REQUIRED_OPTIONS) + "\n").encode()
+    else:
+        raise AssertionError(f"unexpected Truss capability command: {argv!r}")
+    return mock.Mock(returncode=0, stdout=stdout, stderr=b"")
+
+
+def capable_truss_runner(argv, **unused_kwargs):
+    return capable_truss_result(argv)
 
 
 class FailCreateResultStore(LocalEvidenceStore):
@@ -704,7 +720,7 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
         self.assertEqual(hashlib.sha256(raw).hexdigest(), acceptance_sha256(self.acceptance))
         self.assertEqual(
             hashlib.sha256(raw).hexdigest(),
-            "23cafa67018ce703b6f666b3c746fc8f6c0a1a10013616d161d9c4e6cba79ad2",
+            "294826abe3d05ac510fe263b8530e257ed929a9f1ca9d1654e84523ea2e8ed5d",
         )
         self.assertEqual(
             self.acceptance["provider_pass_claim_sha256"],
@@ -717,6 +733,38 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
         tampered["create_authorization_sha256"] = None
         with self.assertRaises(ValueError):
             acceptance_bytes(tampered)
+
+    def test_prior_or_fallback_winner_authority_is_rejected(self):
+        for label, mutation in (
+            (
+                "v2",
+                lambda authority: authority.__setitem__(
+                    "schema_version",
+                    "dragontales.winner-deployment-authority.v2",
+                ),
+            ),
+            (
+                "fallback",
+                lambda authority: authority.__setitem__(
+                    "provider_policy",
+                    {"primary": "baseten", "fallback": "modal"},
+                ),
+            ),
+        ):
+            claim = json.loads(self.claim_raw)
+            mutation(claim["authority"])
+            with (
+                self.subTest(label=label),
+                self.assertRaisesRegex(ValueError, "winner deployment authority"),
+            ):
+                baseten_winner.winner_run_id(
+                    campaign_id=CAMPAIGN,
+                    launch_raw=self.launch_raw,
+                    claim_raw=gateway_line(claim),
+                    outbox_sha256=OUTBOX,
+                    image_release_sha256=IMAGE_RELEASE,
+                    image_admission_sha256=IMAGE_ADMISSION,
+                )
 
     def test_create_authority_rejects_another_eval_namespace(self):
         with self.assertRaisesRegex(ValueError, "create authority"):
@@ -768,6 +816,7 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
             api_key="manageprefix-secret",
             team_name=TEAM,
             opener=opener,
+            runner=capable_truss_runner,
         )
         guards = []
         lifecycle = baseten_winner.BasetenWinnerLifecycle(
@@ -779,8 +828,7 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
             now=self.clock,
         )
 
-        with mock.patch.object(contract, "DIRECT_IMAGE_RUNTIME_VERIFIED", True):
-            preflight = lifecycle.preflight()
+        preflight = lifecycle.preflight()
 
         self.assertEqual(preflight["team_id"], "team_1")
         self.assertEqual(preflight["team_name"], TEAM)
@@ -829,16 +877,12 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
                         api_key="manageprefix-secret",
                         team_name=TEAM,
                         opener=opener,
+                        runner=capable_truss_runner,
                     ),
                     now=self.clock,
                 )
 
-                with mock.patch.object(
-                    contract,
-                    "DIRECT_IMAGE_RUNTIME_VERIFIED",
-                    True,
-                ):
-                    result = lifecycle.preflight()
+                result = lifecycle.preflight()
 
                 self.assertEqual(
                     tuple(result),
@@ -867,12 +911,12 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
                 api_key="manageprefix-secret",
                 team_name=TEAM,
                 opener=RuntimeOpener([RuntimeResponse(b"{}", status=401)]),
+                runner=capable_truss_runner,
             ),
             now=self.clock,
         )
-        with mock.patch.object(contract, "DIRECT_IMAGE_RUNTIME_VERIFIED", True):
-            with self.assertRaisesRegex(RuntimeError, "hard non-200"):
-                lifecycle.preflight()
+        with self.assertRaisesRegex(RuntimeError, "hard non-200"):
+            lifecycle.preflight()
 
     def test_preflight_reports_capability_unavailable_without_provider_calls(self):
         opener = RuntimeOpener([])
@@ -886,6 +930,11 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
                 api_key="manageprefix-secret",
                 team_name=TEAM,
                 opener=opener,
+                runner=lambda unused_argv, **unused_kwargs: mock.Mock(
+                    returncode=0,
+                    stdout=b"wrong Truss version\n",
+                    stderr=b"",
+                ),
             ),
             now=self.clock,
         )
@@ -915,12 +964,12 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
 
         def runner(argv, **kwargs):
             calls.append((argv, kwargs))
-            if argv[-1] == "--version":
-                return mock.Mock(
-                    returncode=0,
-                    stdout=contract.TRUSS_VERSION_OUTPUT,
-                    stderr=b"",
-                )
+            if tuple(argv) in {
+                contract.TRUSS_VERSION_ARGV,
+                contract.TRUSS_RUNTIME_PROBE_ARGV,
+                contract.TRUSS_PUSH_HELP_ARGV,
+            }:
+                return capable_truss_result(argv)
             self.assertEqual(argv[argv.index("--team") + 1], TEAM)
             self.assertIn(
                 f"model_name: {contract.model_name(self.run_id)}",
@@ -942,26 +991,39 @@ class BasetenWinnerLifecycleTest(unittest.TestCase):
             TEAM,
         )
 
-        with mock.patch.object(contract, "DIRECT_IMAGE_RUNTIME_VERIFIED", True):
-            self.assertEqual(runtime._push_truss(TEAM, truss, argv), output)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[1][1]["timeout"], 600)
-        self.assertNotIn("shell", calls[1][1])
+        self.assertEqual(runtime._push_truss(TEAM, truss, argv), output)
+        self.assertEqual(len(calls), 4)
+        self.assertTrue(all(call[1]["env"]["COLUMNS"] == "240" for call in calls))
+        self.assertEqual(calls[3][1]["timeout"], 600)
+        self.assertNotIn("shell", calls[3][1])
         self.assertFalse(Path(f"/tmp/milk-winner/{self.run_id}").exists())
 
-    def test_concrete_runtime_never_runs_truss_while_direct_image_is_unsafe(self):
+    def test_concrete_runtime_never_pushes_without_exact_direct_image_capability(self):
         calls = []
+
+        def runner(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return mock.Mock(returncode=0, stdout=b"wrong\n", stderr=b"")
+
         runtime = baseten_winner.BasetenWinnerRuntime(
             api_key="manageprefix-secret",
             team_name=TEAM,
             opener=RuntimeOpener([]),
-            runner=lambda *args, **kwargs: calls.append((args, kwargs)),
+            runner=runner,
+        )
+        truss = contract.truss_config(self.values, self.run_id)
+        argv = contract.push_argv(
+            f"/tmp/milk-winner/{self.run_id}/truss",
+            self.run_id,
+            self.claim_sha,
+            TEAM,
         )
 
-        with self.assertRaisesRegex(RuntimeError, "no-build is provider-enabled"):
-            runtime._push_truss(TEAM, "invalid", [])
+        with self.assertRaisesRegex(RuntimeError, "capability is unavailable"):
+            runtime._push_truss(TEAM, truss, argv)
 
-        self.assertEqual(calls, [])
+        self.assertEqual([call[0] for call in calls], [list(contract.TRUSS_VERSION_ARGV)])
+        self.assertFalse(Path(f"/tmp/milk-winner/{self.run_id}").exists())
 
     def test_concrete_runtime_creates_and_revokes_only_the_exact_model_key(self):
         model = {

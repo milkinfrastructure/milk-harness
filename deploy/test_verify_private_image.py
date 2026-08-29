@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import sys
 import tempfile
 import unittest
 import urllib.parse
@@ -14,6 +15,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 VERIFY_PATH = ROOT / "deploy" / "verify-private-image.py"
+sys.path.insert(0, str(VERIFY_PATH.parent))
 SPEC = importlib.util.spec_from_file_location("verify_private_image", VERIFY_PATH)
 VERIFY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERIFY)
@@ -330,8 +332,6 @@ class VerifierFixture:
         }
 
         def command(*arguments):
-            if arguments[0] == "gh":
-                return (visibility + "\n").encode()
             return references[arguments[-1]]
 
         def blob(_bearer, package, digest):
@@ -344,9 +344,16 @@ class VerifierFixture:
 
         with mock.patch.object(VERIFY, "_run", side_effect=command), mock.patch.object(
             VERIFY, "_registry_bearer", return_value="bounded-bearer"
-        ) as bearer, mock.patch.object(VERIFY, "_registry_blob", side_effect=blob):
+        ) as bearer, mock.patch.object(
+            VERIFY, "_registry_blob", side_effect=blob
+        ), mock.patch.object(
+            VERIFY.github_rest, "package_visibility", return_value=visibility
+        ) as package_visibility:
             result = VERIFY.verify(self.args, "bounded-github-token")
         bearer.assert_called_once_with("bounded-github-token", self.package)
+        package_visibility.assert_called_once_with(
+            "bounded-github-token", self.package
+        )
         return result
 
 
@@ -683,13 +690,19 @@ class PrivateHarnessVerifierTests(unittest.TestCase):
                 )
                 self.assertEqual(pinned, VERIFY.ARTIFACTS[artifact]["base_sha256"])
 
-    def test_build_script_streams_registry_credentials_only_on_stdin(self):
+    def test_build_script_isolates_registry_credentials(self):
         script = ROOT.joinpath("deploy/build-images.sh").read_text(encoding="utf-8")
-        self.assertIn(
-            '"$gh" auth token --hostname github.com | "$python" "$@"', script
-        )
+        self.assertIn('"$python" "$@" <"$github_token_file"', script)
+        self.assertIn('"$docker_config/config.json"', script)
+        self.assertIn('{"auths": {"ghcr.io": {"auth": auth}}}', script)
+        self.assertIn('base64.b64encode(b"ShantanuJoshi:" + token)', script)
+        self.assertIn("os.fchmod(descriptor, 0o600)", script)
+        self.assertIn('rm -rf -- "$scratch"', script)
         self.assertIn('"$repo/deploy/verify-private-image.py"', script)
+        self.assertNotIn(" login ghcr.io", script)
+        self.assertNotIn("password-stdin", script)
         self.assertNotRegex(script, r"(?:token|password)=\$\(")
+        self.assertNotRegex(script, r"\bgh\b")
 
 
 if __name__ == "__main__":
