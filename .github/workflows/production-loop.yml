@@ -18,6 +18,10 @@ on:
         description: SHA-256 of the exact canonical outer eval document
         required: false
         type: string
+      managed_eval_id:
+        description: Stable eval ID that must match the active repository configuration
+        required: true
+        type: string
       managed_request_id:
         description: Host-generated correlation ID; never grants provider authority
         required: false
@@ -37,7 +41,8 @@ jobs:
     if: >-
       ${{ vars.MILK_EVAL_ID != '' &&
           (github.event_name == 'schedule' ||
-           github.event_name == 'workflow_dispatch') }}
+           (github.event_name == 'workflow_dispatch' &&
+            inputs.managed_eval_id == vars.MILK_EVAL_ID)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     environment: milk-gateway-tick-prod
@@ -197,7 +202,8 @@ jobs:
       ${{ always() &&
           vars.MILK_EVAL_ID != '' &&
           (github.event_name == 'schedule' ||
-           github.event_name == 'workflow_dispatch') }}
+           (github.event_name == 'workflow_dispatch' &&
+            inputs.managed_eval_id == vars.MILK_EVAL_ID)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     environment: milk-provider-jobs-prod
@@ -832,7 +838,8 @@ jobs:
           needs.provider-jobs.outputs.route_required == 'true' &&
           vars.MILK_EVAL_ID != '' &&
           (github.event_name == 'schedule' ||
-           github.event_name == 'workflow_dispatch') }}
+           (github.event_name == 'workflow_dispatch' &&
+            inputs.managed_eval_id == vars.MILK_EVAL_ID)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: milk-route-control-prod

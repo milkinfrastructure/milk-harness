@@ -60,7 +60,9 @@ The repository must be `github.com/OWNER/REPOSITORY`; the workflow must be a
 model cannot override them. The bundled `production-loop.yml` remains a
 Milk-managed production workflow with strict Milk image and release admission;
 it is not a custom-image self-host template. A compatible fork workflow must
-use the same exact generation-completion job-name contract described below.
+accept the fixed `managed_eval_id` dispatch input, reject it unless it matches
+the workflow's active eval in every job, and use the same exact
+generation-completion job-name contract described below.
 
 Run the non-dispatching config/control smoke in
 [`examples/self-host`](../../examples/self-host) before installing the command.
@@ -123,6 +125,12 @@ serializes calls for that eval without blocking other evals. A hard kill may
 leave the lock behind; an operator must inspect the process and GitHub run
 before removing it.
 
+Every dispatch also sends the exact admitted eval ID as `managed_eval_id`.
+Milk's production workflow compares it with the active repository
+`MILK_EVAL_ID` in every job condition, so a missing or stale manual identity
+cannot tick, reconcile, dispatch, or control routes for another eval. Scheduled
+runs continue to use the active repository eval directly.
+
 ## Status contract
 
 The fixed command writes one content-free JSON object on stdout:
@@ -148,9 +156,12 @@ Provider reconciliation and dispatch [generation_done=true|false]
 
 For a correlated successful run bound to the current document SHA-256, the host
 command accepts exactly one of those names through GitHub's typed jobs response.
-`generation_done=true` prevents both reconcile and paid dispatch. Missing,
-duplicated, or malformed names fail closed; workflow success and logs are never
-completion authority.
+`generation_done=true` means the gateway has stopped creating new teacher
+decisions for this eval. Reconcile remains available for running work and
+teardown, and a new exact one-use approval may authorize downstream student
+training, branch evaluation, winner, or teardown work. Missing, duplicated, or
+malformed names fail closed; workflow success and logs are never completion
+authority.
 
 Unknown fields, malformed output, stderr, and process errors are never returned
 to the model.

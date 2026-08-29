@@ -161,6 +161,7 @@ grep -Fxq 'github.com/milkinfrastructure/milk-harness' "$dispatch_log"
 grep -Fxq 'main' "$dispatch_log"
 grep -Fxq 'authorize_provider_creates=false' "$dispatch_log"
 grep -Fxq "confirmed_run_config_sha256=$eval_confirmation_sha256" "$dispatch_log"
+grep -Fxq "managed_eval_id=$eval_id" "$dispatch_log"
 grep -Fxq "managed_request_id=$request_id" "$dispatch_log"
 grep -Fxq -- '--all' "$list_log"
 grep -Fxq -- '--branch' "$list_log"
@@ -177,6 +178,7 @@ grep -Fxq 'github.com/example/milk-harness' "$dispatch_log"
 grep -Fxq 'self-host-loop.yml' "$dispatch_log"
 grep -Fxq 'stable' "$dispatch_log"
 grep -Fxq "confirmed_run_config_sha256=$second_eval_confirmation_sha256" "$dispatch_log"
+grep -Fxq "managed_eval_id=$second_eval_id" "$dispatch_log"
 
 for invalid_target in \
   'MILK_MANAGED_REPOSITORY=example/milk-harness' \
@@ -229,18 +231,23 @@ duplicate_job_names=$(printf '%s\n%s' \
 rm -f "$dispatch_log" "$approval"
 [ "$(TEST_GH_OBSERVATION=completed:success \
   TEST_GH_GENERATION_JOB_NAME='Provider reconciliation and dispatch [generation_done=true]' \
+  TEST_GH_DATABASE_ID=201 \
   run reconcile "$eval_id")" = \
-  "$(expected true "$eval_id" ready succeeded false false true)" ]
-[ ! -e "$dispatch_log" ]
+  "$(expected true "$eval_id" running running true false true)" ]
+grep -Fxq 'authorize_provider_creates=false' "$dispatch_log"
+rm -f "$dispatch_log"
 printf '%s\n' "$eval_confirmation_sha256" >"$approval"
 chmod 0600 "$approval"
 [ "$(TEST_GH_OBSERVATION=completed:success \
   TEST_GH_GENERATION_JOB_NAME='Provider reconciliation and dispatch [generation_done=true]' \
+  TEST_GH_DATABASE_ID=202 \
   run run_confirmed "$eval_id")" = \
-  "$(expected true "$eval_id" ready succeeded false false true)" ]
-[ -e "$approval" ]
-[ ! -e "$dispatch_log" ]
-rm -f "$approval"
+  "$(expected true "$eval_id" running running true false true)" ]
+[ ! -e "$approval" ]
+grep -Fxq 'authorize_provider_creates=true' "$dispatch_log"
+grep -Fxq "confirmed_run_config_sha256=$eval_confirmation_sha256" "$dispatch_log"
+grep -Fxq "managed_eval_id=$eval_id" "$dispatch_log"
+rm -f "$dispatch_log"
 [ "$(TEST_GH_OBSERVATION=completed:neutral run status "$eval_id")" = \
   "$(expected false "$eval_id" failed failed false false)" ]
 [ "$(TEST_GH_OBSERVATION=completed:skipped run status "$eval_id")" = \
@@ -265,6 +272,7 @@ request_id=$(sed -n '3p' "$state")
 [ "$(sed -n '4p' "$state")" = 202 ]
 grep -Fxq 'authorize_provider_creates=true' "$dispatch_log"
 grep -Fxq "confirmed_run_config_sha256=$eval_confirmation_sha256" "$dispatch_log"
+grep -Fxq "managed_eval_id=$eval_id" "$dispatch_log"
 grep -Fxq "managed_request_id=$request_id" "$dispatch_log"
 
 rm -f "$dispatch_log"

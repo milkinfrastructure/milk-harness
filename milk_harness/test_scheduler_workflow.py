@@ -53,6 +53,11 @@ class SchedulerWorkflowTest(unittest.TestCase):
 
     def test_cron_and_manual_false_reconcile_while_manual_create_is_confirmed(self):
         workflow_header, workflow_jobs = self.text.split("\njobs:\n", 1)
+        self.assertIn("managed_eval_id:", workflow_header)
+        managed_eval_input = workflow_header.split("managed_eval_id:", 1)[1].split(
+            "managed_request_id:", 1
+        )[0]
+        self.assertIn("required: true", managed_eval_input)
         self.assertIn("managed_request_id:", workflow_header)
         self.assertIn(
             "format('Milk production loop [managed:{0}]', inputs.managed_request_id)",
@@ -69,6 +74,9 @@ class SchedulerWorkflowTest(unittest.TestCase):
         gateway_condition = self.gateway.split("    runs-on:", 1)[0]
         self.assertNotIn("inputs.authorize_provider_creates", gateway_condition)
         self.assertIn(
+            "inputs.managed_eval_id == vars.MILK_EVAL_ID", gateway_condition
+        )
+        self.assertIn(
             "github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && inputs.confirmed_run_config_sha256 || ''",
             self.gateway,
         )
@@ -80,6 +88,9 @@ class SchedulerWorkflowTest(unittest.TestCase):
             provider_condition,
         )
         self.assertNotIn("inputs.authorize_provider_creates", provider_condition)
+        self.assertIn(
+            "inputs.managed_eval_id == vars.MILK_EVAL_ID", provider_condition
+        )
         self.assertIn("create-gate", self.provider)
         self.assertIn("validate-run-config", self.gateway)
         self.assertIn("validate-run-config", self.provider)
@@ -427,6 +438,10 @@ class SchedulerWorkflowTest(unittest.TestCase):
         route_condition = self.route.split("    runs-on:", 1)[0]
         self.assertNotIn("route_candidate_ready", route_condition)
         self.assertNotIn("inputs.authorize_provider_creates", route_condition)
+        self.assertIn("github.event_name == 'schedule'", route_condition)
+        self.assertIn(
+            "inputs.managed_eval_id == vars.MILK_EVAL_ID", route_condition
+        )
         self.assertNotIn(
             "inputs.confirmed_run_config_sha256 == vars.MILK_EVAL_ID",
             route_condition,

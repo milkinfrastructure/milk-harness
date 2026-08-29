@@ -339,10 +339,6 @@ guard_previous_dispatch() {
       ;;
     completed:success)
       prior_dispatch_state=succeeded
-      if [ "$generation_done" = true ]; then
-        result true ready succeeded false false
-        exit 0
-      fi
       ;;
     completed:cancelled|completed:failure|completed:neutral|completed:skipped|completed:stale|completed:startup_failure|completed:timed_out)
       prior_dispatch_state=failed
@@ -356,6 +352,7 @@ dispatch() {
     --ref "$workflow_ref" \
     --raw-field "authorize_provider_creates=$1" \
     --raw-field "confirmed_run_config_sha256=$eval_confirmation_sha256" \
+    --raw-field "managed_eval_id=$eval_id" \
     --raw-field "managed_request_id=$state_request_id" \
     >/dev/null 2>&1
 }

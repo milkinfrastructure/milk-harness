@@ -35,6 +35,11 @@ MILK_EVAL_ID=<stable campaign/eval ID embedded in the manifest and gateway confi
 
 `MILK_EVAL_ID` is the stable campaign identity: it must equal both `manifest.campaign_id` and `gateway_config.eval_id`. It is not the document hash. Validation separately computes `MILK_EVAL_CONFIG_SHA256` over the exact canonical outer document; an explicitly confirmed manual dispatch must match that digest before paid work can start.
 
+Every manual dispatch also carries that stable identity as `managed_eval_id`.
+All three production jobs run only when it equals the active repository
+`MILK_EVAL_ID`; a missing or stale manual identity runs nothing. Scheduled runs
+use the active repository identity directly.
+
 Credentials remain individual operator-owned masked secrets. They are not embedded in the eval document or bundled into JSON secret blobs.
 
 The scheduled loop performs three bounded, separately credentialed steps:
@@ -77,7 +82,7 @@ Production uses three GitHub environments:
 - `milk-provider-jobs-prod`
 - `milk-route-control-prod`
 
-The workflow is [`production-loop.yml`](.github/workflows/production-loop.yml). Keep Actions disabled until all three environments, the two eval variables, provider resources, and object-store credentials are complete. Enabling the workflow starts the five-minute reconciliation clock; it does not by itself authorize paid work.
+The production workflow is [`production-loop.yml`](.github/workflows/production-loop.yml). Keep only that production workflow disabled until all three environments, the two eval variables, provider resources, and object-store credentials are complete. Offline CI in [`offline-gates.yml`](.github/workflows/offline-gates.yml) can run without production credentials or paid work. Enabling the production workflow starts the five-minute reconciliation clock; it does not by itself authorize paid work.
 
 Existing private-image evidence records these compressed `linux/amd64` sizes:
 
