@@ -25,7 +25,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: 3.12.11
-          cache: "false"
 
       - name: Verify Python and provider contracts
         run: |
