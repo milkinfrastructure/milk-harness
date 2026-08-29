@@ -45,6 +45,13 @@ result() {
     "$1" "$eval_id" "$2" "$3" "$generation_done" "$4" "$5"
 }
 
+require_gh() {
+  command -v gh >/dev/null 2>&1 || {
+    result false blocked unknown false false
+    exit 0
+  }
+}
+
 mode_of() {
   stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
@@ -278,6 +285,7 @@ report_status() {
     fi
     exit 0
   fi
+  require_gh
   if refresh_state; then
     :
   else
@@ -413,10 +421,6 @@ if ! validate_eval_document || ! prepare_eval_state; then
   result false blocked unknown false false
   exit 0
 fi
-command -v gh >/dev/null 2>&1 || {
-  result false blocked unknown false false
-  exit 0
-}
 if ! mkdir -m 0700 "$lock_dir" 2>/dev/null; then
   result false blocked unknown false false
   exit 0
@@ -431,6 +435,7 @@ if [ "$action" = status ]; then
   report_status
 fi
 
+require_gh
 guard_previous_dispatch
 
 if [ "$action" = reconcile ]; then

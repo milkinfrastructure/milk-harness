@@ -15,8 +15,13 @@ cleanup() {
   esac
 }
 trap cleanup EXIT HUP INT TERM
-mkdir -m 0700 "$test_root/bin" "$test_root/state"
+mkdir -m 0700 "$test_root/bin" "$test_root/no-gh-bin" "$test_root/state"
 mkdir -m 0750 "$test_root/evals"
+
+for utility in id mkdir python3 rmdir sed stat tr wc
+do
+  ln -s "$(command -v "$utility")" "$test_root/no-gh-bin/$utility"
+done
 
 cat >"$test_root/bin/gh" <<'SH'
 #!/bin/sh
@@ -104,6 +109,14 @@ run() {
     "$command" "$@"
 }
 
+run_without_gh() {
+  PATH="$test_root/no-gh-bin" \
+  MILK_MANAGED_EVAL_DIR="$test_root/evals" \
+  MILK_MANAGED_STATE_ROOT="$test_root/state" \
+  MILK_MANAGED_EVAL_OWNER_UID="$(id -u)" \
+    "$command" "$@"
+}
+
 expected() {
   expected_generation_done=${7:-false}
   printf '{"ok":%s,"eval_id":"%s","state":"%s","dispatch_state":"%s","generation_done":%s,"changed":%s,"approval_required":%s}' \
@@ -113,6 +126,15 @@ expected() {
 state_dir=$test_root/state/$eval_id
 state=$state_dir/managed-dispatch.state
 approval=$state_dir/run-confirmed.approval
+second_state=$test_root/state/$second_eval_id/managed-dispatch.state
+
+[ "$(run_without_gh status "$second_eval_id")" = \
+  "$(expected true "$second_eval_id" idle idle false false)" ]
+[ "$(run_without_gh reconcile "$second_eval_id")" = \
+  "$(expected false "$second_eval_id" blocked unknown false false)" ]
+[ "$(run_without_gh run_confirmed "$second_eval_id")" = \
+  "$(expected false "$second_eval_id" blocked unknown false false)" ]
+[ ! -e "$second_state" ]
 
 [ "$(run status "$eval_id")" = \
   "$(expected true "$eval_id" idle idle false false)" ]
@@ -167,6 +189,8 @@ grep -Fxq -- '--all' "$list_log"
 grep -Fxq -- '--branch' "$list_log"
 grep -Fxq -- '--event' "$list_log"
 grep -Fxq 'workflow_dispatch' "$list_log"
+[ "$(run_without_gh status "$eval_id")" = \
+  "$(expected false "$eval_id" blocked unknown false false)" ]
 
 rm -f "$dispatch_log" "$list_log" "$view_log"
 [ "$(MILK_MANAGED_REPOSITORY=github.com/example/milk-harness \
