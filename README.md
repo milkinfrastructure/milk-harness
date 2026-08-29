@@ -109,7 +109,7 @@ Current live qualification and exact release IDs are recorded in [`docs/referenc
 One paid teacher result is the first provider gate, not production qualification. The complete cloud proof requires:
 
 1. A normal official-SDK response and its persisted completed trace.
-2. A real 251-request student corpus: 50 TRAIN, 73 DEV, and 128 CALIBRATION. Generated traffic does not count.
+2. At least 251 retained teacher results: 50 TRAIN, 73 DEV, and 128 CALIBRATION. Partitioning or skipped traffic can require more requests. Generated traffic does not count.
 3. One trained and merged student plus BF16, dynamic FP8, and static FP8 evaluations on the same ordered DEV set.
 4. A deterministic winner, authenticated canary, and verified baseline fallback.
 5. An active signed zero route and both Baseten and Modal observed at zero compute.

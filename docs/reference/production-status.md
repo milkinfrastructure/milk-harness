@@ -1,6 +1,6 @@
 # Production qualification
 
-Last updated: 2026-08-29 01:01 America/Los_Angeles.
+Last updated: 2026-08-29 01:10 America/Los_Angeles.
 
 ## Goal
 
@@ -23,21 +23,22 @@ Budget guard: `$1,000` absolute campaign ceiling, stop new paid work at `$850`, 
 - The three GitHub production environments exist. Actions remain disabled.
 - Shared GHCR/source credentials and the Modal control-plane token are installed in the appropriate GitHub environments.
 - Modal app `milk-prod-gpu` and separate teacher/student volumes exist.
-- `milk-gateway` main includes the published-release ancestry fix and public-facing README at `269594e31d538260543c7cfaa09924818473f569`.
-- `milk-harness` main includes the public product contract, this qualification log, and the exact teacher-volume population helper at `bb629e573cb7cc46219db7fda6027aeaa7f52eb3`.
+- `milk-gateway` main includes the deploy ancestry fix, 120-second official-SDK timeout, hosted/self-hosted contract, and full qualification gates at `464b350`.
+- `milk-harness` release branch `codex/whiteboard-minimal` contains the hosted/self-hosted contract, production log, permanent-R2 fix, student-volume helper, and real provider fallback at `d65e239`.
 - The existing admitted gateway image remains authoritative; documentation-only and deployment-tool commits do not require rebuilding it or its three digest-bound GPU images.
 - Modal volume `milk-prod-teacher-cache` contains exactly the 24 admitted `openai/gpt-oss-120b` files at revision `b5c939de8f754692c1647ca79fbf85e8c1e70f8a`, totaling 65,276,850,729 bytes. The population app stopped with zero tasks.
+- Modal volume `milk-prod-student-train` contains exactly the 13 admitted `Qwen/Qwen3-4B-Instruct-2507` files at revision `cdbee75f17c01a7cc42f958dc650907174af0554`, totaling 8,060,917,568 bytes. A separate hash pass verified every file and all Modal apps report zero active tasks.
 - Fresh smoke, capture, outcome, candidate, container-admin, route, and signing credentials exist only in the owner-only qualification evidence directory. They are not committed.
 - Production workflow commit `d33304478c95a53ea68d34d7acb52942b7fad1c3` omits absent R2 session-token variables, so permanent R2 credentials no longer reach containers as invalid empty tokens. Its 17 focused workflow tests pass.
-- The production audit proved that the earlier `max_calls = max_decisions = 1` config cannot create a student and that pinned provider dispatch did not execute its stated Baseten-primary / Modal-fallback policy. Those are now explicit release blockers rather than implied capabilities.
+- Commit `d65e239` removes the redundant pinned provider, performs live Baseten preflight first for ordinary and winner work, permits Modal only after validated retryable unavailability, and preserves the no-fallback rule after Baseten create authority or ambiguity. The full 212-test Python gate passes.
+- Cloudflare preflight found no `default` AI Gateway, no production Worker, Container, route, or DNS record, zero prepaid AI credits, and Containers disabled until Workers Paid is enabled. No request was sent into Cloudflare's default payload-logging behavior.
 - No paid teacher GPU has run. No local GPU has run.
 
 ## In progress
 
-- Make Baseten-primary / Modal-fallback a real live preflight decision while preserving the no-fallback rule after a create intent or ambiguous create.
-- Populate and independently verify the exact Qwen student base-model volume without starting a GPU.
 - Create distinct least-privilege permanent R2 credentials for each runtime role. Permanent credentials omit all session-token secrets.
-- Configure the Cloudflare AI Gateway with payload logging disabled, zero-data-retention enabled, retries disabled, and an account spend limit before the first request.
+- Enable Workers Paid and fund bounded AI credits, then create the Cloudflare AI Gateway with payload logging disabled, zero-data-retention enabled, retries disabled, and an account spend limit before the first request.
+- Create the Baseten project, team, and API credential required for the live primary preflight.
 - Materialize two fresh immutable evals: a one-request teacher qualification, then the student-capable campaign with route authority and bounded spend.
 - Deploy the gateway and enable the scheduler only after all secrets, privacy controls, and config are complete.
 
