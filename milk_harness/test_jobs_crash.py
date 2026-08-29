@@ -1176,7 +1176,7 @@ class BasetenJobsCrashTests(unittest.TestCase):
             evidence.json(
                 "terminal.json",
                 {
-                    "schema_version": "milk.baseten-launch-group-terminal.v1",
+                    "schema_version": "milk.baseten-launch-group-terminal.v2",
                     "run_id": run_id,
                     "state": "not_started",
                     "observed_at": NOW.isoformat(timespec="microseconds").replace(

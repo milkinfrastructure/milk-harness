@@ -41,7 +41,10 @@ from milk_harness.image_admission import (
     TEACHER_IMAGE_REPOSITORY,
     load_published_private_image_release,
 )
-from milk_harness.log_collection import collect_baseten_terminal_logs
+from milk_harness.log_collection import (
+    OOM_CLASSIFIER_SHA256,
+    collect_baseten_terminal_logs,
+)
 from milk_harness.metrics_collection import collect_baseten_terminal_metrics
 from milk_harness.modal_jobs import (
     ModalJobs,
@@ -6001,7 +6004,7 @@ class BasetenJobs:
         state = value.get("state")
         if (
             value.get("schema_version")
-            != "milk.baseten-launch-group-terminal.v1"
+            != "milk.baseten-launch-group-terminal.v2"
             or value.get("run_id") != evidence.run_id
             or state
             not in {"terminal", "not_started", "blocked_budget", "not_authorized"}
@@ -6053,6 +6056,9 @@ class BasetenJobs:
                 "logs_source_complete",
                 "metric_collection_sha256",
                 "metrics_source_complete",
+                "oom_classifier_sha256",
+                "oom_matched_record_count",
+                "oom_source_complete",
             }
             or HEX64.fullmatch(value.get("cost_basis_sha256", "")) is None
             or HEX64.fullmatch(value.get("log_collection_sha256", "")) is None
@@ -6060,6 +6066,10 @@ class BasetenJobs:
             or HEX64.fullmatch(value.get("metric_collection_sha256", ""))
             is None
             or type(value.get("metrics_source_complete")) is not bool
+            or value.get("oom_classifier_sha256") != OOM_CLASSIFIER_SHA256
+            or type(value.get("oom_matched_record_count")) is not int
+            or value["oom_matched_record_count"] < 0
+            or type(value.get("oom_source_complete")) is not bool
             or HEX64.fullmatch(value.get("settlement_sha256", "")) is None
         ):
             raise ValueError("stored provider terminal is invalid")
@@ -6080,16 +6090,72 @@ class BasetenJobs:
             if observed_cost_items
             else "log-collections/unavailable.json"
         )
-        log_collection = _strict_object(
-            self.store.get(f"{evidence.prefix}/{log_relative}")
+        if observed_cost_items:
+            _strict_object(self.store.get(f"{evidence.prefix}/{log_relative}"))
+            try:
+                log_collection = collect_baseten_terminal_logs(
+                    evidence=evidence,
+                    request=self._request,
+                    project_id=self.project_id,
+                    executions=observed_cost_items,
+                    observed_at=cost_basis["observed_at"],
+                    now=self.now,
+                    continue_collection=lambda: False,
+                )
+            except ValueError as error:
+                raise ValueError(
+                    "stored provider terminal log evidence differs"
+                ) from error
+        else:
+            log_collection = _strict_object(
+                self.store.get(f"{evidence.prefix}/{log_relative}")
+            )
+        expected_oom_count = (
+            log_collection.get("oom_matched_record_count")
+            if observed_cost_items
+            else 0
+        )
+        expected_oom_source_complete = (
+            log_collection.get("oom_source_complete") is True
+            and len(observed_cost_items) == len(cost_basis["executions"])
+            if observed_cost_items
+            else False
         )
         if (
             value["log_collection_sha256"] != _digest(log_collection)
+            or bool(observed_cost_items)
+            and (
+                log_collection.get("schema_version")
+                != "milk.baseten-log-collection-summary.v2"
+                or log_collection.get("campaign_id") != self.campaign_id
+                or log_collection.get("run_id") != evidence.run_id
+                or log_collection.get("oom_classifier_sha256")
+                != OOM_CLASSIFIER_SHA256
+                or type(log_collection.get("oom_matched_record_count")) is not int
+                or log_collection["oom_matched_record_count"] < 0
+                or type(log_collection.get("oom_source_complete")) is not bool
+                or type(log_collection.get("source_complete")) is not bool
+                or type(
+                    log_collection.get("attempts_without_oom_classification")
+                )
+                is not int
+                or not 0
+                <= log_collection["attempts_without_oom_classification"]
+                <= log_collection.get("attempts_used", -1)
+                or log_collection["oom_source_complete"]
+                is not (
+                    log_collection["source_complete"]
+                    and log_collection["attempts_without_oom_classification"] == 0
+                )
+            )
             or value["logs_source_complete"]
             != (
                 log_collection.get("source_complete") is True
                 and len(observed_cost_items) == len(cost_basis["executions"])
             )
+            or value["oom_classifier_sha256"] != OOM_CLASSIFIER_SHA256
+            or value["oom_matched_record_count"] != expected_oom_count
+            or value["oom_source_complete"] is not expected_oom_source_complete
         ):
             raise ValueError("stored provider terminal log evidence differs")
         metric_collection = _strict_object(
@@ -6313,7 +6379,7 @@ class BasetenJobs:
                 settlement_sha256 = None
                 state = "not_authorized"
         terminal = {
-            "schema_version": "milk.baseten-launch-group-terminal.v1",
+            "schema_version": "milk.baseten-launch-group-terminal.v2",
             "run_id": evidence.run_id,
             "state": state,
             "observed_at": _utc_text(self.now()),
@@ -6558,7 +6624,7 @@ class BasetenJobs:
             }
             evidence.json("launch-result.json", result)
             terminal = {
-                "schema_version": "milk.baseten-launch-group-terminal.v1",
+                "schema_version": "milk.baseten-launch-group-terminal.v2",
                 "run_id": run_id,
                 "state": "blocked_budget",
                 "observed_at": _utc_text(self.now()),
@@ -8432,7 +8498,7 @@ class BasetenJobs:
                 "executions": executions,
             }
         terminal = {
-            "schema_version": "milk.baseten-launch-group-terminal.v1",
+            "schema_version": "milk.baseten-launch-group-terminal.v2",
             "run_id": run_id,
             "state": terminal_state,
             "observed_at": observed_at,
@@ -8443,6 +8509,18 @@ class BasetenJobs:
             "logs_source_complete": logs_source_complete,
             "metric_collection_sha256": metric_collection_sha256,
             "metrics_source_complete": metrics_source_complete,
+            "oom_classifier_sha256": OOM_CLASSIFIER_SHA256,
+            "oom_matched_record_count": (
+                log_collection["oom_matched_record_count"]
+                if observed_executions
+                else 0
+            ),
+            "oom_source_complete": (
+                log_collection["oom_source_complete"]
+                and len(observed_executions) == len(cost_basis["executions"])
+                if observed_executions
+                else False
+            ),
             "accounted_minutes": total_minutes,
             "accounted_microusd": accounted_microusd,
             "settlement_sha256": settlement_sha256,

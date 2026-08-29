@@ -4,10 +4,11 @@ import json
 import tempfile
 import unittest
 
-from milk_harness.evidence import LocalEvidenceStore
+from milk_harness.evidence import LocalEvidenceStore, canonical_json
 from milk_harness.jobs import JobEvidence
 from milk_harness.log_collection import (
     MAX_PROVIDER_BYTES,
+    OOM_CLASSIFIER_SHA256,
     collect_baseten_terminal_logs,
 )
 
@@ -90,6 +91,9 @@ class CollectorTests(unittest.TestCase):
             self.assertTrue(summary["source_complete"])
             self.assertEqual(summary["attempts_used"], 1)
             self.assertEqual(summary["records_hashed"], 999)
+            self.assertEqual(summary["oom_classifier_sha256"], OOM_CLASSIFIER_SHA256)
+            self.assertEqual(summary["oom_matched_record_count"], 0)
+            self.assertTrue(summary["oom_source_complete"])
             self.assertEqual(len(calls), 1)
             query = calls[0][2]
             self.assertEqual(query["start_epoch_millis"], int(CREATED.timestamp() * 1000))
@@ -109,6 +113,106 @@ class CollectorTests(unittest.TestCase):
             )
             self.assertNotIn(b"must-not-persist", gzip.decompress(evidence.store.get(chunk)))
 
+    def test_oom_matches_are_content_free_and_replay_without_get(self):
+        with tempfile.TemporaryDirectory() as root:
+            evidence = self.evidence(root)
+            calls = 0
+            messages = [
+                "worker ready",
+                "torch.OutOfMemoryError: CUDA out of memory",
+                "kernel marked replica OOMKilled",
+                "runtime reported CUDA OOM",
+                "runtime reported GPU OOM",
+                "worker was Killed (OOM)",
+            ]
+
+            def request(unused_method, unused_path, query=None):
+                nonlocal calls
+                del unused_method, unused_path
+                calls += 1
+                at = dt.datetime.fromtimestamp(
+                    query["start_epoch_millis"] / 1000, UTC
+                )
+                return response(
+                    [
+                        record(at, message=message, sequence=index)
+                        for index, message in enumerate(messages)
+                    ]
+                )
+
+            self.collect(evidence, request, FIRST)
+            summary = self.collect(evidence, request, READY)
+            self.assertTrue(summary["source_complete"])
+            self.assertEqual(summary["oom_matched_record_count"], 5)
+            self.assertTrue(summary["oom_source_complete"])
+            self.assertEqual(
+                summary["leaf_decisions"][0]["oom_matched_record_count"],
+                5,
+            )
+            replay = self.collect(evidence, request, READY + dt.timedelta(days=1))
+            self.assertEqual(replay, summary)
+            self.assertEqual(calls, 1)
+            stored = b"".join(
+                evidence.store.get(key)
+                for key in evidence.store.list(evidence.prefix)
+            )
+            self.assertNotIn(messages[1].encode(), stored)
+            self.assertNotIn(messages[2].encode(), stored)
+
+    def test_oom_classifier_ignores_non_oom_substrings(self):
+        with tempfile.TemporaryDirectory() as root:
+            evidence = self.evidence(root)
+
+            def request(unused_method, unused_path, query=None):
+                del unused_method, unused_path
+                at = dt.datetime.fromtimestamp(
+                    query["start_epoch_millis"] / 1000, UTC
+                )
+                return response(
+                    [
+                        record(at, message="worker has GPU memory headroom", sequence=0),
+                        record(at, message="oomph library loaded", sequence=1),
+                        record(at, message="CUDA memory healthy", sequence=2),
+                    ]
+                )
+
+            self.collect(evidence, request, FIRST)
+            summary = self.collect(evidence, request, READY)
+            self.assertTrue(summary["source_complete"])
+            self.assertEqual(summary["oom_matched_record_count"], 0)
+            self.assertTrue(summary["oom_source_complete"])
+
+    def test_malformed_oom_response_makes_classifier_evidence_incomplete(self):
+        with tempfile.TemporaryDirectory() as root:
+            evidence = self.evidence(root)
+            calls = 0
+
+            def request(unused_method, unused_path, query=None):
+                nonlocal calls
+                del unused_method, unused_path, query
+                calls += 1
+                if calls == 1:
+                    return b'{"logs":[{"message":"CUDA OOM"}'
+                return response([])
+
+            self.collect(evidence, request, FIRST)
+            summary = self.collect(evidence, request, READY)
+            self.assertTrue(summary["source_complete"])
+            self.assertEqual(summary["attempts_without_known_response"], 0)
+            self.assertEqual(summary["attempts_without_oom_classification"], 1)
+            self.assertEqual(summary["oom_matched_record_count"], 0)
+            self.assertFalse(summary["oom_source_complete"])
+            self.assertEqual(calls, 2)
+
+            key = f"{evidence.prefix}/log-collections/summary.json"
+            raw, etag = evidence.store.get_versioned(key)
+            tampered = json.loads(raw)
+            tampered["attempts_without_oom_classification"] = 0
+            tampered["oom_source_complete"] = True
+            self.assertTrue(evidence.store.replace(key, canonical_json(tampered), etag))
+            with self.assertRaisesRegex(ValueError, "inconsistent"):
+                self.collect(evidence, request, READY + dt.timedelta(days=1))
+
     def test_saturated_parent_splits_into_nonoverlapping_inclusive_leaves(self):
         with tempfile.TemporaryDirectory() as root:
             evidence = self.evidence(root)
@@ -121,7 +225,13 @@ class CollectorTests(unittest.TestCase):
                 windows.append((start, end))
                 at = dt.datetime.fromtimestamp(start / 1000, UTC)
                 count = 1000 if len(windows) == 1 else 1
-                return response([record(at, sequence=index) for index in range(count)])
+                message = "worker ready" if len(windows) == 1 else "CUDA out of memory"
+                return response(
+                    [
+                        record(at, message=message, sequence=index)
+                        for index in range(count)
+                    ]
+                )
 
             self.collect(evidence, request, FIRST)
             summary = self.collect(evidence, request, READY)
@@ -132,12 +242,45 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(right[1], root_window[1])
             self.assertEqual(left[1] + 1, right[0])
             self.assertEqual(summary["records_hashed"], 2)
+            self.assertEqual(summary["oom_matched_record_count"], 2)
             archives = [
                 key
                 for key in evidence.store.list(evidence.prefix)
                 if key.endswith("/index.json")
             ]
             self.assertEqual(len(archives), 2)
+
+    def test_saturated_parent_oom_survives_empty_child_windows(self):
+        with tempfile.TemporaryDirectory() as root:
+            evidence = self.evidence(root)
+            calls = 0
+
+            def request(unused_method, unused_path, query=None):
+                nonlocal calls
+                del unused_method, unused_path
+                calls += 1
+                if calls > 1:
+                    return response([])
+                at = dt.datetime.fromtimestamp(
+                    query["start_epoch_millis"] / 1000, UTC
+                )
+                return response(
+                    [
+                        record(
+                            at,
+                            message=("CUDA OOM" if index == 0 else "worker ready"),
+                            sequence=index,
+                        )
+                        for index in range(1000)
+                    ]
+                )
+
+            self.collect(evidence, request, FIRST)
+            summary = self.collect(evidence, request, READY)
+            self.assertTrue(summary["source_complete"])
+            self.assertEqual(summary["records_hashed"], 0)
+            self.assertEqual(summary["oom_matched_record_count"], 1)
+            self.assertTrue(summary["oom_source_complete"])
 
     def test_saturated_same_millisecond_seals_explicit_gap_once(self):
         with tempfile.TemporaryDirectory() as root:
@@ -151,7 +294,20 @@ class CollectorTests(unittest.TestCase):
                 calls += 1
                 if query["start_epoch_millis"] <= hot <= query["end_epoch_millis"]:
                     at = dt.datetime.fromtimestamp(hot / 1000, UTC)
-                    return response([record(at, sequence=index) for index in range(1000)])
+                    return response(
+                        [
+                            record(
+                                at,
+                                message=(
+                                    "CUDA out of memory"
+                                    if index == 0
+                                    else "worker ready"
+                                ),
+                                sequence=index,
+                            )
+                            for index in range(1000)
+                        ]
+                    )
                 return response([])
 
             self.collect(evidence, request, FIRST)
@@ -172,9 +328,82 @@ class CollectorTests(unittest.TestCase):
                 },
             )
             self.assertEqual(summary["records_hashed"], 1000)
+            self.assertGreaterEqual(summary["oom_matched_record_count"], 1)
             before = calls
             self.collect(evidence, request, READY + dt.timedelta(days=1))
             self.assertEqual(calls, before)
+
+    def test_tampered_oom_summary_is_rejected_on_replay(self):
+        with tempfile.TemporaryDirectory() as root:
+            evidence = self.evidence(root)
+
+            def request(unused_method, unused_path, query=None):
+                del unused_method, unused_path, query
+                return response([])
+
+            self.collect(evidence, request, FIRST)
+            self.collect(evidence, request, READY)
+            key = f"{evidence.prefix}/log-collections/summary.json"
+            raw, etag = evidence.store.get_versioned(key)
+            value = json.loads(raw)
+            value["oom_matched_record_count"] = 1
+            self.assertTrue(evidence.store.replace(key, canonical_json(value), etag))
+            with self.assertRaisesRegex(ValueError, "log summary"):
+                self.collect(evidence, request, READY + dt.timedelta(days=1))
+
+    def test_orphan_archive_makes_zero_oom_signal_incomplete(self):
+        class Crash(BaseException):
+            pass
+
+        class CrashBeforeAttemptResult:
+            def __init__(self, inner):
+                self.inner = inner
+                self.armed = True
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+            def create(self, key, body, content_type="application/octet-stream"):
+                if self.armed and key.endswith("/000-result.json"):
+                    self.armed = False
+                    raise Crash()
+                return self.inner.create(key, body, content_type)
+
+        with tempfile.TemporaryDirectory() as root:
+            store = LocalEvidenceStore(root)
+            crashing_evidence = JobEvidence(
+                CrashBeforeAttemptResult(store), CAMPAIGN, RUN
+            )
+
+            def oom_response(unused_method, unused_path, query=None):
+                del unused_method, unused_path
+                at = dt.datetime.fromtimestamp(
+                    query["start_epoch_millis"] / 1000, UTC
+                )
+                return response([record(at, message="CUDA OOM")])
+
+            self.collect(crashing_evidence, oom_response, FIRST)
+            with self.assertRaises(Crash):
+                self.collect(crashing_evidence, oom_response, READY)
+            self.assertTrue(
+                any(key.endswith("/index.json") for key in store.list(crashing_evidence.prefix))
+            )
+
+            evidence = self.evidence(root)
+
+            def empty(unused_method, unused_path, query=None):
+                del unused_method, unused_path, query
+                return response([])
+
+            summary = self.collect(evidence, empty, READY)
+            self.assertTrue(summary["source_complete"])
+            self.assertEqual(summary["attempts_without_known_response"], 1)
+            self.assertEqual(summary["oom_matched_record_count"], 0)
+            self.assertFalse(summary["oom_source_complete"])
+            self.assertEqual(
+                self.collect(evidence, empty, READY + dt.timedelta(days=1)),
+                summary,
+            )
 
     def test_crash_burns_slot_and_window_stops_at_three_attempts(self):
         class Crash(BaseException):
@@ -202,6 +431,8 @@ class CollectorTests(unittest.TestCase):
 
             summary = self.collect(evidence, fail, READY)
             self.assertFalse(summary["source_complete"])
+            self.assertEqual(summary["oom_matched_record_count"], 0)
+            self.assertFalse(summary["oom_source_complete"])
             self.assertEqual(summary["attempts_used"], 3)
             self.assertEqual(calls, 3)
             self.assertEqual(

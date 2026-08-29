@@ -29,6 +29,7 @@ from milk_harness.image_admission import (
     load_local_private_image_release,
     load_published_private_image_release,
 )
+from milk_harness.log_collection import OOM_CLASSIFIER_SHA256
 from milk_harness.publish_image_admission import publish_private_image_release
 from milk_harness.scheduler import (
     acquire_provider_lease,
@@ -2495,6 +2496,7 @@ class BasetenJobsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             calls = {"create": 0, "name": None}
             current = [NOW]
+            oom_message = "torch.OutOfMemoryError: CUDA out of memory; prompt data"
 
             def handler(method, path, body, query):
                 if path == f"/training_projects/{PROJECT}/jobs" and method == "POST":
@@ -2515,7 +2517,7 @@ class BasetenJobsTests(unittest.TestCase):
                         "logs": [
                             {
                                 "timestamp": "2026-08-27T20:00:01Z",
-                                "message": "prompt data must never be retained",
+                                "message": oom_message,
                                 "replica": "worker-0",
                                 "request_id": "request-1",
                                 "level": "INFO",
@@ -2562,6 +2564,9 @@ class BasetenJobsTests(unittest.TestCase):
             terminal = jobs.reconcile(run_id)
             self.assertEqual(terminal["state"], "terminal")
             self.assertEqual(terminal["accounted_minutes"], 2)
+            self.assertEqual(terminal["oom_classifier_sha256"], OOM_CLASSIFIER_SHA256)
+            self.assertEqual(terminal["oom_matched_record_count"], 1)
+            self.assertTrue(terminal["oom_source_complete"])
             self.assertEqual(calls["create"], 1)
             stored = b"".join(
                 LocalEvidenceStore(root).get(key)
@@ -2572,6 +2577,31 @@ class BasetenJobsTests(unittest.TestCase):
             self.assertNotIn(b"prompt data", stored)
             self.assertNotIn(b"gpu_utilization", stored)
             self.assertEqual(jobs.budget.status()["reserved_microusd"], 0)
+
+            prefix = f"campaigns/v1/{CAMPAIGN}/jobs/{run_id}"
+            summary_key = f"{prefix}/log-collections/summary.json"
+            summary_raw, summary_etag = jobs.store.get_versioned(summary_key)
+            tampered_summary = json.loads(summary_raw)
+            tampered_summary["oom_classifier_sha256"] = "0" * 64
+            tampered_summary_raw = canonical_json(tampered_summary)
+            self.assertTrue(
+                jobs.store.replace(summary_key, tampered_summary_raw, summary_etag)
+            )
+            terminal_key = f"{prefix}/terminal.json"
+            terminal_raw, terminal_etag = jobs.store.get_versioned(terminal_key)
+            tampered_terminal = json.loads(terminal_raw)
+            tampered_terminal["log_collection_sha256"] = hashlib.sha256(
+                tampered_summary_raw
+            ).hexdigest()
+            self.assertTrue(
+                jobs.store.replace(
+                    terminal_key,
+                    canonical_json(tampered_terminal),
+                    terminal_etag,
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "log evidence differs"):
+                jobs.reconcile(run_id)
 
     def test_status_failure_after_deadline_still_attempts_stop_once(self):
         with tempfile.TemporaryDirectory() as root:

@@ -62,7 +62,7 @@ Paid work has three gates:
 
 The current campaign ceiling is `$1,000`. New paid work stops at `$850`, preserving `$150` for running work and teardown. Scheduled runs cannot authorize provider creates.
 
-Before the larger cloud run, separately authorize one Baseten job under eval ID `5e73ad7bb8fc8cc9689c121dc4d09eecc27094bfba7a77075df992f8409d4bba`. It must pull the exact private teacher image, finish, and return to zero compute. Failure stops the run; it does not authorize fallback or the larger eval.
+The cloud-mechanics eval starts with one 20-call teacher job. No later provider create is authorized until a Baseten-selected job proves the exact private image and profile, all 20 calls ready within the live latency target, `logs_source_complete=true`, `oom_source_complete=true`, `oom_matched_record_count=0`, and zero compute after termination. A Modal-selected job can produce mechanics results but cannot pass this Baseten gate.
 
 ## Exo integration
 
@@ -121,9 +121,9 @@ Current qualification evidence and remaining gates are recorded in [`docs/refere
 
 ## Production qualification
 
-One paid teacher result is the first provider gate, not production qualification. The complete cloud proof requires:
+One passing 20-call teacher job is the first provider gate, not production qualification. The complete cloud proof requires:
 
-A separate synthetic cloud-mechanics eval uses ID `959caacb397004bf3e60f13613da50f4ed3160a65d18b178c3d996398e29b5a0`, 320 decisions partitioned as 63 TRAIN, 91 DEV, and 166 CALIBRATION, `max_calls=10`, `max_gpu_seconds=3600`, and `max_parallel_runs=1`. Its pessimistic GPU ceiling is `$262.50`, plus `$7.50` for the one-job Baseten qualifier. It tests the cloud chain only: none of its generated traffic or results satisfy the real-traffic production gates below. Both runs remain inside the `$1,000` ceiling and `$850` new-work cutoff.
+A synthetic cloud-mechanics eval uses ID `959caacb397004bf3e60f13613da50f4ed3160a65d18b178c3d996398e29b5a0`, 320 decisions partitioned as 63 TRAIN, 91 DEV, and 166 CALIBRATION, `max_calls=20`, `max_gpu_seconds=3600`, and `max_parallel_runs=1`. Its first Baseten-selected job is the teacher admission gate above. With a 3,600-second winner bound, its pessimistic GPU reservation is `$160`: `$130` for 16 teacher jobs, `$5.625` for train/merge, `$16.875` for three branches, and `$7.50` for the winner. It tests the cloud chain only; none of its generated traffic or results satisfy the real-traffic production gates below. The run remains inside the `$1,000` ceiling and `$850` new-work cutoff.
 
 1. A normal official-SDK response and its persisted completed trace.
 2. At least 251 retained teacher results: 50 TRAIN, 73 DEV, and 128 CALIBRATION. The current 80/10/10 partition should plan for roughly 1,280 eligible captures to obtain 128 CALIBRATION rows; skipped traffic can require more. Generated traffic and local fixtures do not count.
