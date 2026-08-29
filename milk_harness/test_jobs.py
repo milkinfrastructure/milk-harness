@@ -19,7 +19,6 @@ from deploy.baseten import adapter
 import milk_harness.jobs as jobs_module
 from milk_harness.budget import (
     CampaignBudget,
-    MODAL_RATES_SOURCE_COMMAND,
     baseten_pricing_observation,
     baseten_provider_identity,
     modal_provider_identity,
@@ -55,6 +54,7 @@ from milk_harness.jobs import (
 UTC = dt.timezone.utc
 CAMPAIGN = "c" * 64
 PROJECT = "project_123"
+TEAM = "milk"
 MODAL_WORKSPACE = "ws_123"
 MODAL_ENVIRONMENT = "main"
 MODAL_APP = "milk-gpu-jobs"
@@ -199,43 +199,13 @@ def authorize(store, campaign_id=CAMPAIGN):
             NOW,
         )
     )
-    modal_source_body = (
-        b'{"gpu":"H100","gpuPrice":"0.001097",'
-        b'"cpuPrice":"0.00003942","memoryPrice":"0.00000667"}\n'
-    )
-    modal_rates = canonical_json(
-        {
-            "schema_version": "milk.modal-workspace-rates.v1",
-            "campaign_id": campaign_id,
-            "provider_identity": modal_provider_identity(
-                MODAL_WORKSPACE,
-                MODAL_ENVIRONMENT,
-                MODAL_APP,
-            ),
-            "source_command": MODAL_RATES_SOURCE_COMMAND,
-            "source_sha256": hashlib.sha256(modal_source_body).hexdigest(),
-            "observed_at": "2026-08-27T20:00:00Z",
-            "currency": "USD",
-            "rate_unit": "second",
-            "h100_usd_per_second": "0.001097",
-            "sandbox_cpu_usd_per_physical_core_second": "0.00003942",
-            "sandbox_memory_usd_per_gib_second": "0.00000667",
-            "region_mode": "default",
-            "region_multiplier": "1",
-        }
-    )
     authority = prepare_campaign_authority(
         store,
         campaign_id,
         PROJECT,
-        "milk",
-        MODAL_WORKSPACE,
-        MODAL_ENVIRONMENT,
-        MODAL_APP,
+        TEAM,
         baseten_pricing_observation_raw=baseten_observation,
         baseten_pricing_source_body=baseten_source_body,
-        modal_rates_receipt_raw=modal_rates,
-        modal_rates_source_body=modal_source_body,
         now=lambda: NOW,
     )
     create_same(
