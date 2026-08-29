@@ -2,25 +2,26 @@
 
 Milk Harness watches the traffic captured by [`milk-gateway`](https://github.com/milkinfrastructure/milk-gateway), generates evaluations until a configured limit is reached, and exits. It runs disposable provider jobs; it is not a standing model server or control service.
 
-The intended customer experience is close to Stripe:
+The hosted customer experience is deliberately Stripe-like:
 
 1. Point the official OpenAI SDK at the Milk gateway.
-2. Provide one eval configuration and the required keys.
-3. Send normal application traffic.
-4. Read bounded status and evaluation results.
+2. Set one `dt_live_...` key.
+3. Send normal application traffic and read bounded status and results.
+
+Milk Infrastructure owns the hosted eval configuration, object stores, provider credentials, and route policy. Hosted customers do not receive or manage those secrets. Self-hosters run the same gateway and harness but supply the canonical eval configuration and environment secrets themselves.
 
 No local Mac GPU is used. The gateway and scheduler are CPU-only; only an explicitly confirmed provider job can start a cloud GPU.
 
-![Architecture whiteboard](docs/architecture/IMG_4239-display.jpg)
+The code is MIT licensed, but this source repository and its OCI images remain private during production qualification and security review. This is not yet a public open-source release.
 
 ## Product contract
 
-One canonical `milk.eval.v1` document contains every non-secret setting for one eval:
+One canonical `milk.eval.v1` document contains every non-secret setting for one self-hosted or operator-managed eval:
 
 - tenant, project, environment, and workload scope;
 - hard call and decision limits;
 - gateway stores and immutable release identities;
-- selected GPU provider and exact provider resources;
+- Baseten-primary/Modal-fallback provider policy and exact provider resources;
 - teacher, student, route, and budget policy.
 
 Production reads it from two repository variables:
@@ -35,7 +36,7 @@ Credentials remain individual masked secrets. They are not embedded in the eval 
 The scheduled loop performs three bounded, separately credentialed steps:
 
 1. `gateway tick --once` discovers or repairs work from captured traffic.
-2. `jobs` reconciles existing provider state and, only with one-use authorization, creates the selected Modal or Baseten job.
+2. `jobs` reconciles existing provider state and, only with one-use authorization, uses Baseten first or Modal as the fallback.
 3. Route control ingests verified results, advances or rolls back a canary, and proves provider zero.
 
 R2 records are the authority for leases, claims, budgets, results, and routes. GitHub Actions is only the clock.
@@ -74,12 +75,17 @@ The workflow is [`production-loop.yml`](.github/workflows/production-loop.yml). 
 
 Provider work uses immutable private `linux/amd64` images:
 
-- `milk-jobs`
-- `milk-teacher-gpt-oss`
-- `milk-student-train`
-- `milk-student-branch`
+| Image | Compressed size |
+| --- | ---: |
+| CPU `milk-gateway` | 12.02 MiB |
+| CPU `milk-jobs` | 58.23 MiB |
+| GPU `milk-teacher-gpt-oss` | 10,420.49 MiB |
+| GPU `milk-student-train` | 6,371.95 MiB |
+| GPU `milk-student-branch` | 10,836.92 MiB |
 
 Modal and Baseten pull those exact images. They do not rebuild them. The local Mac does not build or run GPU images.
+
+Alpine cannot materially shrink the pinned CUDA, PyTorch, and vLLM layers; model weights remain external and are mounted and hash-verified at runtime.
 
 See [`docs/reference/production-scheduler.md`](docs/reference/production-scheduler.md) for the credential boundaries and [`docs/reference/spend-policy.md`](docs/reference/spend-policy.md) for budget semantics.
 
@@ -98,4 +104,12 @@ Builds run on a clean CPU-only x86 host. The release script accepts no provider,
 
 Current live qualification and exact release IDs are recorded in [`docs/reference/production-status.md`](docs/reference/production-status.md).
 
-This repository is MIT licensed. It is not production-qualified until a real official-SDK request produces one paid evaluation result and the provider is then observed at zero GPU.
+## Production qualification
+
+One paid teacher result is the first provider gate, not production qualification. The complete cloud proof requires:
+
+1. A normal official-SDK response and its persisted completed trace.
+2. A real 251-request student corpus: 50 TRAIN, 73 DEV, and 128 CALIBRATION. Generated traffic does not count.
+3. One trained and merged student plus BF16, dynamic FP8, and static FP8 evaluations on the same ordered DEV set.
+4. A deterministic winner, authenticated canary, and verified baseline fallback.
+5. An active signed zero route and both Baseten and Modal observed at zero compute.
