@@ -8,7 +8,7 @@ The gateway and harness functional source commits are `9a0afa8fbf9ad6b5c49e050e2
 
 The candidate uses one stable eval identity across the manifest, gateway config, scheduler, and durable object keys: `MILK_EVAL_ID`, `manifest.campaign_id`, and `gateway_config.eval_id` are equal. The separately computed SHA-256 of the canonical outer eval document is the paid-work authorization boundary. Private-image build, admission, and Cloudflare publication plus metadata/ETag readback of the five v5 release objects are complete; least-privilege S3 body readback, exact eval publication/readback, and the complete cloud proof remain required before the candidate can be called released.
 
-No paid teacher run or complete provider proof is recorded here. No local GPU has run or is required.
+No paid teacher run or complete provider proof for this candidate is recorded here. No local GPU has run or is required.
 
 ## Verified release-preparation evidence
 
@@ -21,8 +21,10 @@ No paid teacher run or complete provider proof is recorded here. No local GPU ha
 - Seven production R2 buckets and the three protected-main-only GitHub production environments exist. Live readback from Cloudflare account `d8a5175f959d3dbd4084db9fcab1c44c` confirms that all seven `milk-prod-*` buckets remain private; six are empty and `milk-prod-evidence` contains exactly five objects.
 - All seven buckets have an enabled one-day (`86400` seconds) abort-incomplete-multipart lifecycle. `milk-prod-ops-log` has an enabled 90-day (`7776000` seconds) lock and 90-day deletion lifecycle on `operational/v1/scheduler-passes/`; `milk-prod-evidence` has an enabled indefinite lock on `operational-log-references/v1/scheduler-passes/`; and `milk-prod-route-evidence` has an enabled indefinite whole-bucket lock.
 - Four artifact-admission objects ending in `b6cbbedd71ecfe64873045655a09931d0b86ac67a450e5263459fa946e543290`, `14b76ef0f21a6d599fe4d8d3af99088964325494e202468c716239a69fd66c8b`, `0e36e77a9f26d86f189e1b4e98a10978be9e6e950d704691aedbf3bec832d18b`, and `a6e3b0bb7a09f9db31cd76b9c0238655141391c9c63e969c5175306112f30790`, plus the v5 release object ending in `cd8a756a384780977a0f9c33cff17297844ed94562bb1bb5f6cd2878d20bf30c`, are published in `milk-prod-evidence`. Cloudflare returned HTTP 200 for every upload. Independent list and metadata readback returned exactly those five keys with exact local byte sizes and matching single-part ETags/MD5; every content-addressed key suffix equals the local SHA-256. This proves publication and metadata/ETag readback, not least-privilege S3 credential or body readback.
+- Authenticated Cloudflare readback confirms that Containers is not enabled and requires the `$5` monthly Workers Paid plan. No Milk Worker or Container application exists. The only account-owned R2 credential is restricted to the development bucket; broader user-owned credentials are not acceptable production identities. The twelve separately scoped production R2 identities and the Worker/Container deployment credentials remain absent.
+- Authenticated Baseten readback confirms active billing and `$0.92` remaining credits, but no active API keys, provider secrets, training jobs, or dedicated deployments. Billing records `$0.87` of prior H100 use from two deployments that are no longer present; that history is not evidence for this candidate.
 - The production workflow remains disabled. Production least-privilege credentials, eval variables, deployment, provider pull, and paid proof are still missing.
-- Modal teacher and student volumes were populated with the pinned external model files, hash-verified, and observed with zero active tasks. Model weights are not stored in the images.
+- Live Modal readback resolves the `shantanujoshi` workspace, `main` environment, deployed `milk-prod-gpu` app, and the separate teacher and student-train volumes; both current apps report zero tasks. The volumes contain the expected external model inventories and prior population evidence is hash-verified. Only older `dragontales-*` secrets exist, so the production registry, config, control, capture, and candidate secret identities still require provisioning. Model weights are not stored in the images.
 - Baseten-primary/Modal-fallback policy is implemented: Modal is eligible only after a validated retryable Baseten failure and never after ambiguous or accepted Baseten create authority.
 - Current evidence does not prove least-privilege production S3 body readback, eval binding, provider pull, deployment, paid execution, route behavior, or provider zero.
 
@@ -39,7 +41,7 @@ One paid eval is planned but not yet executed. The synthetic cloud-mechanics eva
 ## Work required before activation
 
 1. Create least-privilege production storage credentials, body-read the five published release objects through S3, and publish and read back the exact eval documents.
-2. Create provider resources and record deployment receipts. Continue verifying the installed retention and privacy controls by live readback.
+2. Enable the Workers Paid plan, provision the exact Cloudflare Container and Baseten resources plus their separately scoped credentials, and record deployment receipts. Continue verifying the installed retention and privacy controls by live readback.
 3. Materialize the exact bounded cloud-mechanics eval above with its outer-document approval digest, 3,600-second winner bound, limits, admission gate, and budget.
 4. Deploy the admitted gateway and enable the scheduler only after every secret, resource identity, and configuration digest is verified.
 
