@@ -61,11 +61,12 @@ Training. Support issue `#28317` requests Training API access and confirmation
 that the organization may use no-build direct-image winner serving. No human
 response has arrived yet.
 
-Baseten showed `$0.92` remaining credits and no editable hard budget in the UI.
-The application therefore remains the enforceable spend boundary: `$1,000`
-absolute GPU authority, `$850` launch cutoff, `$150` teardown reserve, and a
-separate `$175` first-proof envelope. No GPU reservation or paid Baseten job has
-been created.
+Baseten showed `$0.92` remaining credits before budget configuration. A `$1,000`
+monthly provider budget is now enabled. Baseten explicitly excludes
+Training and Dedicated Inference from provider-budget enforcement, so the
+application remains the enforceable GPU boundary: `$1,000` absolute authority,
+`$850` launch cutoff, `$150` teardown reserve, and a separate `$175` first-proof
+envelope. No GPU reservation or paid Baseten job has been created.
 
 ## Remaining release gates
 
