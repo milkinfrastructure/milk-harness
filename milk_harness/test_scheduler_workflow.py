@@ -170,8 +170,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
             "SIGNING",
         ):
             self.assertNotIn(forbidden, self.provider_container)
-        self.assertIn("-e MODAL_TOKEN_ID", self.provider_container)
-        self.assertIn("-e MODAL_TOKEN_SECRET", self.provider_container)
+        self.assertIn('"${provider_credential_env[@]}"', self.provider_container)
         for forbidden in ("BASETEN_API_KEY", "MODAL_TOKEN_", "MILK_CONTROL_R2_"):
             self.assertNotIn(forbidden, self.gateway_ingest)
         self.assertIn("MILK_CONTROL_STORE_ACCESS_KEY_ID", self.gateway_ingest)
@@ -183,12 +182,35 @@ class SchedulerWorkflowTest(unittest.TestCase):
     def test_exact_cross_provider_runtime_is_bound_to_the_confirmed_config(self):
         for name in PROVIDER_RUNTIME_FIELDS:
             argument = f"--{name.replace('_', '-')}"
-            environment = f"MILK_{name.upper()}"
             self.assertGreaterEqual(self.provider.count(argument), 2, argument)
-            self.assertIn(environment, self.provider)
-        self.assertIn("MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}", self.provider)
+            if name == "gpu_provider":
+                self.assertIn(
+                    '["provider_runtime"]["gpu_provider"]',
+                    self.provider,
+                )
+            else:
+                self.assertIn(f"MILK_{name.upper()}", self.provider)
         self.assertIn(
-            "MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}", self.provider
+            "BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}",
+            self.provider,
+        )
+        self.assertIn(
+            "MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}",
+            self.provider,
+        )
+        self.assertIn(
+            "MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}",
+            self.provider,
+        )
+        self.assertIn('case "$confirmed_gpu_provider" in', self.provider)
+        self.assertLess(
+            self.provider.index('confirmed_gpu_provider=$(python3 -c'),
+            self.provider.index('case "$confirmed_gpu_provider" in'),
+        )
+        self.assertIn('provider_credential_env=(-e BASETEN_API_KEY)', self.provider)
+        self.assertIn(
+            'provider_credential_env=(-e MODAL_TOKEN_ID -e MODAL_TOKEN_SECRET)',
+            self.provider,
         )
         self.assertIn('[ -n "$MODAL_TOKEN_ID" ] || fail', self.provider)
         self.assertIn('[ -n "$MODAL_TOKEN_SECRET" ] || fail', self.provider)

@@ -8,7 +8,7 @@ The unmodified source is [`docs/architecture/IMG_4239.HEIC`](docs/architecture/I
 
 This repository contains two separately released and credentialed programs:
 
-- `jobs`: a one-shot executor that consumes creator-only [`milk-gateway`](https://github.com/milkinfrastructure/milk-gateway) launch outbox records through read-only control-store credentials, reserves one conservative campaign budget, runs explicit Baseten-primary/Modal-fallback lifecycles, records bounded evidence, reconciles ambiguity, and verifies teardown.
+- `jobs`: a one-shot executor that consumes creator-only [`milk-gateway`](https://github.com/milkinfrastructure/milk-gateway) launch outbox records through read-only control-store credentials, reserves one conservative campaign budget, runs the exact Modal or Baseten GPU provider selected by the confirmed eval config, records bounded evidence, reconciles ambiguity, and verifies teardown.
 - `release`: a one-shot image builder that uses only its CPU-only x86 host's Docker socket, with private Milk GHCR write access and no provider, R2-authority, or route-signing credentials.
 
 The existing Exo harness is the manager. [`tools/exo`](tools/exo) installs one typed `milk` tool whose only actions are status, reconcile, and run a host-confirmed pass. A fixed host command dispatches this workflow; Exo never receives provider credentials, free-form command arguments, or approval authority.
@@ -16,6 +16,8 @@ The existing Exo harness is the manager. [`tools/exo`](tools/exo) installs one t
 There is no always-on manager, provider plugin framework, queue, scheduling database, or third repository. R2 typed records are coordination authority. The one production workflow runs a gateway `tick --once` job before a separately credentialed jobs image; each process exits after one bounded pass. Fixed R2 leases serialize both gateway ticks and provider passes. Workflow concurrency is defense in depth.
 
 Jobs verifies the gateway frontier, outbox, claim, image, provider choice, and budget before creation. It returns only bounded evidence-addressed winner and teardown results. The workflow invokes the exact gateway image afterward with a separate control writer and teardown-only route reader. Neither provider process receives gateway config, capture, route, signing, or control-write authority.
+
+`provider_runtime.gpu_provider` is the per-eval `modal` or `baseten` choice bound into the confirmed config hash. Only that provider's API credential enters the jobs container. The gateway's Baseten-primary/Modal-fallback winner authority remains fixed so existing route and admission verification stay provider-neutral.
 
 Standalone Baseten winner and Modal mutation entrypoints are disabled. Their explicit provider lifecycles are callable only through jobs after a matching gateway claim, shared budget reservation, immutable provider selection, and live lease check.
 

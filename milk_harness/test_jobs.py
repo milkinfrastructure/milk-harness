@@ -1010,7 +1010,8 @@ class BasetenJobsTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "handoff is crash-safe"):
             jobs_module._disabled_modal_winner_preflight()
         source = inspect.getsource(jobs_module.main)
-        self.assertIn("allow_modal_winner_fallback=True", source)
+        self.assertIn("gpu_provider=arguments.gpu_provider", source)
+        self.assertIn('arguments.gpu_provider == "modal"', source)
 
     def test_production_api_has_no_operator_candidate_key_escape_hatch(self):
         self.assertNotIn(

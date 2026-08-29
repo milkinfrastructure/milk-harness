@@ -73,6 +73,7 @@ STORE_IDENTITIES = (
     "gateway_ingest_route",
 )
 PROVIDER_RUNTIME_FIELDS = (
+    "gpu_provider",
     "baseten_team_name",
     "winner_model_alias",
     "modal_workspace_id",
@@ -1001,14 +1002,20 @@ def _provider_runtime(values):
     if not isinstance(values, dict) or set(values) != set(PROVIDER_RUNTIME_FIELDS):
         raise ValueError("provider runtime settings are invalid")
     if (
-        not isinstance(values["baseten_team_name"], str)
+        not isinstance(values["gpu_provider"], str)
+        or values["gpu_provider"] not in {"baseten", "modal"}
+        or not isinstance(values["baseten_team_name"], str)
         or TEAM_NAME.fullmatch(values["baseten_team_name"]) is None
         or not isinstance(values["winner_model_alias"], str)
         or MODEL_ALIAS.fullmatch(values["winner_model_alias"]) is None
         or any(
             not isinstance(values[name], str) or OPAQUE.fullmatch(values[name]) is None
             for name in PROVIDER_RUNTIME_FIELDS
-            if name not in {"baseten_team_name", "winner_model_alias"}
+            if name not in {
+                "gpu_provider",
+                "baseten_team_name",
+                "winner_model_alias",
+            }
         )
     ):
         raise ValueError("provider runtime setting is invalid")
@@ -1152,7 +1159,7 @@ def _validated_run_manifest(raw, confirmed_sha256, harness_source_commit, root):
     }
     if (
         set(manifest) != expected_keys
-        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v4"
+        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v5"
         or manifest.get("provider_policy")
         != {"primary": "baseten", "fallback": "modal"}
         or not isinstance(harness_source_commit, str)
@@ -1344,7 +1351,7 @@ def verify_gateway_ingest_run_config(
         manifest_raw not in {canonical_manifest, canonical_manifest.removesuffix(b"\n")}
         or not isinstance(confirmed_sha256, str)
         or hashlib.sha256(canonical_manifest).hexdigest() != confirmed_sha256
-        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v4"
+        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v5"
         or manifest.get("provider_policy")
         != {"primary": "baseten", "fallback": "modal"}
         or not isinstance(manifest.get("images"), dict)

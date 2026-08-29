@@ -1650,13 +1650,15 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 create_authorization_raw=authorization_raw,
                 modal_plans_by_run_id=plans,
                 winner_values_by_run_id=winner_values,
+                gpu_provider="modal",
                 allow_modal_winner_fallback=True,
             )
             self.assertEqual(result["verified"], 2)
             self.assertEqual(result["dispatched"], 2)
+            self.assertEqual(result["gpu_provider"], "modal")
             self.assertEqual(len(result["winner_result_references"]), 1)
-            self.assertEqual(ordinary_preflights, [TEAM])
-            self.assertEqual(winner_lifecycle.calls, 1)
+            self.assertEqual(ordinary_preflights, [])
+            self.assertEqual(winner_lifecycle.calls, 0)
             selection_indexes = [
                 index
                 for index, event in enumerate(events)
@@ -1673,6 +1675,26 @@ class JobsProviderIntegrationTest(unittest.TestCase):
             self.assertEqual(len(selection_indexes), 2)
             self.assertEqual(len(reservation_indexes), 2)
             self.assertLess(max(selection_indexes), min(reservation_indexes))
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "stored provider selection differs",
+            ):
+                dispatch_cross_provider_outboxes(
+                    jobs,
+                    ModalLifecycle(store, events),
+                    winner_lifecycle,
+                    control_store=ReadOnlyControlStore(control),
+                    scope_prefix=SCOPE_PREFIX,
+                    settings=settings,
+                    baseten_team_name=TEAM,
+                    modal_identity=modal_identity(),
+                    modal_preflight=lambda: modal_preflight(),
+                    provider_pass_claim_raw=provider_pass_raw,
+                    create_authorization_raw=authorization_raw,
+                    modal_plans_by_run_id=plans,
+                    winner_values_by_run_id=winner_values,
+                    gpu_provider="baseten",
+                )
 
     def test_winner_result_reference_embeds_full_canonical_acceptance(self):
         with tempfile.TemporaryDirectory() as root:

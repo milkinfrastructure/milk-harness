@@ -109,6 +109,7 @@ BASETEN_WINNER_ADMIT_STATES = {
 }
 BASETEN_TRAINING_PREFLIGHT_SCHEMA = "milk.baseten-training-preflight.v1"
 MODAL_PREFLIGHT_SCHEMA = "milk.modal-preflight.v1"
+GPU_PROVIDERS = frozenset({"baseten", "modal"})
 PREPARATION_TIMEOUT_SECONDS = 60
 CREATE_MUTATION_TAIL_SECONDS = 120
 PROVIDER_CLOCK_SKEW_SECONDS = 300
@@ -1565,10 +1566,45 @@ def _baseten_training_preflight(value, team_name, project_id):
         and status != 429
         or reason == "server_unavailable"
         and (type(status) is not int or not 500 <= status <= 599)
-        or reason not in {"timeout", "rate_limited", "server_unavailable"}
+        or reason == "capability_unavailable"
+        and status is not None
+        or reason
+        not in {
+            "capability_unavailable",
+            "timeout",
+            "rate_limited",
+            "server_unavailable",
+        }
     ):
         raise ValueError("Baseten preflight is not safe for Modal fallback")
     return value
+
+
+def _baseten_training_unavailable_preflight(team_name, project_id, observed_at):
+    observed_at = _utc_text(observed_at)
+    evidence = {
+        "schema_version": "milk.baseten-training-capability-unavailable.v1",
+        "team_name": team_name,
+        "project_id": project_id,
+        "reason": "capability_unavailable",
+        "status": None,
+        "observed_at": observed_at,
+    }
+    return _baseten_training_preflight(
+        {
+            "schema_version": BASETEN_TRAINING_PREFLIGHT_SCHEMA,
+            "provider": "baseten",
+            "team_name": team_name,
+            "project_id": project_id,
+            "outcome": "retryable_unavailable",
+            "reason": "capability_unavailable",
+            "status": None,
+            "evidence_sha256": _digest(evidence),
+            "observed_at": observed_at,
+        },
+        team_name,
+        project_id,
+    )
 
 
 def _modal_preflight(value, provider_identity):
@@ -5354,6 +5390,11 @@ class BasetenTransport:
         return raw
 
 
+class _UnavailableBasetenTransport:
+    def request(self, *unused_arguments, **unused_keywords):
+        raise RuntimeError("Baseten is not selected for this eval")
+
+
 class JobEvidence:
     def __init__(self, store, campaign_id, run_id):
         if HEX64.fullmatch(campaign_id or "") is None or HEX64.fullmatch(run_id or "") is None:
@@ -8539,6 +8580,10 @@ def _disabled_modal_winner_preflight():
     )
 
 
+def _disabled_modal_preflight():
+    raise RuntimeError("Modal is not selected for this eval")
+
+
 def dispatch_cross_provider_outboxes(
     baseten_jobs,
     modal_jobs,
@@ -8554,6 +8599,7 @@ def dispatch_cross_provider_outboxes(
     create_authorization_raw,
     modal_plans_by_run_id,
     winner_values_by_run_id,
+    gpu_provider,
     allow_modal_winner_fallback=False,
 ):
     """Verify, select, and dispatch one bounded cross-provider frontier pass."""
@@ -8563,7 +8609,10 @@ def dispatch_cross_provider_outboxes(
         or not callable(modal_preflight)
         or not isinstance(modal_plans_by_run_id, dict)
         or not isinstance(winner_values_by_run_id, dict)
+        or not isinstance(gpu_provider, str)
+        or gpu_provider not in GPU_PROVIDERS
         or type(allow_modal_winner_fallback) is not bool
+        or allow_modal_winner_fallback != (gpu_provider == "modal")
         or not isinstance(modal_identity, dict)
         or tuple(modal_identity)
         != (
@@ -8684,19 +8733,22 @@ def dispatch_cross_provider_outboxes(
                 launch_source=item["launch"]["launch_source"],
                 baseten_team_name=baseten_team_name,
                 modal_identity=modal_identity,
-                baseten_preflight=baseten_winner_lifecycle.preflight,
+                baseten_preflight=(
+                    baseten_winner_lifecycle.preflight
+                    if gpu_provider == "baseten"
+                    else lambda: baseten_winner.baseten_unavailable_preflight_receipt(
+                        baseten_team_name,
+                        "capability_unavailable",
+                        None,
+                        baseten_jobs.now(),
+                    )
+                ),
                 modal_preflight=(
                     modal_preflight
-                    if allow_modal_winner_fallback
-                    else _disabled_modal_winner_preflight
+                    if gpu_provider == "modal" and allow_modal_winner_fallback
+                    else _disabled_modal_preflight
                 ),
             )
-            if (
-                not allow_modal_winner_fallback
-                and item["selection"]["selection"]["selected_provider"]
-                == "modal"
-            ):
-                _disabled_modal_winner_preflight()
         else:
             item["selection"] = select_baseten_primary_modal_fallback(
                 store=store,
@@ -8706,10 +8758,24 @@ def dispatch_cross_provider_outboxes(
                 baseten_team_name=baseten_team_name,
                 baseten_project_id=baseten_jobs.project_id,
                 modal_identity=modal_identity,
-                baseten_preflight=lambda: baseten_jobs.preflight(
-                    baseten_team_name
+                baseten_preflight=lambda: (
+                    baseten_jobs.preflight(baseten_team_name)
+                    if gpu_provider == "baseten"
+                    else _baseten_training_unavailable_preflight(
+                        baseten_team_name,
+                        baseten_jobs.project_id,
+                        baseten_jobs.now(),
+                    )
                 ),
-                modal_preflight=modal_preflight,
+                modal_preflight=(
+                    modal_preflight
+                    if gpu_provider == "modal"
+                    else _disabled_modal_preflight
+                ),
+            )
+        if item["selection"]["selection"]["selected_provider"] != gpu_provider:
+            raise RuntimeError(
+                "stored provider selection differs from the confirmed eval provider"
             )
 
     results = []
@@ -8795,6 +8861,7 @@ def dispatch_cross_provider_outboxes(
     return {
         "schema_version": "milk.jobs-cross-provider-dispatch.v1",
         "provider_policy": {"primary": "baseten", "fallback": "modal"},
+        "gpu_provider": gpu_provider,
         "scope_prefix": scope_prefix,
         "frontier_scan_limit": GPU_LAUNCH_SCAN_LIMIT,
         "verified": len(launches),
@@ -9403,6 +9470,7 @@ def main(argv=None):
     parser.add_argument("--campaign-id", required=True)
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--baseten-team-name", dest="team_name", required=True)
+    parser.add_argument("--gpu-provider", choices=sorted(GPU_PROVIDERS), default="baseten")
     parser.add_argument("--candidate-key-socket", required=True)
     parser.add_argument("--scope-prefix", required=True)
     parser.add_argument("--lease-token", required=True)
@@ -9561,9 +9629,22 @@ def main(argv=None):
                 ).hexdigest(),
             }
 
-        transport = BasetenTransport(
-            os.environ.get("BASETEN_API_KEY", ""),
-            timeout_seconds=arguments.request_timeout_seconds,
+        baseten_api_key = os.environ.get("BASETEN_API_KEY", "")
+        modal_token_id = os.environ.get("MODAL_TOKEN_ID", "")
+        modal_token_secret = os.environ.get("MODAL_TOKEN_SECRET", "")
+        if arguments.gpu_provider == "baseten" and not baseten_api_key:
+            raise ValueError("BASETEN_API_KEY is required for a Baseten eval")
+        if arguments.gpu_provider == "modal" and not (
+            modal_token_id and modal_token_secret
+        ):
+            raise ValueError("Modal credentials are required for a Modal eval")
+        transport = (
+            BasetenTransport(
+                baseten_api_key,
+                timeout_seconds=arguments.request_timeout_seconds,
+            )
+            if arguments.gpu_provider == "baseten"
+            else _UnavailableBasetenTransport()
         )
         jobs = BasetenJobs(
             store=store,
@@ -9572,10 +9653,14 @@ def main(argv=None):
             transport=transport,
             request_guard=live_request_guard,
         )
-        winner_runtime = baseten_winner.BasetenWinnerRuntime(
-            api_key=os.environ.get("BASETEN_API_KEY", ""),
-            team_name=arguments.team_name,
-            timeout_seconds=arguments.request_timeout_seconds,
+        winner_runtime = (
+            baseten_winner.BasetenWinnerRuntime(
+                api_key=baseten_api_key,
+                team_name=arguments.team_name,
+                timeout_seconds=arguments.request_timeout_seconds,
+            )
+            if arguments.gpu_provider == "baseten"
+            else None
         )
         winner_lifecycle = baseten_winner.BasetenWinnerLifecycle(
             store=store,
@@ -9663,7 +9748,10 @@ def main(argv=None):
                     create_authorization_raw=create_authorization_raw,
                     modal_plans_by_run_id=plans,
                     winner_values_by_run_id=winner_values,
-                    allow_modal_winner_fallback=True,
+                    gpu_provider=arguments.gpu_provider,
+                    allow_modal_winner_fallback=(
+                        arguments.gpu_provider == "modal"
+                    ),
                 )
             else:
                 dispatched = {

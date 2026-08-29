@@ -737,6 +737,7 @@ class SchedulerTest(unittest.TestCase):
             "control_session": None,
         }
         provider_runtime = {
+            "gpu_provider": "modal",
             "baseten_team_name": "milk-production",
             "winner_model_alias": "milk-student",
             "modal_workspace_id": "ws-1",
@@ -788,7 +789,7 @@ class SchedulerTest(unittest.TestCase):
             ),
         }
         manifest = {
-            "schema_version": "milk.confirmed-production-run-config.v4",
+            "schema_version": "milk.confirmed-production-run-config.v5",
             "provider_policy": {"primary": "baseten", "fallback": "modal"},
             "harness_source_commit": source_commit,
             "campaign_id": "e" * 64,
@@ -949,15 +950,15 @@ class SchedulerTest(unittest.TestCase):
                 images["gateway"],
                 changed_gateway_deployment,
             )
-        v3_manifest = {
+        v4_manifest = {
             **manifest,
-            "schema_version": "milk.confirmed-production-run-config.v3",
+            "schema_version": "milk.confirmed-production-run-config.v4",
         }
-        v3_raw = canonical_json(v3_manifest)
+        v4_raw = canonical_json(v4_manifest)
         with self.assertRaisesRegex(ValueError, "confirmed run config is invalid"):
             verify_gateway_run_config(
-                v3_raw,
-                hashlib.sha256(v3_raw).hexdigest(),
+                v4_raw,
+                hashlib.sha256(v4_raw).hexdigest(),
                 source_commit,
                 root,
                 gateway_raw,
@@ -1036,6 +1037,34 @@ class SchedulerTest(unittest.TestCase):
                 image_release_sha256="f" * 64,
                 gateway_deployment=gateway_deployment,
                 provider_runtime=changed_runtime,
+                provider_secret_names=provider_secrets,
+                store_identities={
+                    name: store_identities[name]
+                    for name in (
+                        "provider_control",
+                        "evidence",
+                        "ops_log",
+                        "create_authority_write",
+                        "create_authority_read",
+                        "gateway_ingest_control",
+                        "gateway_ingest_route",
+                    )
+                },
+            )
+        invalid_provider_runtime = {**provider_runtime, "gpu_provider": "fallback"}
+        with self.assertRaisesRegex(ValueError, "provider runtime setting"):
+            verify_provider_run_config(
+                manifest_raw,
+                confirmed,
+                source_commit,
+                root,
+                campaign_id="e" * 64,
+                provider_project_id="project_1",
+                scope_prefix=scope,
+                images=images,
+                image_release_sha256="f" * 64,
+                gateway_deployment=gateway_deployment,
+                provider_runtime=invalid_provider_runtime,
                 provider_secret_names=provider_secrets,
                 store_identities={
                     name: store_identities[name]
