@@ -1,16 +1,18 @@
 # Production qualification
 
-Last updated: 2026-08-29 00:44 America/Los_Angeles.
+Last updated: 2026-08-29 01:01 America/Los_Angeles.
 
 ## Goal
 
-Prove the complete hosted path: an official OpenAI SDK request enters the Milk gateway, selected traffic becomes one bounded eval, one confirmed Modal teacher job produces an authoritative result, and the provider returns to zero GPU. Then publish the gateway and harness as a clean MIT-licensed install surface whose documentation matches that proof.
+Prove the complete hosted path: official OpenAI SDK traffic enters the Milk gateway, retained traffic reaches the fixed 50 TRAIN / 73 DEV / 128 CALIBRATION student gate, disposable provider jobs train and evaluate the three admitted branches, the deterministic winner receives a signed canary, saturation falls back to the baseline, a signed zero route is published, and every provider returns to zero GPU. Then publish the gateway and harness as clean MIT-licensed install surfaces whose documentation matches that proof.
+
+The first one-request Modal teacher run is only the provider qualification phase. It does not qualify the student, route, fallback, teardown, or complete product loop.
 
 Budget guard: `$1,000` absolute campaign ceiling, stop new paid work at `$850`, retain `$150` for running work and teardown.
 
 ## Verified
 
-- `milk-gateway` and `milk-harness` are published in GitHub.
+- Private `milk-gateway` and `milk-harness` repositories are published in GitHub. They are not public yet.
 - Gateway release source: `1e6ac86b9806486a7fdfa88051e2f8446bf884c0`.
 - Gateway image: `ghcr.io/milkinfrastructure/milk-gateway@sha256:f1aaafee000af3973eb9ca1d880ce71335089d574a8c56591146354e75a60a30`.
 - Harness release: `704e517b00d129b1a52c4e4f2885ae38407e1effd052c9641d7416bd09c1d420`.
@@ -26,22 +28,30 @@ Budget guard: `$1,000` absolute campaign ceiling, stop new paid work at `$850`, 
 - The existing admitted gateway image remains authoritative; documentation-only and deployment-tool commits do not require rebuilding it or its three digest-bound GPU images.
 - Modal volume `milk-prod-teacher-cache` contains exactly the 24 admitted `openai/gpt-oss-120b` files at revision `b5c939de8f754692c1647ca79fbf85e8c1e70f8a`, totaling 65,276,850,729 bytes. The population app stopped with zero tasks.
 - Fresh smoke, capture, outcome, candidate, container-admin, route, and signing credentials exist only in the owner-only qualification evidence directory. They are not committed.
+- Production workflow commit `d33304478c95a53ea68d34d7acb52942b7fad1c3` omits absent R2 session-token variables, so permanent R2 credentials no longer reach containers as invalid empty tokens. Its 17 focused workflow tests pass.
+- The production audit proved that the earlier `max_calls = max_decisions = 1` config cannot create a student and that pinned provider dispatch did not execute its stated Baseten-primary / Modal-fallback policy. Those are now explicit release blockers rather than implied capabilities.
 - No paid teacher GPU has run. No local GPU has run.
 
 ## In progress
 
-- Create distinct least-privilege R2 credentials for each runtime role.
-- Materialize and bind the first fresh `milk.eval.v1` document with `max_calls = max_decisions = 1` and `gpu_provider = modal`.
-- Deploy the gateway and enable the scheduler only after all secrets and config are complete.
+- Make Baseten-primary / Modal-fallback a real live preflight decision while preserving the no-fallback rule after a create intent or ambiguous create.
+- Populate and independently verify the exact Qwen student base-model volume without starting a GPU.
+- Create distinct least-privilege permanent R2 credentials for each runtime role. Permanent credentials omit all session-token secrets.
+- Configure the Cloudflare AI Gateway with payload logging disabled, zero-data-retention enabled, retries disabled, and an account spend limit before the first request.
+- Materialize two fresh immutable evals: a one-request teacher qualification, then the student-capable campaign with route authority and bounded spend.
+- Deploy the gateway and enable the scheduler only after all secrets, privacy controls, and config are complete.
 
 ## Remaining live gates
 
-1. Cloudflare Worker and Container are present on the admitted image and custom domain.
-2. Official SDK smoke returns one valid completion through the gateway.
-3. Captured traffic creates exactly one teacher claim and launch record.
-4. One confirmed Modal job writes one ready result within the campaign guard.
-5. Status reports the configured limit reached with no ambiguous or not-started result.
-6. Modal reports zero active GPU work after teardown.
-7. GitHub, R2, Cloudflare, Modal, and release receipts agree on the exact eval and image identities.
+1. Cloudflare Worker and Container are present on the admitted image and production hostname.
+2. Official SDK smoke returns a valid completion through the gateway and its immutable trace is present.
+3. The one-request Modal teacher qualification produces one terminal result and Modal returns to zero GPU.
+4. The student campaign records at least 50 TRAIN, 73 automatic DEV, and exactly 128 CALIBRATION inputs under the same immutable eval.
+5. One train/merge job and the BF16, dynamic-FP8, and static-FP8 branches complete against the same ordered DEV set; branch intervals prove the intended fanout.
+6. The deterministic winner is admitted, a signed 100-bps canary is exercised through the official SDK, and genuine saturation falls back to the baseline.
+7. Route control publishes and verifies the signed zero successor, removes the candidate credential, tears down the winner, and observes zero provider compute.
+8. The final budget head stays below the `$1,000` ceiling and no new work starts at or above `$850`.
+9. GitHub, R2, Cloudflare, Modal, Baseten when selected, and release receipts agree on the exact eval and image identities.
+10. Repository history, assets, examples, and install documentation pass the public-release security gate before either repository becomes public.
 
 Anything short of those live gates is release preparation, not production qualification.
