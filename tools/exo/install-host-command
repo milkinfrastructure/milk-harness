@@ -21,7 +21,9 @@ service_uid=$(id -u "$service_user")
 service_gid=$(id -g "$service_user")
 source_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 source_command=$source_dir/milk-managed
-if [ ! -f "$source_command" ] || [ -L "$source_command" ]; then
+source_github_rest=$source_dir/../../deploy/github_rest.py
+if [ ! -f "$source_command" ] || [ -L "$source_command" ] || \
+  [ ! -f "$source_github_rest" ] || [ -L "$source_github_rest" ]; then
   printf 'milk-managed source is invalid\n' >&2
   exit 66
 fi
@@ -42,10 +44,11 @@ done
 
 install -d -o root -g root -m 0755 /opt/milk /opt/milk/bin
 install -o root -g root -m 0755 "$source_command" /opt/milk/bin/milk-managed
+install -o root -g root -m 0755 "$source_github_rest" /opt/milk/bin/github-rest.py
 install -d -o root -g root -m 0755 /etc/milk
 install -d -o root -g "$service_gid" -m 0750 /etc/milk/evals
 install -d -o "$service_uid" -g "$service_gid" -m 0700 \
   /var/lib/milk /var/lib/milk/evals
 
-printf 'installed /opt/milk/bin/milk-managed; eval documents=/etc/milk/evals; state=/var/lib/milk/evals; service uid=%s gid=%s\n' \
+printf 'installed /opt/milk/bin/milk-managed and fixed GitHub REST helper; eval documents=/etc/milk/evals; state=/var/lib/milk/evals; service uid=%s gid=%s\n' \
   "$service_uid" "$service_gid"

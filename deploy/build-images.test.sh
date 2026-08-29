@@ -183,6 +183,9 @@ PY
 
 mkdir "$test_root/bin"
 mkdir -p "$test_root/home/.docker/cli-plugins"
+github_token_file=$test_root/github-token
+printf '%s\n' 'ephemeral-test-password' >"$github_token_file"
+chmod 0400 "$github_token_file"
 cat >"$test_root/home/.docker/cli-plugins/docker-buildx" <<'EOF'
 #!/bin/sh
 exit 0
@@ -424,30 +427,6 @@ case "$*" in
 esac
 EOF
 
-cat >"$test_root/bin/gh" <<'EOF'
-#!/bin/sh
-set -eu
-command_log=gh
-for argument do command_log=$command_log'|'$argument; done
-printf '%s\n' "$command_log" >>"$TEST_COMMAND_LOG"
-case "$*" in
-  'auth token --hostname github.com') printf '%s\n' 'ephemeral-test-password' ;;
-  *'/orgs/milkinfrastructure/packages?package_type=container&per_page=100'*)
-    printf 'milk-gateway\tprivate\n'
-    if [ "${TEST_PUBLIC_PACKAGE:-0}" -eq 0 ]; then
-      printf 'milk-student-train\tprivate\n'
-    else
-      printf 'milk-student-train\tpublic\n'
-    fi
-    printf 'milk-student-branch\tprivate\n'
-    printf 'milk-teacher-gpt-oss\tprivate\n'
-    printf 'milk-jobs\tprivate\n'
-    ;;
-  *'/orgs/milkinfrastructure/packages/container/'*) printf '%s\n' 'private' ;;
-  *) exit 91 ;;
-esac
-EOF
-
 cat >"$test_root/bin/docker" <<'EOF'
 #!/bin/sh
 set -eu
@@ -511,6 +490,22 @@ EOF
 cat >"$test_root/bin/python3" <<'EOF'
 #!/bin/sh
 set -eu
+if [ "${1:-} ${2:-}" = "$TEST_REPO/deploy/github_rest.py packages" ]; then
+  token_file=$3
+  IFS= read -r token <"$token_file"
+  [ "$token" = ephemeral-test-password ]
+  printf '%s\n' 'github-rest|list-container-packages' >>"$TEST_COMMAND_LOG"
+  printf 'milk-gateway\tprivate\n'
+  if [ "${TEST_PUBLIC_PACKAGE:-0}" -eq 0 ]; then
+    printf 'milk-student-train\tprivate\n'
+  else
+    printf 'milk-student-train\tpublic\n'
+  fi
+  printf 'milk-student-branch\tprivate\n'
+  printf 'milk-teacher-gpt-oss\tprivate\n'
+  printf 'milk-jobs\tprivate\n'
+  exit 0
+fi
 if [ "${1:-}" = "$TEST_REPO/deploy/verify-private-image.py" ]; then
   shift
   exec "$TEST_REAL_PYTHON" "$TEST_FAKE_VERIFIER" "$@"
@@ -518,12 +513,13 @@ fi
 exec "$TEST_REAL_PYTHON" "$@"
 EOF
 chmod 0700 \
-  "$test_root/bin/git" "$test_root/bin/gh" "$test_root/bin/docker" \
+  "$test_root/bin/git" "$test_root/bin/docker" \
   "$test_root/bin/python3"
 
 test_env() {
   env -i \
     HOME="$test_root/home" \
+    MILK_GITHUB_TOKEN_FILE="$github_token_file" \
     PATH="$test_root/bin:$PATH" \
     TEST_REPO="$root" \
     TEST_REAL_PYTHON="$(command -v python3)" \
@@ -570,7 +566,7 @@ assert_absent -R -Fq 'ephemeral-test-password' "$output" "$test_root/commands.lo
 [ "$(grep -c '^docker|.*buildx|build|' "$test_root/commands.log")" -eq 4 ]
 [ "$(grep -c '^docker|.*buildx|imagetools|inspect|--raw|' "$test_root/commands.log")" -eq 12 ]
 [ "$(grep -c '^verifier|' "$test_root/commands.log")" -eq 4 ]
-[ "$(grep -c '^gh|auth|token|--hostname|github.com$' "$test_root/commands.log")" -eq 5 ]
+[ "$(grep -c '^github-rest|list-container-packages$' "$test_root/commands.log")" -eq 1 ]
 build_order=$(grep '^docker|.*buildx|build|' "$test_root/commands.log" | \
   sed -n 's/.*|--tag|ghcr.io\/milkinfrastructure\/milk-\([^:|]*\):source-[^|]*|.*/\1/p')
 [ "$build_order" = "$(printf '%s\n' jobs student-train student-branch teacher-gpt-oss)" ]
@@ -883,6 +879,36 @@ assert_rejected unpublished test_env "TEST_REMOTE_REVISION=$(printf '%040d' 9)" 
 mkdir "$test_root/existing"
 assert_rejected existing test_env \
   "$builder" "$gateway" "$test_root/existing"
+assert_rejected relative-token-file test_env MILK_GITHUB_TOKEN_FILE=relative-token \
+  "$builder" "$gateway" "$test_root/rejected-relative-token-file"
+
+assert_credential_rejected() {
+  name=$1
+  token_path=$2
+  rm -f -- "$test_root/commands.log"
+  set +e
+  test_env MILK_GITHUB_TOKEN_FILE="$token_path" \
+    "$builder" "$gateway" "$test_root/rejected-$name" >/dev/null 2>&1
+  status=$?
+  set -e
+  [ "$status" -eq 77 ]
+  [ ! -e "$test_root/commands.log" ]
+  [ ! -e "$test_root/rejected-$name" ]
+}
+
+bad_mode_token=$test_root/bad-mode-token
+printf '%s\n' 'ephemeral-test-password' >"$bad_mode_token"
+chmod 0644 "$bad_mode_token"
+assert_credential_rejected bad-token-mode "$bad_mode_token"
+token_symlink=$test_root/token-symlink
+ln -s "$github_token_file" "$token_symlink"
+assert_credential_rejected token-symlink "$token_symlink"
+multiline_token=$test_root/multiline-token
+printf 'one\ntwo\n' >"$multiline_token"
+chmod 0400 "$multiline_token"
+assert_credential_rejected multiline-token "$multiline_token"
+assert_credential_rejected missing-token "$test_root/missing-token"
+
 assert_rejected registry-credential test_env GH_TOKEN=secret \
   "$builder" "$gateway" "$test_root/rejected-registry-credential"
 assert_rejected provider-credential test_env BASETEN_API_KEY=secret \
@@ -973,6 +999,10 @@ assert_absent -Eq '^(ADD|RUN)[[:space:]]' "$teacher_dockerfile"
 [ "$(grep -c '^COPY .*--link' "$teacher_dockerfile")" -eq \
   "$(grep -c '^COPY ' "$teacher_dockerfile")" ]
 grep -Fq -- '--sbom=true' "$builder"
+assert_absent -Fq 'command -v gh' "$builder"
+assert_absent -Fq '"$gh"' "$builder"
+grep -Fq 'MILK_GITHUB_TOKEN_FILE' "$builder"
+grep -Fq 'deploy/github_rest.py' "$builder"
 grep -Fxq 'USER 65532:65532' "$root/Dockerfile.jobs"
 assert_absent -Fq 'import modal' "$root/Dockerfile.jobs"
 assert_absent -Fq 'milk_harness/modal_jobs.py' "$root/Dockerfile.jobs"
@@ -995,6 +1025,7 @@ assert_absent -Fq '!deploy/teacher/' "$root/Dockerfile.jobs.dockerignore"
 sh -n "$builder" "$0"
 python3 -m py_compile "$root/deploy/verify-private-image.py"
 python3 -m unittest "$root/deploy/test_verify_private_image.py"
+python3 -m unittest "$root/deploy/test_github_rest.py"
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -s sh "$builder" "$0"
 fi

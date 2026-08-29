@@ -56,9 +56,10 @@ if [ -n "$reuse_release_dir" ]; then
   fi
 fi
 
-for command_name in date docker env gh git grep ln python3 sed tar; do
+for command_name in date docker env git grep ln python3 sed tar; do
   require_command "$command_name"
 done
+python=$(command -v python3)
 
 credential_names=$(env | sed 's/=.*//' | LC_ALL=C sort)
 if printf '%s\n' "$credential_names" | grep -Eq \
@@ -66,8 +67,17 @@ if printf '%s\n' "$credential_names" | grep -Eq \
   fail 'build shell contains an ambient registry, provider, store, teacher, OpenAI, or Codex credential/configuration' 64
 fi
 
+github_token_file=${MILK_GITHUB_TOKEN_FILE:-}
+case "$github_token_file" in
+  /*) ;;
+  *) fail 'MILK_GITHUB_TOKEN_FILE must name an absolute owner-only file' 64 ;;
+esac
+
 repo=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 cd "$repo"
+"$python" "$repo/deploy/github_rest.py" check "$github_token_file" \
+  >/dev/null 2>&1 || \
+  fail 'MILK_GITHUB_TOKEN_FILE is not a valid owner-only GitHub credential' 77
 top_level=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'release source is not a git checkout' 64
 [ "$top_level" = "$repo" ] || fail 'release script must run from the milk-harness checkout' 64
 commit=$(git rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || fail 'release checkout has no commit' 64
@@ -109,8 +119,6 @@ for release_input in $release_inputs; do
 done
 
 docker=$(command -v docker)
-gh=$(command -v gh)
-python=$(command -v python3)
 context=$("$docker" context show 2>/dev/null) || fail 'cannot resolve the Docker context' 69
 [ -n "$context" ] || fail 'Docker context is empty' 69
 endpoint=$("$docker" context inspect "$context" --format '{{ (index .Endpoints "docker").Host }}' 2>/dev/null) || \
@@ -358,16 +366,17 @@ PY
 fi
 
 failure_stage=registry-login
-if ! "$gh" auth token --hostname github.com | \
-  "$docker" --config "$docker_config" login ghcr.io --username ShantanuJoshi --password-stdin >/dev/null; then
+if ! "$docker" --config "$docker_config" login ghcr.io \
+  --username ShantanuJoshi --password-stdin \
+  <"$github_token_file" >/dev/null; then
   fail 'private GHCR login failed' 77
 fi
 
 failure_stage='package-preflight'
 packages=$scratch/packages.tsv
-"$gh" api --hostname github.com --paginate \
-  '/orgs/milkinfrastructure/packages?package_type=container&per_page=100' \
-  --jq '.[] | [.name, .visibility] | @tsv' >"$packages" || fail 'cannot inspect Milk container packages' 77
+"$python" "$repo/deploy/github_rest.py" packages "$github_token_file" \
+  >"$packages" || \
+  fail 'cannot inspect Milk container packages' 77
 "$python" - "$packages" "$reuse_release_dir" <<'PY' || fail 'gateway package is missing/private check failed, or an existing release target is not private' 77
 import sys
 from pathlib import Path
@@ -533,7 +542,7 @@ PY
     set -- "$@" --gateway-image-reference "$gateway_image"
   fi
   immutable=$(
-    "$gh" auth token --hostname github.com | "$python" "$@"
+    "$python" "$@" <"$github_token_file"
   ) || fail "$artifact immutable manifest verification failed" 70
   # The verifier returns exactly three fields, which are validated below.
   # shellcheck disable=SC2086
