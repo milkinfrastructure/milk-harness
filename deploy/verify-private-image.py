@@ -857,6 +857,8 @@ def verify(arguments, github_token):
         "config_sha256": config_digest.removeprefix("sha256:"),
         "attestation_manifest_sha256": attestation_digest.removeprefix("sha256:"),
         "attestations": statements,
+        "ops_log_reference": ops_log_reference,
+        "ops_log_reference_sha256": hashlib.sha256(ops_log_raw).hexdigest(),
         "platform": "linux/amd64",
         "visibility": "private",
         "builder": {

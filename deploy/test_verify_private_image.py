@@ -379,6 +379,14 @@ class PrivateHarnessVerifierTests(unittest.TestCase):
                     receipt["ops_log_reference_sha256"],
                     ops_log_reference_sha256,
                 )
+                self.assertEqual(
+                    admission["ops_log_reference_sha256"],
+                    ops_log_reference_sha256,
+                )
+                self.assertEqual(
+                    admission["ops_log_reference"],
+                    receipt["ops_log_reference"],
+                )
                 self.assertEqual(admission["artifact"], artifact)
                 self.assertEqual(
                     admission["gateway_image_reference"], fixture.gateway
