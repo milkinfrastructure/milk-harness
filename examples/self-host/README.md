@@ -2,7 +2,7 @@
 
 This smoke validates and materializes a canonical `milk.eval.v1` document, then exercises the local Exo host-command boundary. It is a config/control smoke, not provider execution or production qualification. It does not contact GitHub, Cloudflare, Baseten, or Modal, cannot create paid work, and uses no GPU.
 
-Run it from the repository root with Python 3 and the GitHub CLI installed:
+Run it from the repository root with Python 3:
 
 ```sh
 smoke_root=$(mktemp -d)
