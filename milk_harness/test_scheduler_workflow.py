@@ -41,6 +41,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertIn('cron: "2/5 * * * *"', self.text)
         self.assertIn("group: milk-production-loop-v1", self.text)
         self.assertIn("cancel-in-progress: false", self.text)
+        self.assertIn("queue: max", self.text)
         self.assertEqual(
             re.findall(
                 r"^  ([a-z][a-z0-9-]+):$",
@@ -62,7 +63,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertIn("github.event_name == 'workflow_dispatch'", self.gateway)
         self.assertIn("inputs.authorize_provider_creates == true", self.gateway)
         self.assertIn(
-            "inputs.confirmed_run_config_sha256 == vars.MILK_CONFIRMED_RUN_CONFIG_SHA256",
+            "inputs.confirmed_run_config_sha256 == vars.MILK_EVAL_ID",
             self.gateway,
         )
         gateway_condition = self.gateway.split("    runs-on:", 1)[0]
@@ -72,12 +73,18 @@ class SchedulerWorkflowTest(unittest.TestCase):
             self.gateway,
         )
         self.assertIn("needs: gateway-tick", self.provider)
-        self.assertIn("if: ${{ always() }}", self.provider)
+        provider_condition = self.provider.split("    runs-on:", 1)[0]
+        self.assertIn("always()", provider_condition)
+        self.assertIn(
+            "inputs.confirmed_run_config_sha256 == vars.MILK_EVAL_ID",
+            provider_condition,
+        )
+        self.assertNotIn("inputs.authorize_provider_creates", provider_condition)
         self.assertIn("create-gate", self.provider)
         self.assertIn("validate-run-config", self.gateway)
         self.assertIn("validate-run-config", self.provider)
-        self.assertIn("MILK_CONFIRMED_RUN_CONFIG_JSON", self.gateway)
-        self.assertIn("MILK_CONFIRMED_RUN_CONFIG_JSON", self.provider)
+        self.assertIn("MILK_CONFIRMED_RUN_CONFIG_PATH", self.gateway)
+        self.assertIn("MILK_CONFIRMED_RUN_CONFIG_PATH", self.provider)
         self.assertIn(
             "MILK_PROVIDER_CREATE_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true }}",
             self.gateway,
@@ -87,6 +94,8 @@ class SchedulerWorkflowTest(unittest.TestCase):
             '--confirmed-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256"',
             self.gateway,
         )
+        self.assertIn('--expected-sha256 "$MILK_EVAL_ID"', self.gateway)
+        self.assertIn('--expected-sha256 "$MILK_EVAL_ID"', self.provider)
         self.assertIn('if [ "$create_granted" = true ]; then', self.provider)
         self.assertNotIn("--allow-provider-creates", self.provider)
         self.assertLess(
@@ -218,11 +227,19 @@ class SchedulerWorkflowTest(unittest.TestCase):
     def test_gateway_handoffs_are_ingested_before_summary_and_archive(self):
         run_jobs = self.provider.index('"$MILK_JOBS_IMAGE" "${job_arguments[@]}"')
         stage = self.provider.index("milk_harness.scheduler stage-gateway-ingest")
-        validate = self.provider.index("--phase gateway_ingest")
+        validations = [
+            match.start()
+            for match in re.finditer("--phase gateway_ingest", self.provider)
+        ]
+        self.assertEqual(len(validations), 2)
+        pre_spend_validate, validate = validations
+        create_gate = self.provider.index("milk_harness.scheduler create-gate")
         winner = self.provider.index("ingest-student-winner-deployment-result")
         teardown = self.provider.index("ingest-provider-teardown-result")
         summarize = self.provider.index("milk_harness.scheduler summarize")
         archive = self.provider.index("milk_harness.scheduler archive")
+        self.assertLess(pre_spend_validate, create_gate)
+        self.assertLess(create_gate, run_jobs)
         self.assertLess(run_jobs, stage)
         self.assertLess(stage, validate)
         self.assertLess(validate, winner)
@@ -264,7 +281,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertLess(helper_start, jobs_start)
         self.assertLess(jobs_start, jobs_run)
         self.assertIn("repository: milkinfrastructure/milk-gateway", self.provider)
-        self.assertIn("ref: ${{ vars.MILK_GATEWAY_SOURCE_COMMIT }}", self.provider)
+        self.assertIn("ref: ${{ steps.eval.outputs.gateway_source_commit }}", self.provider)
         self.assertIn("token: ${{ secrets.MILK_GATEWAY_SOURCE_READ_TOKEN }}", self.provider)
         self.assertGreaterEqual(self.provider.count("persist-credentials: false"), 2)
         self.assertIn('gateway_image_commit=$(docker --config "$docker_config" image inspect', self.provider)
@@ -334,7 +351,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertNotIn("route_candidate_ready", route_condition)
         self.assertNotIn("inputs.authorize_provider_creates", route_condition)
         self.assertIn(
-            "inputs.confirmed_run_config_sha256 == vars.MILK_CONFIRMED_RUN_CONFIG_SHA256",
+            "inputs.confirmed_run_config_sha256 == vars.MILK_EVAL_ID",
             route_condition,
         )
         self.assertIn(
@@ -342,7 +359,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
             self.route,
         )
         self.assertIn("repository: milkinfrastructure/milk-gateway", self.route)
-        self.assertIn("ref: ${{ vars.MILK_GATEWAY_SOURCE_COMMIT }}", self.route)
+        self.assertIn("ref: ${{ steps.eval.outputs.gateway_source_commit }}", self.route)
         self.assertIn("org.opencontainers.image.revision", self.route)
         self.assertIn("npm ci --ignore-scripts --no-audit --no-fund", self.route)
         self.assertIn('deploy/cloudflare/node_modules/.bin', self.route)
@@ -586,6 +603,33 @@ class SchedulerWorkflowTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, self.text)
 
+    def test_one_eval_document_replaces_nonsecret_variable_and_json_secret_bundles(self):
+        variables = set(re.findall(r"vars\.([A-Z0-9_]+)", self.text))
+        secrets = set(re.findall(r"secrets\.([A-Z0-9_]+)", self.text))
+        self.assertEqual(variables, {"MILK_EVAL_ID", "MILK_EVAL_CONFIG_JSON"})
+        self.assertEqual(len(secrets), 48)
+        for removed in (
+            "MILK_GATEWAY_TICK_CONFIG_JSON",
+            "MILK_GATEWAY_INGEST_CONFIG_JSON",
+            "MILK_ROUTE_GATEWAY_CONFIG_JSON",
+            "MILK_CONFIRMED_RUN_CONFIG_JSON",
+        ):
+            self.assertNotIn(removed, self.text)
+        self.assertNotRegex(
+            self.text,
+            r"secrets\.MILK_[A-Z0-9_]+_R2_(?:ACCOUNT_ID|BUCKET)",
+        )
+        self.assertEqual(self.text.count("python3 -m milk_harness.eval_config"), 3)
+        self.assertIn("group: milk-production-loop-v1-${{ vars.MILK_EVAL_ID }}", self.text)
+        self.assertIn(
+            '--confirmed-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256"',
+            self.provider,
+        )
+        self.assertIn(
+            '--expected-confirmation-sha256 "$MILK_EVAL_ID"',
+            self.provider,
+        )
+
     def test_embedded_shell_is_valid(self):
         lines = self.text.splitlines()
         scripts = []
@@ -599,7 +643,7 @@ class SchedulerWorkflowTest(unittest.TestCase):
                     break
                 body.append(candidate)
             scripts.append(textwrap.dedent("\n".join(body)))
-        self.assertEqual(len(scripts), 3)
+        self.assertEqual(len(scripts), 6)
         for script in scripts:
             result = subprocess.run(
                 ["bash", "-n"], input=script, text=True, capture_output=True, check=False

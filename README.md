@@ -13,6 +13,8 @@ This repository contains two separately released and credentialed programs:
 
 The existing Exo harness is the manager. [`tools/exo`](tools/exo) installs one typed `milk` tool whose only actions are status, reconcile, and run a host-confirmed pass. A fixed host command dispatches this workflow; Exo never receives provider credentials, free-form command arguments, or approval authority.
 
+Production has one non-secret eval authority: canonical `milk.eval.v1` JSON in `MILK_EVAL_CONFIG_JSON` and its SHA-256 in `MILK_EVAL_ID`. It contains the existing v5 confirmed manifest, the exact non-secret gateway config, and the remaining store locations. The workflow derives every prior non-secret setting from that document; raw provider, registry, signing, traffic, and object-store credentials remain individual masked secrets. The retained dispatch input name `confirmed_run_config_sha256` carries the outer eval ID for compatibility with the Exo host.
+
 There is no always-on manager, provider plugin framework, queue, scheduling database, or third repository. R2 typed records are coordination authority. The one production workflow runs a gateway `tick --once` job before a separately credentialed jobs image; each process exits after one bounded pass. Fixed R2 leases serialize both gateway ticks and provider passes. Workflow concurrency is defense in depth.
 
 Jobs verifies the gateway frontier, outbox, claim, image, provider choice, and budget before creation. It returns only bounded evidence-addressed winner and teardown results. The workflow invokes the exact gateway image afterward with a separate control writer and teardown-only route reader. Neither provider process receives gateway config, capture, route, signing, or control-write authority.

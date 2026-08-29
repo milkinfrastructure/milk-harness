@@ -15,7 +15,7 @@ on:
         default: false
         type: boolean
       confirmed_run_config_sha256:
-        description: Exact SHA-256 of the reviewed prompts and run configuration
+        description: Exact outer eval ID; retained name for Exo host compatibility
         required: false
         type: string
       managed_request_id:
@@ -27,17 +27,18 @@ permissions:
   contents: read
 
 concurrency:
-  group: milk-production-loop-v1
+  group: milk-production-loop-v1-${{ vars.MILK_EVAL_ID }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   gateway-tick:
     name: Gateway tick
     if: >-
-      ${{ vars.MILK_CONFIRMED_RUN_CONFIG_SHA256 != '' &&
+      ${{ vars.MILK_EVAL_ID != '' &&
           (github.event_name == 'schedule' ||
            (github.event_name == 'workflow_dispatch' &&
-            inputs.confirmed_run_config_sha256 == vars.MILK_CONFIRMED_RUN_CONFIG_SHA256)) }}
+            inputs.confirmed_run_config_sha256 == vars.MILK_EVAL_ID)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     environment: milk-gateway-tick-prod
@@ -45,18 +46,15 @@ jobs:
       summary_b64: ${{ steps.tick.outputs.summary_b64 }}
       accepted: ${{ steps.tick.outputs.accepted }}
     env:
-      MILK_GATEWAY_IMAGE: ${{ vars.MILK_GATEWAY_IMAGE }}
+      MILK_EVAL_ID: ${{ vars.MILK_EVAL_ID }}
       MILK_GHCR_PULL_USERNAME: ${{ secrets.MILK_GHCR_PULL_USERNAME }}
       MILK_GHCR_PULL_TOKEN: ${{ secrets.MILK_GHCR_PULL_TOKEN }}
-      MILK_GATEWAY_TICK_CONFIG_JSON: ${{ secrets.MILK_GATEWAY_TICK_CONFIG_JSON }}
       MILK_CAPTURE_STORE_ACCESS_KEY_ID: ${{ secrets.MILK_CAPTURE_STORE_ACCESS_KEY_ID }}
       MILK_CAPTURE_STORE_SECRET_ACCESS_KEY: ${{ secrets.MILK_CAPTURE_STORE_SECRET_ACCESS_KEY }}
       MILK_CAPTURE_STORE_SESSION_TOKEN: ${{ secrets.MILK_CAPTURE_STORE_SESSION_TOKEN }}
       MILK_CONTROL_STORE_ACCESS_KEY_ID: ${{ secrets.MILK_CONTROL_STORE_ACCESS_KEY_ID }}
       MILK_CONTROL_STORE_SECRET_ACCESS_KEY: ${{ secrets.MILK_CONTROL_STORE_SECRET_ACCESS_KEY }}
       MILK_CONTROL_STORE_SESSION_TOKEN: ${{ secrets.MILK_CONTROL_STORE_SESSION_TOKEN }}
-      MILK_CONFIRMED_RUN_CONFIG_SHA256: ${{ vars.MILK_CONFIRMED_RUN_CONFIG_SHA256 }}
-      MILK_CONFIRMED_RUN_CONFIG_JSON: ${{ vars.MILK_CONFIRMED_RUN_CONFIG_JSON }}
       MILK_PROVIDER_CREATE_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true }}
       MILK_PROVIDER_CREATE_CONFIRMATION: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && inputs.confirmed_run_config_sha256 || '' }}
     steps:
@@ -64,6 +62,25 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+
+      - name: Materialize active eval
+        id: eval
+        shell: bash
+        env:
+          MILK_EVAL_CONFIG_JSON: ${{ vars.MILK_EVAL_CONFIG_JSON }}
+        run: |
+          set -euo pipefail
+          eval_root=$(mktemp -d "$RUNNER_TEMP/milk-eval.XXXXXX")
+          printf '%s' "$MILK_EVAL_CONFIG_JSON" >"$eval_root/eval.json"
+          python3 -m milk_harness.eval_config \
+            --document "$eval_root/eval.json" \
+            --eval-id "$MILK_EVAL_ID" \
+            --harness-source-commit "$GITHUB_SHA" \
+            --root "$GITHUB_WORKSPACE" \
+            --manifest-output "$eval_root/manifest.json" \
+            --gateway-config-output "$eval_root/gateway.json" \
+            --github-env "$GITHUB_ENV" \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: Run one gateway tick
         id: tick
@@ -76,13 +93,12 @@ jobs:
           }
           [ -n "$MILK_GHCR_PULL_USERNAME" ] || fail 'private registry username is missing'
           [ -n "$MILK_GHCR_PULL_TOKEN" ] || fail 'private registry token is missing'
-          [ -n "$MILK_GATEWAY_TICK_CONFIG_JSON" ] || fail 'gateway tick config is missing'
           python3 -m milk_harness.scheduler validate-image \
             --name gateway --image "$MILK_GATEWAY_IMAGE"
           python3 -m milk_harness.scheduler validate-confirmation \
             --requested "$MILK_PROVIDER_CREATE_REQUESTED" \
             --provided-sha256 "$MILK_PROVIDER_CREATE_CONFIRMATION" \
-            --expected-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256"
+            --expected-sha256 "$MILK_EVAL_ID"
 
           scratch=$(mktemp -d "$RUNNER_TEMP/milk-gateway-tick.XXXXXX")
           cleanup() {
@@ -92,13 +108,11 @@ jobs:
           }
           trap cleanup EXIT HUP INT TERM
           docker_config=$scratch/docker
-          config=$scratch/config.json
-          run_config=$scratch/run-config.json
+          config=$MILK_GATEWAY_CONFIG_PATH
+          run_config=$MILK_CONFIRMED_RUN_CONFIG_PATH
           stdout=$scratch/stdout
           stderr=$scratch/stderr
           mkdir -m 0700 "$docker_config"
-          printf '%s' "$MILK_GATEWAY_TICK_CONFIG_JSON" >"$config"
-          printf '%s' "$MILK_CONFIRMED_RUN_CONFIG_JSON" >"$run_config"
           python3 -m milk_harness.scheduler validate-run-config \
             --phase gateway \
             --manifest "$run_config" \
@@ -159,7 +173,12 @@ jobs:
   provider-jobs:
     name: Provider reconciliation and dispatch
     needs: gateway-tick
-    if: ${{ always() }}
+    if: >-
+      ${{ always() &&
+          vars.MILK_EVAL_ID != '' &&
+          (github.event_name == 'schedule' ||
+           (github.event_name == 'workflow_dispatch' &&
+            inputs.confirmed_run_config_sha256 == vars.MILK_EVAL_ID)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     environment: milk-provider-jobs-prod
@@ -168,93 +187,30 @@ jobs:
       route_candidate_ready: ${{ steps.provider.outputs.route_candidate_ready }}
       route_student_job_id: ${{ steps.provider.outputs.route_student_job_id }}
     env:
-      MILK_GATEWAY_IMAGE: ${{ vars.MILK_GATEWAY_IMAGE }}
-      MILK_JOBS_IMAGE: ${{ vars.MILK_JOBS_IMAGE }}
-      MILK_STUDENT_TRAIN_IMAGE: ${{ vars.MILK_STUDENT_TRAIN_IMAGE }}
-      MILK_STUDENT_BRANCH_IMAGE: ${{ vars.MILK_STUDENT_BRANCH_IMAGE }}
-      MILK_TEACHER_IMAGE: ${{ vars.MILK_TEACHER_IMAGE }}
-      MILK_IMAGE_RELEASE_SHA256: ${{ vars.MILK_IMAGE_RELEASE_SHA256 }}
-      MILK_CONFIRMED_RUN_CONFIG_SHA256: ${{ vars.MILK_CONFIRMED_RUN_CONFIG_SHA256 }}
-      MILK_CONFIRMED_RUN_CONFIG_JSON: ${{ vars.MILK_CONFIRMED_RUN_CONFIG_JSON }}
-      MILK_CAMPAIGN_ID: ${{ vars.MILK_CAMPAIGN_ID }}
-      MILK_BASETEN_PROJECT_ID: ${{ vars.MILK_BASETEN_PROJECT_ID }}
-      MILK_BASETEN_TEAM_NAME: ${{ vars.MILK_BASETEN_TEAM_NAME }}
-      MILK_WINNER_MODEL_ALIAS: ${{ vars.MILK_WINNER_MODEL_ALIAS }}
-      MILK_SCOPE_PREFIX: ${{ vars.MILK_SCOPE_PREFIX }}
-      MILK_BASETEN_REGISTRY_SECRET: ${{ vars.MILK_BASETEN_REGISTRY_SECRET }}
-      MILK_BASETEN_CONFIG_SECRET: ${{ vars.MILK_BASETEN_CONFIG_SECRET }}
-      MILK_BASETEN_CAPTURE_ACCESS_SECRET: ${{ vars.MILK_BASETEN_CAPTURE_ACCESS_SECRET }}
-      MILK_BASETEN_CAPTURE_SECRET_SECRET: ${{ vars.MILK_BASETEN_CAPTURE_SECRET_SECRET }}
-      MILK_BASETEN_CAPTURE_SESSION_SECRET: ${{ vars.MILK_BASETEN_CAPTURE_SESSION_SECRET }}
-      MILK_BASETEN_CONTROL_ACCESS_SECRET: ${{ vars.MILK_BASETEN_CONTROL_ACCESS_SECRET }}
-      MILK_BASETEN_CONTROL_SECRET_SECRET: ${{ vars.MILK_BASETEN_CONTROL_SECRET_SECRET }}
-      MILK_BASETEN_CONTROL_SESSION_SECRET: ${{ vars.MILK_BASETEN_CONTROL_SESSION_SECRET }}
-      MILK_MODAL_WORKSPACE_ID: ${{ vars.MILK_MODAL_WORKSPACE_ID }}
-      MILK_MODAL_WORKSPACE_NAME: ${{ vars.MILK_MODAL_WORKSPACE_NAME }}
-      MILK_MODAL_ENVIRONMENT_ID: ${{ vars.MILK_MODAL_ENVIRONMENT_ID }}
-      MILK_MODAL_ENVIRONMENT_NAME: ${{ vars.MILK_MODAL_ENVIRONMENT_NAME }}
-      MILK_MODAL_APP_ID: ${{ vars.MILK_MODAL_APP_ID }}
-      MILK_MODAL_APP_NAME: ${{ vars.MILK_MODAL_APP_NAME }}
-      MILK_MODAL_REGISTRY_SECRET_NAME: ${{ vars.MILK_MODAL_REGISTRY_SECRET_NAME }}
-      MILK_MODAL_REGISTRY_SECRET_ID: ${{ vars.MILK_MODAL_REGISTRY_SECRET_ID }}
-      MILK_MODAL_CONFIG_SECRET_NAME: ${{ vars.MILK_MODAL_CONFIG_SECRET_NAME }}
-      MILK_MODAL_CONFIG_SECRET_ID: ${{ vars.MILK_MODAL_CONFIG_SECRET_ID }}
-      MILK_MODAL_CONTROL_SECRET_NAME: ${{ vars.MILK_MODAL_CONTROL_SECRET_NAME }}
-      MILK_MODAL_CONTROL_SECRET_ID: ${{ vars.MILK_MODAL_CONTROL_SECRET_ID }}
-      MILK_MODAL_CAPTURE_SECRET_NAME: ${{ vars.MILK_MODAL_CAPTURE_SECRET_NAME }}
-      MILK_MODAL_CAPTURE_SECRET_ID: ${{ vars.MILK_MODAL_CAPTURE_SECRET_ID }}
-      MILK_MODAL_CANDIDATE_SECRET_NAME: ${{ vars.MILK_MODAL_CANDIDATE_SECRET_NAME }}
-      MILK_MODAL_CANDIDATE_SECRET_ID: ${{ vars.MILK_MODAL_CANDIDATE_SECRET_ID }}
-      MILK_MODAL_TEACHER_VOLUME_NAME: ${{ vars.MILK_MODAL_TEACHER_VOLUME_NAME }}
-      MILK_MODAL_TEACHER_VOLUME_ID: ${{ vars.MILK_MODAL_TEACHER_VOLUME_ID }}
-      MILK_MODAL_STUDENT_TRAIN_VOLUME_NAME: ${{ vars.MILK_MODAL_STUDENT_TRAIN_VOLUME_NAME }}
-      MILK_MODAL_STUDENT_TRAIN_VOLUME_ID: ${{ vars.MILK_MODAL_STUDENT_TRAIN_VOLUME_ID }}
-      MILK_GATEWAY_SOURCE_COMMIT: ${{ vars.MILK_GATEWAY_SOURCE_COMMIT }}
-      MILK_GATEWAY_IMAGE_ADMISSION_SHA256: ${{ vars.MILK_GATEWAY_IMAGE_ADMISSION_SHA256 }}
-      MILK_GATEWAY_RELEASE_SHA256: ${{ vars.MILK_GATEWAY_RELEASE_SHA256 }}
-      MILK_GATEWAY_CONTAINER_APPLICATION_ID: ${{ vars.MILK_GATEWAY_CONTAINER_APPLICATION_ID }}
-      MILK_GATEWAY_CONTAINER_APPLICATION_VERSION: ${{ vars.MILK_GATEWAY_CONTAINER_APPLICATION_VERSION }}
-      MILK_GATEWAY_CONTAINER_IMAGE: ${{ vars.MILK_GATEWAY_CONTAINER_IMAGE }}
-      MILK_GATEWAY_WORKER_VERSION_ID: ${{ vars.MILK_GATEWAY_WORKER_VERSION_ID }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      MILK_EVAL_ID: ${{ vars.MILK_EVAL_ID }}
       MILK_GHCR_PULL_USERNAME: ${{ secrets.MILK_GHCR_PULL_USERNAME }}
       MILK_GHCR_PULL_TOKEN: ${{ secrets.MILK_GHCR_PULL_TOKEN }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      MILK_CONTROL_R2_ACCOUNT_ID: ${{ secrets.MILK_CONTROL_R2_ACCOUNT_ID }}
-      MILK_CONTROL_R2_BUCKET: ${{ secrets.MILK_CONTROL_R2_BUCKET }}
       MILK_CONTROL_R2_ACCESS_KEY_ID: ${{ secrets.MILK_CONTROL_R2_ACCESS_KEY_ID }}
       MILK_CONTROL_R2_SECRET_ACCESS_KEY: ${{ secrets.MILK_CONTROL_R2_SECRET_ACCESS_KEY }}
       MILK_CONTROL_R2_SESSION_TOKEN: ${{ secrets.MILK_CONTROL_R2_SESSION_TOKEN }}
-      MILK_EVIDENCE_R2_ACCOUNT_ID: ${{ secrets.MILK_EVIDENCE_R2_ACCOUNT_ID }}
-      MILK_EVIDENCE_R2_BUCKET: ${{ secrets.MILK_EVIDENCE_R2_BUCKET }}
       MILK_EVIDENCE_R2_ACCESS_KEY_ID: ${{ secrets.MILK_EVIDENCE_R2_ACCESS_KEY_ID }}
       MILK_EVIDENCE_R2_SECRET_ACCESS_KEY: ${{ secrets.MILK_EVIDENCE_R2_SECRET_ACCESS_KEY }}
       MILK_EVIDENCE_R2_SESSION_TOKEN: ${{ secrets.MILK_EVIDENCE_R2_SESSION_TOKEN }}
-      MILK_CREATE_AUTHORITY_WRITE_R2_ACCOUNT_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_WRITE_R2_ACCOUNT_ID || '' }}
-      MILK_CREATE_AUTHORITY_WRITE_R2_BUCKET: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_WRITE_R2_BUCKET || '' }}
       MILK_CREATE_AUTHORITY_WRITE_R2_ACCESS_KEY_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_WRITE_R2_ACCESS_KEY_ID || '' }}
       MILK_CREATE_AUTHORITY_WRITE_R2_SECRET_ACCESS_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_WRITE_R2_SECRET_ACCESS_KEY || '' }}
       MILK_CREATE_AUTHORITY_WRITE_R2_SESSION_TOKEN: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_WRITE_R2_SESSION_TOKEN || '' }}
-      MILK_CREATE_AUTHORITY_READ_R2_ACCOUNT_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_READ_R2_ACCOUNT_ID || '' }}
-      MILK_CREATE_AUTHORITY_READ_R2_BUCKET: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_READ_R2_BUCKET || '' }}
       MILK_CREATE_AUTHORITY_READ_R2_ACCESS_KEY_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_READ_R2_ACCESS_KEY_ID || '' }}
       MILK_CREATE_AUTHORITY_READ_R2_SECRET_ACCESS_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_READ_R2_SECRET_ACCESS_KEY || '' }}
       MILK_CREATE_AUTHORITY_READ_R2_SESSION_TOKEN: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && needs.gateway-tick.outputs.accepted == 'true' && secrets.MILK_CREATE_AUTHORITY_READ_R2_SESSION_TOKEN || '' }}
-      MILK_OPS_LOG_R2_ACCOUNT_ID: ${{ secrets.MILK_OPS_LOG_R2_ACCOUNT_ID }}
-      MILK_OPS_LOG_R2_BUCKET: ${{ secrets.MILK_OPS_LOG_R2_BUCKET }}
       MILK_OPS_LOG_R2_ACCESS_KEY_ID: ${{ secrets.MILK_OPS_LOG_R2_ACCESS_KEY_ID }}
       MILK_OPS_LOG_R2_SECRET_ACCESS_KEY: ${{ secrets.MILK_OPS_LOG_R2_SECRET_ACCESS_KEY }}
       MILK_OPS_LOG_R2_SESSION_TOKEN: ${{ secrets.MILK_OPS_LOG_R2_SESSION_TOKEN }}
-      MILK_GATEWAY_INGEST_CONFIG_JSON: ${{ secrets.MILK_GATEWAY_INGEST_CONFIG_JSON }}
-      MILK_GATEWAY_INGEST_CONTROL_R2_ACCOUNT_ID: ${{ secrets.MILK_GATEWAY_INGEST_CONTROL_R2_ACCOUNT_ID }}
-      MILK_GATEWAY_INGEST_CONTROL_R2_BUCKET: ${{ secrets.MILK_GATEWAY_INGEST_CONTROL_R2_BUCKET }}
       MILK_GATEWAY_INGEST_CONTROL_R2_ACCESS_KEY_ID: ${{ secrets.MILK_GATEWAY_INGEST_CONTROL_R2_ACCESS_KEY_ID }}
       MILK_GATEWAY_INGEST_CONTROL_R2_SECRET_ACCESS_KEY: ${{ secrets.MILK_GATEWAY_INGEST_CONTROL_R2_SECRET_ACCESS_KEY }}
       MILK_GATEWAY_INGEST_CONTROL_R2_SESSION_TOKEN: ${{ secrets.MILK_GATEWAY_INGEST_CONTROL_R2_SESSION_TOKEN }}
-      MILK_GATEWAY_INGEST_ROUTE_R2_ACCOUNT_ID: ${{ secrets.MILK_GATEWAY_INGEST_ROUTE_R2_ACCOUNT_ID }}
-      MILK_GATEWAY_INGEST_ROUTE_R2_BUCKET: ${{ secrets.MILK_GATEWAY_INGEST_ROUTE_R2_BUCKET }}
       MILK_GATEWAY_INGEST_ROUTE_R2_ACCESS_KEY_ID: ${{ secrets.MILK_GATEWAY_INGEST_ROUTE_R2_ACCESS_KEY_ID }}
       MILK_GATEWAY_INGEST_ROUTE_R2_SECRET_ACCESS_KEY: ${{ secrets.MILK_GATEWAY_INGEST_ROUTE_R2_SECRET_ACCESS_KEY }}
       MILK_GATEWAY_INGEST_ROUTE_R2_SESSION_TOKEN: ${{ secrets.MILK_GATEWAY_INGEST_ROUTE_R2_SESSION_TOKEN }}
@@ -270,11 +226,30 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Materialize active eval
+        id: eval
+        shell: bash
+        env:
+          MILK_EVAL_CONFIG_JSON: ${{ vars.MILK_EVAL_CONFIG_JSON }}
+        run: |
+          set -euo pipefail
+          eval_root=$(mktemp -d "$RUNNER_TEMP/milk-eval.XXXXXX")
+          printf '%s' "$MILK_EVAL_CONFIG_JSON" >"$eval_root/eval.json"
+          python3 -m milk_harness.eval_config \
+            --document "$eval_root/eval.json" \
+            --eval-id "$MILK_EVAL_ID" \
+            --harness-source-commit "$GITHUB_SHA" \
+            --root "$GITHUB_WORKSPACE" \
+            --manifest-output "$eval_root/manifest.json" \
+            --gateway-config-output "$eval_root/gateway.json" \
+            --github-env "$GITHUB_ENV" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Read exact gateway credential helper
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: milkinfrastructure/milk-gateway
-          ref: ${{ vars.MILK_GATEWAY_SOURCE_COMMIT }}
+          ref: ${{ steps.eval.outputs.gateway_source_commit }}
           path: milk-gateway-source
           token: ${{ secrets.MILK_GATEWAY_SOURCE_READ_TOKEN }}
           persist-credentials: false
@@ -335,14 +310,14 @@ jobs:
           stderr=$scratch/stderr
           summary=$scratch/summary.json
           create_gate=$scratch/create-gate.json
-          run_config=$scratch/run-config.json
+          run_config=$MILK_CONFIRMED_RUN_CONFIG_PATH
           gateway_ingest_dir=$scratch/gateway-ingest
           gateway_ingest_manifest=$scratch/gateway-ingest-manifest.json
           gateway_ingest_entries=$scratch/gateway-ingest-entries
-          gateway_ingest_config=$scratch/gateway-ingest-config.json
-          gateway_ingest_run_config=$scratch/gateway-ingest-run-config.json
-          provider_gateway_config=$scratch/provider-gateway-config.json
-          provider_gateway_run_config=$scratch/provider-gateway-run-config.json
+          gateway_ingest_config=$MILK_GATEWAY_CONFIG_PATH
+          gateway_ingest_run_config=$MILK_CONFIRMED_RUN_CONFIG_PATH
+          provider_gateway_config=$MILK_GATEWAY_CONFIG_PATH
+          provider_gateway_run_config=$MILK_CONFIRMED_RUN_CONFIG_PATH
           gateway_ingest_stdout=$scratch/gateway-ingest-stdout
           gateway_ingest_stderr=$scratch/gateway-ingest-stderr
           candidate_socket=$candidate_socket_dir/milk-candidate-key.sock
@@ -357,9 +332,6 @@ jobs:
             --repository-id "$MILK_GITHUB_REPOSITORY_ID" \
             --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT")
-          printf '%s' "$MILK_GATEWAY_INGEST_CONFIG_JSON" >"$provider_gateway_config"
-          printf '%s' "$MILK_CONFIRMED_RUN_CONFIG_JSON" >"$provider_gateway_run_config"
-          chmod 0400 "$provider_gateway_config" "$provider_gateway_run_config"
           python3 -m milk_harness.scheduler validate-run-config \
             --phase provider_base \
             --manifest "$provider_gateway_run_config" \
@@ -382,6 +354,13 @@ jobs:
               --gateway-container-application-version "$MILK_GATEWAY_CONTAINER_APPLICATION_VERSION" \
               --gateway-container-image "$MILK_GATEWAY_CONTAINER_IMAGE" \
               --gateway-worker-version-id "$MILK_GATEWAY_WORKER_VERSION_ID"
+          python3 -m milk_harness.scheduler validate-run-config \
+            --phase gateway_ingest \
+            --manifest "$provider_gateway_run_config" \
+            --confirmed-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256" \
+            --harness-source-commit "$GITHUB_SHA" \
+            --gateway-config "$provider_gateway_config" \
+            --gateway-image "$MILK_GATEWAY_IMAGE"
           confirmed_gpu_provider=$(python3 -c \
             'import json,sys; print(json.load(open(sys.argv[1]))["provider_runtime"]["gpu_provider"])' \
             "$provider_gateway_run_config")
@@ -485,7 +464,7 @@ jobs:
             --event "$GITHUB_EVENT_NAME" \
             --requested "$MILK_PROVIDER_CREATE_REQUESTED" \
             --provided-sha256 "$MILK_PROVIDER_CREATE_CONFIRMATION" \
-            --expected-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256" \
+            --expected-sha256 "$MILK_EVAL_ID" \
             --gateway-result "$GATEWAY_JOB_RESULT" \
             --gateway-accepted "$GATEWAY_SUMMARY_ACCEPTED" \
             --output "$create_gate"
@@ -495,11 +474,10 @@ jobs:
           confirmation_for_receipt=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["confirmation_sha256"] or "")' "$create_gate")
           configuration_verified=false
           if [ "$create_granted" = true ]; then
-            printf '%s' "$MILK_CONFIRMED_RUN_CONFIG_JSON" >"$run_config"
             if python3 -m milk_harness.scheduler validate-run-config \
               --phase provider \
               --manifest "$run_config" \
-              --confirmed-sha256 "$confirmation_for_receipt" \
+              --confirmed-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256" \
               --harness-source-commit "$GITHUB_SHA" \
               --campaign-id "$MILK_CAMPAIGN_ID" \
               --provider-project-id "$MILK_BASETEN_PROJECT_ID" \
@@ -681,14 +659,10 @@ jobs:
                 exit 0
               fi
 
-              [ -n "$MILK_GATEWAY_INGEST_CONFIG_JSON" ]
               [ -n "$MILK_GATEWAY_INGEST_CONTROL_R2_ACCESS_KEY_ID" ]
               [ -n "$MILK_GATEWAY_INGEST_CONTROL_R2_SECRET_ACCESS_KEY" ]
               [ -n "$MILK_GATEWAY_INGEST_ROUTE_R2_ACCESS_KEY_ID" ]
               [ -n "$MILK_GATEWAY_INGEST_ROUTE_R2_SECRET_ACCESS_KEY" ]
-              printf '%s' "$MILK_GATEWAY_INGEST_CONFIG_JSON" >"$gateway_ingest_config"
-              printf '%s' "$MILK_CONFIRMED_RUN_CONFIG_JSON" >"$gateway_ingest_run_config"
-              chmod 0400 "$gateway_ingest_config"
               python3 -m milk_harness.scheduler validate-run-config \
                 --phase gateway_ingest \
                 --manifest "$gateway_ingest_run_config" \
@@ -810,7 +784,7 @@ jobs:
             --provider-configuration-verified "$configuration_verified" \
             --provider-create-granted "$create_granted" \
             --confirmation-sha256 "$confirmation_for_receipt" \
-            --expected-confirmation-sha256 "$MILK_CONFIRMED_RUN_CONFIG_SHA256" \
+            --expected-confirmation-sha256 "$MILK_EVAL_ID" \
             >/dev/null
 
           python3 -m milk_harness.scheduler lease-release --token "$lease_token"
@@ -832,10 +806,10 @@ jobs:
     if: >-
       ${{ needs.provider-jobs.result == 'success' &&
           needs.provider-jobs.outputs.route_required == 'true' &&
-          vars.MILK_CONFIRMED_RUN_CONFIG_SHA256 != '' &&
+          vars.MILK_EVAL_ID != '' &&
           (github.event_name == 'schedule' ||
            (github.event_name == 'workflow_dispatch' &&
-            inputs.confirmed_run_config_sha256 == vars.MILK_CONFIRMED_RUN_CONFIG_SHA256)) }}
+            inputs.confirmed_run_config_sha256 == vars.MILK_EVAL_ID)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: milk-route-control-prod
@@ -843,16 +817,7 @@ jobs:
       zero_published: ${{ steps.route.outputs.zero_published }}
       zero_route_revision: ${{ steps.route.outputs.zero_route_revision }}
     env:
-      MILK_GATEWAY_IMAGE: ${{ vars.MILK_GATEWAY_IMAGE }}
-      MILK_CONFIRMED_RUN_CONFIG_SHA256: ${{ vars.MILK_CONFIRMED_RUN_CONFIG_SHA256 }}
-      MILK_CONFIRMED_RUN_CONFIG_JSON: ${{ vars.MILK_CONFIRMED_RUN_CONFIG_JSON }}
-      MILK_GATEWAY_SOURCE_COMMIT: ${{ vars.MILK_GATEWAY_SOURCE_COMMIT }}
-      MILK_GATEWAY_IMAGE_ADMISSION_SHA256: ${{ vars.MILK_GATEWAY_IMAGE_ADMISSION_SHA256 }}
-      MILK_GATEWAY_RELEASE_SHA256: ${{ vars.MILK_GATEWAY_RELEASE_SHA256 }}
-      MILK_GATEWAY_CONTAINER_APPLICATION_ID: ${{ vars.MILK_GATEWAY_CONTAINER_APPLICATION_ID }}
-      MILK_GATEWAY_CONTAINER_APPLICATION_VERSION: ${{ vars.MILK_GATEWAY_CONTAINER_APPLICATION_VERSION }}
-      MILK_GATEWAY_CONTAINER_IMAGE: ${{ vars.MILK_GATEWAY_CONTAINER_IMAGE }}
-      MILK_GATEWAY_WORKER_VERSION_ID: ${{ vars.MILK_GATEWAY_WORKER_VERSION_ID }}
+      MILK_EVAL_ID: ${{ vars.MILK_EVAL_ID }}
       MILK_ROUTE_CANDIDATE_READY: ${{ needs.provider-jobs.outputs.route_candidate_ready }}
       MILK_ROUTE_STUDENT_JOB_ID: ${{ needs.provider-jobs.outputs.route_student_job_id }}
       MILK_ROUTE_PAID_PROOF_AUTHORIZED: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true }}
@@ -862,11 +827,30 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Materialize active eval
+        id: eval
+        shell: bash
+        env:
+          MILK_EVAL_CONFIG_JSON: ${{ vars.MILK_EVAL_CONFIG_JSON }}
+        run: |
+          set -euo pipefail
+          eval_root=$(mktemp -d "$RUNNER_TEMP/milk-eval.XXXXXX")
+          printf '%s' "$MILK_EVAL_CONFIG_JSON" >"$eval_root/eval.json"
+          python3 -m milk_harness.eval_config \
+            --document "$eval_root/eval.json" \
+            --eval-id "$MILK_EVAL_ID" \
+            --harness-source-commit "$GITHUB_SHA" \
+            --root "$GITHUB_WORKSPACE" \
+            --manifest-output "$eval_root/manifest.json" \
+            --gateway-config-output "$eval_root/gateway.json" \
+            --github-env "$GITHUB_ENV" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Read exact gateway route tools
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: milkinfrastructure/milk-gateway
-          ref: ${{ vars.MILK_GATEWAY_SOURCE_COMMIT }}
+          ref: ${{ steps.eval.outputs.gateway_source_commit }}
           path: milk-gateway-source
           token: ${{ secrets.MILK_GATEWAY_SOURCE_READ_TOKEN }}
           persist-credentials: false
@@ -877,13 +861,11 @@ jobs:
         env:
           MILK_GHCR_PULL_USERNAME: ${{ secrets.MILK_GHCR_PULL_USERNAME }}
           MILK_GHCR_PULL_TOKEN: ${{ secrets.MILK_GHCR_PULL_TOKEN }}
-          MILK_ROUTE_GATEWAY_CONFIG_JSON: ${{ secrets.MILK_ROUTE_GATEWAY_CONFIG_JSON }}
           MILK_ROUTE_SECRET_HEX: ${{ secrets.MILK_ROUTE_SECRET_HEX }}
           MILK_ROUTE_SIGNING_KEY_PEM: ${{ secrets.MILK_ROUTE_SIGNING_KEY_PEM }}
           MILK_ROUTE_SMOKE_CREDENTIAL_JSON: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && secrets.MILK_ROUTE_SMOKE_CREDENTIAL_JSON || '' }}
           MILK_MODAL_CANDIDATE_API_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.authorize_provider_creates == true && secrets.MILK_MODAL_CANDIDATE_API_KEY || '' }}
           MILK_GATEWAY_CONTAINER_ADMIN_KEY: ${{ secrets.MILK_GATEWAY_CONTAINER_ADMIN_KEY }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN: ${{ secrets.CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN }}
           MILK_CONTROL_STORE_ACCESS_KEY_ID: ${{ secrets.MILK_ROUTE_CONTROL_R2_ACCESS_KEY_ID }}
           MILK_CONTROL_STORE_SECRET_ACCESS_KEY: ${{ secrets.MILK_ROUTE_CONTROL_R2_SECRET_ACCESS_KEY }}
@@ -891,8 +873,6 @@ jobs:
           MILK_ROUTE_STORE_ACCESS_KEY_ID: ${{ secrets.MILK_ROUTE_ROUTE_R2_ACCESS_KEY_ID }}
           MILK_ROUTE_STORE_SECRET_ACCESS_KEY: ${{ secrets.MILK_ROUTE_ROUTE_R2_SECRET_ACCESS_KEY }}
           MILK_ROUTE_STORE_SESSION_TOKEN: ${{ secrets.MILK_ROUTE_ROUTE_R2_SESSION_TOKEN }}
-          MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID }}
-          MILK_ROUTE_EVIDENCE_R2_BUCKET: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_BUCKET }}
           MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID }}
           MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY }}
           MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN }}
@@ -914,11 +894,11 @@ jobs:
 
           for required in \
             MILK_GHCR_PULL_USERNAME MILK_GHCR_PULL_TOKEN \
-            MILK_ROUTE_GATEWAY_CONFIG_JSON MILK_ROUTE_SECRET_HEX \
+            MILK_GATEWAY_CONFIG_PATH MILK_ROUTE_SECRET_HEX \
             MILK_ROUTE_SIGNING_KEY_PEM \
             MILK_CONTROL_STORE_ACCESS_KEY_ID MILK_CONTROL_STORE_SECRET_ACCESS_KEY \
             MILK_ROUTE_STORE_ACCESS_KEY_ID MILK_ROUTE_STORE_SECRET_ACCESS_KEY \
-            MILK_CONFIRMED_RUN_CONFIG_SHA256 MILK_CONFIRMED_RUN_CONFIG_JSON \
+            MILK_CONFIRMED_RUN_CONFIG_SHA256 MILK_CONFIRMED_RUN_CONFIG_PATH \
             MILK_GATEWAY_IMAGE_ADMISSION_SHA256 MILK_GATEWAY_RELEASE_SHA256 \
             MILK_GATEWAY_CONTAINER_APPLICATION_ID \
             MILK_GATEWAY_CONTAINER_APPLICATION_VERSION \
@@ -939,8 +919,8 @@ jobs:
           scratch=$(mktemp -d "$RUNNER_TEMP/milk-route-control.XXXXXX")
           gateway_source=$GITHUB_WORKSPACE/milk-gateway-source
           docker_config=$scratch/docker
-          gateway_config=$scratch/gateway-config.json
-          run_config=$scratch/run-config.json
+          gateway_config=$MILK_GATEWAY_CONFIG_PATH
+          run_config=$MILK_CONFIRMED_RUN_CONFIG_PATH
           gateway_binary=$scratch/dragontales-gateway
           openssl_binary=$scratch/openssl
           signing_key=$scratch/route-signing-key.pem
@@ -958,8 +938,6 @@ jobs:
 
           ghcr_username=$MILK_GHCR_PULL_USERNAME
           ghcr_token=$MILK_GHCR_PULL_TOKEN
-          gateway_config_json=$MILK_ROUTE_GATEWAY_CONFIG_JSON
-          confirmed_run_config_json=$MILK_CONFIRMED_RUN_CONFIG_JSON
           route_secret_hex=$MILK_ROUTE_SECRET_HEX
           signing_key_pem=$MILK_ROUTE_SIGNING_KEY_PEM
           smoke_credential_json=$MILK_ROUTE_SMOKE_CREDENTIAL_JSON
@@ -980,7 +958,7 @@ jobs:
           cloudflare_candidate_token=$CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN
           unset \
             MILK_GHCR_PULL_USERNAME MILK_GHCR_PULL_TOKEN \
-            MILK_ROUTE_GATEWAY_CONFIG_JSON MILK_ROUTE_SECRET_HEX \
+            MILK_GATEWAY_CONFIG_PATH MILK_ROUTE_SECRET_HEX \
             MILK_ROUTE_SIGNING_KEY_PEM MILK_ROUTE_SMOKE_CREDENTIAL_JSON \
             MILK_CONTROL_STORE_ACCESS_KEY_ID MILK_CONTROL_STORE_SECRET_ACCESS_KEY \
             MILK_CONTROL_STORE_SESSION_TOKEN MILK_ROUTE_STORE_ACCESS_KEY_ID \
@@ -990,24 +968,18 @@ jobs:
             MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY \
             MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN \
             MILK_MODAL_CANDIDATE_API_KEY MILK_GATEWAY_CONTAINER_ADMIN_KEY \
-            CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN \
-            MILK_CONFIRMED_RUN_CONFIG_JSON
+            CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_CANDIDATE_SECRET_API_TOKEN
 
           mkdir -m 0700 "$docker_config" "$scratch/npm-home" "$scratch/signatures"
-          printf '%s\n' "$gateway_config_json" >"$gateway_config"
-          printf '%s' "$confirmed_run_config_json" >"$run_config"
           printf '%s\n' "$signing_key_pem" >"$signing_key"
           if [ "$recovery_only" != true ]; then
             printf '%s\n' "$smoke_credential_json" >"$smoke_credential"
             chmod 0400 "$smoke_credential"
           fi
-          chmod 0400 "$gateway_config" "$run_config"
           chmod 0600 "$signing_key"
-          gateway_config_json=
-          confirmed_run_config_json=
           signing_key_pem=
           smoke_credential_json=
-          unset gateway_config_json confirmed_run_config_json signing_key_pem smoke_credential_json
+          unset signing_key_pem smoke_credential_json
           env -i HOME="$scratch/npm-home" PATH=/usr/bin:/bin PYTHONPATH="$GITHUB_WORKSPACE" \
             MILK_CONTROL_STORE_ACCESS_KEY_ID="$control_access" \
             MILK_ROUTE_STORE_ACCESS_KEY_ID="$route_access" \
@@ -1897,8 +1869,6 @@ jobs:
           ROUTE_STEP_OUTCOME: ${{ steps.route.outcome }}
           ZERO_PUBLISHED: ${{ steps.route.outputs.zero_published }}
           ZERO_ROUTE_REVISION: ${{ steps.route.outputs.zero_route_revision }}
-          MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_ACCOUNT_ID }}
-          MILK_ROUTE_EVIDENCE_R2_BUCKET: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_BUCKET }}
           MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_ACCESS_KEY_ID }}
           MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_SECRET_ACCESS_KEY }}
           MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN: ${{ secrets.MILK_ROUTE_EVIDENCE_R2_SESSION_TOKEN }}
