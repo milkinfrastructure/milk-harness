@@ -21,7 +21,7 @@ RUNTIME_PATH = Path(__file__).resolve().with_name("runtime.py")
 SPEC = importlib.util.spec_from_file_location("student_runtime", RUNTIME_PATH)
 runtime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runtime)
-PRODUCTION_RECIPE_SHA256 = "57d387f89549c49659638e3fcdf0e33fd99e3a82918cfbce0ffe3dbcd224251e"
+PRODUCTION_RECIPE_SHA256 = "21f6f57af13d60d76ce31e4d41fb8c9f2df9398cdfaf8a711fd094a415c7ff95"
 FIXTURE_TRAIN_IMAGE = "fixture/dragontales-student-train@sha256:" + "1" * 64
 FIXTURE_BRANCH_IMAGE = "fixture/dragontales-student-branch@sha256:" + "2" * 64
 
@@ -843,7 +843,7 @@ class StudentRuntimeTest(unittest.TestCase):
         self.assertNotIn("vllm/vllm-openai@sha256:", train_dockerfile)
         self.assertLess(
             train_dockerfile.index("USER 0:0"),
-            train_dockerfile.index("RUN test -x /usr/bin/setpriv"),
+            train_dockerfile.index('RUN gateway_repository="${MILK_GATEWAY_IMAGE%@sha256:*}"'),
         )
         self.assertIn('assert version("prime-rl") == "0.9.0"', train_dockerfile)
         self.assertIn('assert torch.version.cuda == "12.8"', train_dockerfile)

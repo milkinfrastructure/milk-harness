@@ -12,6 +12,7 @@ ADD --chmod=0444 --checksum=sha256:0fbba16ffebfad3de96e06f2da6860fd860292324b85b
 
 FROM --platform=linux/amd64 ghcr.io/primeintellect-ai/prime-rl@sha256:6b8b2cf339de90b67ed25f246ad3dcfd773cb80e629577eb31aeb2a6b81db80e
 ARG MILK_GATEWAY_IMAGE
+USER 0:0
 RUN gateway_repository="${MILK_GATEWAY_IMAGE%@sha256:*}" && \
     gateway_digest="${MILK_GATEWAY_IMAGE##*@sha256:}" && \
     test -n "$gateway_repository" && test "$gateway_repository" != "$MILK_GATEWAY_IMAGE" && \
@@ -53,7 +54,6 @@ COPY deploy/models/qwen3-4b-instruct-2507/profile.json \
      deploy/models/qwen3-4b-instruct-2507/model.manifest.sha256 \
      deploy/models/qwen3-4b-instruct-2507/verify.py \
      ./models/qwen3-4b-instruct-2507/
-USER 0:0
 RUN test -x /usr/bin/setpriv && \
     printf '%s\n' student-train > /usr/share/milk/student-artifact-role && \
     chmod 0444 /usr/share/milk/student-artifact-role && \
