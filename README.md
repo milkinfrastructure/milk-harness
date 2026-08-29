@@ -14,7 +14,7 @@ The forkable self-host surface currently covers canonical config validation and 
 
 No local Mac GPU is used. The gateway and scheduler are CPU-only; only an explicitly confirmed provider job can start a cloud GPU.
 
-The code is MIT licensed, but this source repository and its OCI images remain private during production qualification and security review. This is not yet a public open-source release.
+The MIT-licensed gateway and harness source repositories are public. Runtime OCI images remain private during production qualification. Source publication does not imply a production-qualified hosted release; the complete cloud proof below is still incomplete.
 
 ## Product contract
 

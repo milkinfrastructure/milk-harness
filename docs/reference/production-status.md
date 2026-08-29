@@ -4,7 +4,7 @@ Last updated: 2026-08-29.
 
 ## Current status
 
-The current gateway and harness source is a release candidate, not a deployed or production-qualified release. Both repositories and all OCI images remain private.
+The gateway and harness source repositories are public. The current source remains a release candidate, not a deployed or production-qualified release, and all runtime OCI images remain private.
 
 The candidate uses one stable eval identity across the manifest, gateway config, scheduler, and durable object keys: `MILK_EVAL_ID`, `manifest.campaign_id`, and `gateway_config.eval_id` are equal. The separately computed SHA-256 of the canonical outer eval document is the paid-work authorization boundary. Existing private image admissions predate this contract. New private images, admissions, production publication/readback, and complete cloud proof are therefore required before the candidate can be called released.
 
@@ -12,7 +12,7 @@ No paid teacher run or complete provider proof is recorded here. No local GPU ha
 
 ## Verified release-preparation evidence
 
-- The private repositories exist in GitHub but are not public.
+- The MIT-licensed source repositories are public in GitHub. Runtime OCI packages remain private.
 - Earlier source passed the offline gateway and harness gates, and a selective `linux/amd64` jobs build produced local admission, provenance, and SBOM evidence. That evidence is a build-system baseline only; it does not qualify the current candidate.
 - Recorded compressed image sizes are 12.02 MiB for `milk-gateway`, 58.23 MiB for `milk-jobs`, 10,420.49 MiB for `milk-teacher-gpt-oss`, 6,371.95 MiB for `milk-student-train`, and 10,836.92 MiB for `milk-student-branch`.
 - Seven production R2 buckets and the three GitHub production environments were created. Actions remained disabled when this evidence was collected.
@@ -47,6 +47,6 @@ Milk Infrastructure is the hosted operator and owns the admitted eval document, 
 7. Route control publishes and verifies the signed zero successor, removes the candidate credential, tears down the winner, and observes zero provider compute.
 8. The final budget remains below the `$1,000` ceiling, and no new paid work starts at or above `$850`.
 9. GitHub, R2, Cloudflare, Baseten, Modal, and release receipts agree on the exact eval, source, image, and deployment identities.
-10. Repository history, assets, examples, and install documentation pass the public-release security gate before either repository becomes public.
+10. The public-release audit of repository history, assets, examples, install documentation, and GitHub settings is completed and its findings are recorded.
 
 Anything short of these live gates is release preparation, not production qualification.
