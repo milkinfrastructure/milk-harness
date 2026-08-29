@@ -6,7 +6,7 @@ Last updated: 2026-08-29 01:18 America/Los_Angeles.
 
 Prove the complete hosted path: official OpenAI SDK traffic enters the Milk gateway, retained traffic reaches the fixed 50 TRAIN / 73 DEV / 128 CALIBRATION student gate, disposable provider jobs train and evaluate the three admitted branches, the deterministic winner receives a signed canary, saturation falls back to the baseline, a signed zero route is published, and every provider returns to zero GPU. Then publish the gateway and harness as clean MIT-licensed install surfaces whose documentation matches that proof.
 
-The first one-request Modal teacher run is only the provider qualification phase. It does not qualify the student, route, fallback, teardown, or complete product loop.
+The first one-request teacher run is only the provider qualification phase. Baseten runs when its live preflight is healthy; Modal runs only after a genuine retryable Baseten failure. This phase does not by itself qualify the student, route, fallback, teardown, or complete product loop.
 
 Budget guard: `$1,000` absolute campaign ceiling, stop new paid work at `$850`, retain `$150` for running work and teardown.
 
@@ -49,7 +49,7 @@ Budget guard: `$1,000` absolute campaign ceiling, stop new paid work at `$850`, 
 
 1. Cloudflare Worker and Container are present on the admitted image and production hostname.
 2. Official SDK smoke returns a valid completion through the gateway and its immutable trace is present.
-3. The one-request Modal teacher qualification produces one terminal result and Modal returns to zero GPU.
+3. The one-request teacher qualification produces one terminal result on the provider selected by the live Baseten-primary/Modal-fallback policy, and both providers are observed at zero GPU afterward.
 4. The student campaign records at least 50 TRAIN, 73 automatic DEV, and exactly 128 CALIBRATION inputs under the same immutable eval.
 5. One train/merge job and the BF16, dynamic-FP8, and static-FP8 branches complete against the same ordered DEV set; branch intervals prove the intended fanout.
 6. The deterministic winner is admitted, a signed 100-bps canary is exercised through the official SDK, and genuine saturation falls back to the baseline.
