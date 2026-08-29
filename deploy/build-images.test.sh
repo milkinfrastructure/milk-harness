@@ -1060,7 +1060,7 @@ assert_absent -Eq '^(ADD|RUN)[[:space:]]' "$teacher_dockerfile"
   "$(grep -c '^COPY ' "$teacher_dockerfile")" ]
 grep -Fq -- '--sbom=true' "$builder"
 assert_absent -Fq 'command -v gh' "$builder"
-assert_absent -Fq '"$gh"' "$builder"
+assert_absent -Fq "\"\$gh\"" "$builder"
 grep -Fq 'MILK_GITHUB_TOKEN_FILE' "$builder"
 grep -Fq 'deploy/github_rest.py' "$builder"
 grep -Fxq 'USER 65532:65532' "$root/Dockerfile.jobs"

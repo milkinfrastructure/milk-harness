@@ -423,8 +423,12 @@ sh -n "$source_command" "$command" "$installer" "$0"
 grep -Fq "install -d -o root -g \"\$service_gid\" -m 0750 /etc/milk/evals" "$installer"
 grep -Fq '/var/lib/milk /var/lib/milk/evals' "$installer"
 grep -Fq '/opt/milk/bin/github-rest.py' "$installer"
-! grep -Fq 'command -v gh' "$source_command"
-! grep -Fq 'gh workflow' "$source_command"
+if grep -Fq 'command -v gh' "$source_command"; then
+  exit 1
+fi
+if grep -Fq 'gh workflow' "$source_command"; then
+  exit 1
+fi
 grep -Fq '/opt/milk/bin/milk-managed' "$root/tools/exo/README.md"
 grep -Fq '/etc/milk/github-token' "$root/tools/exo/README.md"
 grep -Fq 'sudo install -o root' "$root/tools/exo/README.md"

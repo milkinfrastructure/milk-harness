@@ -22,14 +22,16 @@ cache_dir=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --reuse-release-dir)
-      [ "$#" -ge 2 ] && [ -z "$reuse_release_dir" ] || \
+      if [ "$#" -lt 2 ] || [ -n "$reuse_release_dir" ]; then
         fail 'reused release directory is invalid' 64
+      fi
       reuse_release_dir=$2
       shift 2
       ;;
     --cache-dir)
-      [ "$#" -ge 2 ] && [ -z "$cache_dir" ] || \
+      if [ "$#" -lt 2 ] || [ -n "$cache_dir" ]; then
         fail 'cache directory is invalid' 64
+      fi
       cache_dir=$2
       shift 2
       ;;
@@ -574,8 +576,9 @@ build_one() {
   cache_export=
   if [ "$cache_method" = buildkit-local ]; then
     cache_export=$cache_work/export
-    [ ! -e "$cache_export" ] && [ ! -L "$cache_export" ] || \
+    if [ -e "$cache_export" ] || [ -L "$cache_export" ]; then
       fail 'local BuildKit cache export target already exists' 73
+    fi
     mkdir -m 0700 -- "$cache_export" || \
       fail 'cannot create local BuildKit cache export target' 73
     if [ "$cache_available" = true ]; then
@@ -633,9 +636,10 @@ target.write_text(json.dumps({
 PY
   [ "$build_status" -eq 0 ] || fail "$artifact image build failed" 70
   if [ "$cache_method" = buildkit-local ]; then
-    [ -d "$cache_export" ] && [ ! -L "$cache_export" ] && \
-      [ -f "$cache_export/index.json" ] && [ ! -L "$cache_export/index.json" ] || \
+    if [ ! -d "$cache_export" ] || [ -L "$cache_export" ] || \
+      [ ! -f "$cache_export/index.json" ] || [ -L "$cache_export/index.json" ]; then
       fail 'BuildKit cache export is incomplete' 70
+    fi
     chmod 0700 "$cache_export" || fail 'BuildKit cache export is not owner-only' 70
   fi
 
@@ -668,11 +672,13 @@ PY
     "$ops_log_reference_sha256" "$commit" >>"$references"
   if [ "$cache_method" = buildkit-local ]; then
     prior_cache=$cache_work/prior
-    [ ! -e "$prior_cache" ] && [ ! -L "$prior_cache" ] || \
+    if [ -e "$prior_cache" ] || [ -L "$prior_cache" ]; then
       fail 'local BuildKit cache rotation target already exists' 73
+    fi
     if [ -e "$cache_dir" ]; then
-      [ -d "$cache_dir" ] && [ ! -L "$cache_dir" ] || \
+      if [ ! -d "$cache_dir" ] || [ -L "$cache_dir" ]; then
         fail 'local BuildKit cache changed during the build' 73
+      fi
       mv -- "$cache_dir" "$prior_cache" || \
         fail 'cannot rotate the local BuildKit cache' 73
     fi
