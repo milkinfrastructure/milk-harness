@@ -1,13 +1,16 @@
 # Production runbook
 
-This is the ordered operator path for one Milk deployment. The commands are CPU-only. Provider GPU work begins only at the separately confirmed paid dispatch.
+This is the ordered operator path for one Milk deployment. Commands under
+`milk-harness` operate the temporary implementation bridge; Milk Man is the
+target owner of those fixed job calls. The commands are CPU-only. Provider GPU
+work begins only at the separately confirmed paid dispatch.
 
 ## 1. Release immutable images
 
 From clean published `main` checkouts:
 
 ```sh
-cd /absolute/path/to/milk-gateway
+cd /absolute/path/to/milk-carton
 tools/build-private-gateway.sh /absolute/new/gateway-release-evidence
 
 cd /absolute/path/to/milk-harness
@@ -35,7 +38,7 @@ Each command uses create-only object keys and succeeds only after reading back t
 Bootstrap the first Cloudflare application:
 
 ```sh
-cd /absolute/path/to/milk-gateway
+cd /absolute/path/to/milk-carton
 tools/deploy-private-gateway.sh --bootstrap \
   /absolute/gateway-release-evidence \
   /absolute/new/gateway-deploy-evidence \

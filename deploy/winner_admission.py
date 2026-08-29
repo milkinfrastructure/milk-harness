@@ -259,7 +259,7 @@ if __name__ == "__main__":
     if len(sys.argv) != 4:
         raise SystemExit("usage: admit ENDPOINT MODEL_ALIAS STUDENT_JOB_ID")
     try:
-        candidate_key = os.environ.pop("DRAGONTALES_CANDIDATE_API_KEY", None)
+        candidate_key = os.environ.pop("MILK_CARTON_CANDIDATE_API_KEY", None)
         if candidate_key is None:
             raise ValueError("candidate key secret is required")
         print(

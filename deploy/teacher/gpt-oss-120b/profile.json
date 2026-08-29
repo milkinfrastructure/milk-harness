@@ -1,5 +1,5 @@
 {
-  "schema_version": "dragontales.gpt-oss-teacher-profile.v1",
+  "schema_version": "milk.gpt-oss-teacher-profile.v1",
   "model": {
     "repository": "openai/gpt-oss-120b",
     "revision": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
@@ -21,12 +21,12 @@
     "max_model_len": 131072,
     "minimum_context_margin_tokens": 61440,
     "system_prompt_sha256": "587e635b193061d235af7c3eaaad7ce9f5021405fd2b382361e1185568314fae",
-    "response_format_sha256": "1365b22f7d6d4b72160d5bc1281515005103617cdf470b6d272e4ba6e5b6f5d3"
+    "response_format_sha256": "57823efeb0ad82a8b975f9a851c7dcb777bbb6257e0c6bec777ccfa336400d2c"
   },
   "ingress": {
     "host": "127.0.0.1",
     "port": 8000,
-    "api_key_environment": "DRAGONTALES_TEACHER_API_KEY",
+    "api_key_environment": "MILK_CARTON_TEACHER_API_KEY",
     "upstream": "http://127.0.0.1:8001/v1/chat/completions",
     "retry_count": 0
   },

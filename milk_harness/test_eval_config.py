@@ -29,7 +29,7 @@ def eval_document():
     ids = [f"00000000-0000-4000-8000-0000000000{value:02d}" for value in range(10, 14)]
     eval_id = "e" * 64
     images = {
-        "gateway": "ghcr.io/milkinfrastructure/milk-gateway@sha256:" + "1" * 64,
+        "gateway": "ghcr.io/milkinfrastructure/milk-carton@sha256:" + "1" * 64,
         "jobs": "ghcr.io/milkinfrastructure/milk-jobs@sha256:" + "2" * 64,
         "student_train": "ghcr.io/milkinfrastructure/milk-student-train@sha256:" + "3" * 64,
         "student_branch": "ghcr.io/milkinfrastructure/milk-student-branch@sha256:" + "4" * 64,
@@ -110,7 +110,7 @@ def eval_document():
         "official_openai_sdk_baseline_receipt_sha256": "d" * 64,
         "application_id": "00000000-0000-4000-8000-000000000020",
         "application_version": 7,
-        "container_image": "registry.cloudflare.com/milk-gateway@sha256:" + "c" * 64,
+        "container_image": "registry.cloudflare.com/milk-carton@sha256:" + "c" * 64,
         "worker_version_id": "00000000-0000-4000-8000-000000000021",
     }
     manifest = {

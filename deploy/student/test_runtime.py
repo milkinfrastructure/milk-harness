@@ -21,7 +21,7 @@ RUNTIME_PATH = Path(__file__).resolve().with_name("runtime.py")
 SPEC = importlib.util.spec_from_file_location("student_runtime", RUNTIME_PATH)
 runtime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runtime)
-PRODUCTION_RECIPE_SHA256 = "5b57d7d1ab81543c1edc2e80b70e9d3cdb98ae702698b35d53540fbe00300b2c"
+PRODUCTION_RECIPE_SHA256 = "a43facaa96c84839abe5a9ea14b915f93e5171a5e95a801009565311b941b5a2"
 FIXTURE_TRAIN_IMAGE = "fixture/dragontales-student-train@sha256:" + "1" * 64
 FIXTURE_BRANCH_IMAGE = "fixture/dragontales-student-branch@sha256:" + "2" * 64
 
@@ -698,7 +698,7 @@ class StudentRuntimeTest(unittest.TestCase):
             "CF_API_TOKEN": "secret",
             "CLOUDFLARE_API_TOKEN": "secret",
             "DATABASE_URL": "https://user:secret@example.invalid",
-            "DRAGONTALES_CONFIG_JSON": "secret",
+            "MILK_CARTON_CONFIG_JSON": "secret",
             "MILK_CONTROL_STORE_ACCESS_KEY_ID": "secret",
             "MILK_CONTROL_STORE_SECRET_ACCESS_KEY": "secret",
             "GOOGLE_APPLICATION_CREDENTIALS": "/secret.json",
@@ -836,8 +836,8 @@ class StudentRuntimeTest(unittest.TestCase):
                 dockerfile,
             )
             self.assertIn(
-                "COPY --from=gateway --chmod=0555 /usr/local/bin/dragontales-gateway "
-                "/usr/local/bin/dragontales-gateway",
+                "COPY --from=gateway --chmod=0555 /usr/local/bin/milk-carton "
+                "/usr/local/bin/milk-carton",
                 dockerfile,
             )
             self.assertIn('test "${#gateway_digest}" -eq 64', dockerfile)

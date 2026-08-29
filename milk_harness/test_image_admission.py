@@ -31,7 +31,7 @@ def private_gateway_release(root):
     root.mkdir(parents=True)
     buildkit = "moby/buildkit@sha256:" + "6" * 64
     frontend = "docker/dockerfile:1.7@sha256:" + "7" * 64
-    image = "ghcr.io/milkinfrastructure/milk-gateway@sha256:" + "1" * 64
+    image = "ghcr.io/milkinfrastructure/milk-carton@sha256:" + "1" * 64
     build_log_raw = canonical_json(
         {
             "schema_version": "milk.content-free-build-log.v1",
@@ -58,9 +58,9 @@ def private_gateway_release(root):
         {
             "schema_version": "milk.private-image-admission.v1",
             "artifact": "gateway",
-            "repository": "ghcr.io/milkinfrastructure/milk-gateway",
+            "repository": "ghcr.io/milkinfrastructure/milk-carton",
             "image_reference": image,
-            "source_repository": "https://github.com/milkinfrastructure/milk-gateway",
+            "source_repository": "https://github.com/milkinfrastructure/milk-carton",
             "source_commit": "8" * 40,
             "source_context_method": "git-archive-tar-v1",
             "source_context_sha256": "9" * 64,
@@ -103,7 +103,7 @@ def private_gateway_release(root):
                 "schema_version": "milk.private-gateway-release.v1",
                 "source_commit": "8" * 40,
                 "source_date_epoch": 1_777_777_777,
-                "source_repository": "https://github.com/milkinfrastructure/milk-gateway",
+                "source_repository": "https://github.com/milkinfrastructure/milk-carton",
                 "buildkit_image_reference": buildkit,
                 "dockerfile_frontend_reference": frontend,
                 "build_authority": "local-socket",

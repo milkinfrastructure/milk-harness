@@ -17,7 +17,7 @@ import github_rest
 
 SOURCE_REPOSITORY = "https://github.com/milkinfrastructure/milk-harness"
 GITHUB_USERNAME = "ShantanuJoshi"
-GATEWAY_REPOSITORY = "ghcr.io/milkinfrastructure/milk-gateway"
+GATEWAY_REPOSITORY = "ghcr.io/milkinfrastructure/milk-carton"
 BUILDKIT_IMAGE = "moby/buildkit@sha256:ddd1ca44b21eda906e81ab14a3d467fa6c39cd73b9a39df1196210edcb8db59e"
 BUILDKIT_VERSION = "v0.23.2"
 DOCKERFILE_FRONTEND = "docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e"

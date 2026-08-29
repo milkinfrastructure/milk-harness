@@ -212,9 +212,9 @@ def _start_command(stage):
             "umask 077",
             *store_identity_commands(False),
             "mkdir -m 0700 /tmp/dragontales",
-            'printf "%s" "$DRAGONTALES_CONFIG_JSON" > /tmp/dragontales/gateway.json',
+            'printf "%s" "$MILK_CARTON_CONFIG_JSON" > /tmp/dragontales/gateway.json',
             "chmod 0400 /tmp/dragontales/gateway.json",
-            "unset DRAGONTALES_CONFIG_JSON",
+            "unset MILK_CARTON_CONFIG_JSON",
             f"exec /usr/bin/timeout --signal=TERM --kill-after=30s {OUTER_TIMEOUT_SECONDS}s "
             f"/opt/dragontales/deploy/student-job.sh {arguments}",
         )
@@ -229,9 +229,9 @@ def _teacher_start_command(max_gpu_seconds):
             "umask 077",
             *store_identity_commands(True),
             "mkdir -m 0700 /tmp/dragontales",
-            'printf "%s" "$DRAGONTALES_CONFIG_JSON" > /tmp/dragontales/gateway.json',
+            'printf "%s" "$MILK_CARTON_CONFIG_JSON" > /tmp/dragontales/gateway.json',
             "chmod 0400 /tmp/dragontales/gateway.json",
-            "unset DRAGONTALES_CONFIG_JSON",
+            "unset MILK_CARTON_CONFIG_JSON",
             "exec /usr/bin/timeout --signal=TERM "
             f"--kill-after={TEACHER_TERMINALIZATION_GRACE_SECONDS}s "
             f"{max_gpu_seconds}s "
@@ -289,7 +289,7 @@ def _request_body(settings, student_job_id, variant=None, branch_id=None):
     stage = "train_merge" if variant is None else variant
     environment = {
         **_store_environment(settings, False),
-        "DRAGONTALES_CONFIG_JSON": _secret(settings["config_secret"]),
+        "MILK_CARTON_CONFIG_JSON": _secret(settings["config_secret"]),
         "DRAGONTALES_STUDENT_JOB_ID": student_job_id,
     }
     body = {
@@ -340,7 +340,7 @@ def _teacher_request_body(settings, launch):
     name = f"dt-teacher-{teacher_run_id}"
     environment = {
         **_store_environment(settings, True),
-        "DRAGONTALES_CONFIG_JSON": _secret(settings["config_secret"]),
+        "MILK_CARTON_CONFIG_JSON": _secret(settings["config_secret"]),
         "DRAGONTALES_TEACHER_RUN_ID": teacher_run_id,
     }
     return name, {

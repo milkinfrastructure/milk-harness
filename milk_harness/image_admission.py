@@ -36,7 +36,7 @@ STUDENT_TRAIN_IMAGE_REPOSITORY = PRIVATE_IMAGE_REPOSITORIES["student-train"]
 STUDENT_BRANCH_IMAGE_REPOSITORY = PRIVATE_IMAGE_REPOSITORIES["student-branch"]
 TEACHER_IMAGE_REPOSITORY = PRIVATE_IMAGE_REPOSITORIES["teacher-gpt-oss"]
 JOBS_IMAGE_REPOSITORY = PRIVATE_IMAGE_REPOSITORIES["jobs"]
-GATEWAY_IMAGE_REPOSITORY = "ghcr.io/milkinfrastructure/milk-gateway"
+GATEWAY_IMAGE_REPOSITORY = "ghcr.io/milkinfrastructure/milk-carton"
 RELEASE_PREFIX = "image-admissions/v1/releases"
 ARTIFACT_PREFIX = "image-admissions/v1/artifacts"
 
@@ -177,7 +177,7 @@ def _validate_release(
     if completed < started:
         raise ValueError("private image release timestamps are invalid")
     gateway = adapter.immutable_ghcr_image(release.get("gateway_image_reference"))
-    if gateway.rpartition("@sha256:")[0] != "ghcr.io/milkinfrastructure/milk-gateway":
+    if gateway.rpartition("@sha256:")[0] != "ghcr.io/milkinfrastructure/milk-carton":
         raise ValueError("private image release gateway is invalid")
     buildkit = adapter.immutable_image(release.get("buildkit_image_reference"))
     frontend = adapter.immutable_image(release.get("dockerfile_frontend_reference"))
@@ -399,7 +399,7 @@ def _validate_gateway_release(
         or type(release.get("source_date_epoch")) is not int
         or release["source_date_epoch"] <= 0
         or release.get("source_repository")
-        != "https://github.com/milkinfrastructure/milk-gateway"
+        != "https://github.com/milkinfrastructure/milk-carton"
         or release.get("build_authority") != "local-socket"
         or release.get("platform") != "linux/amd64"
         or HEX64.fullmatch(release.get("ops_log_reference_sha256", "")) is None

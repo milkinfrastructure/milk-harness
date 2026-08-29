@@ -2,7 +2,7 @@
 set -eu
 umask 077
 
-GATEWAY_REPOSITORY=ghcr.io/milkinfrastructure/milk-gateway
+GATEWAY_REPOSITORY=ghcr.io/milkinfrastructure/milk-carton
 SOURCE_REPOSITORY=https://github.com/milkinfrastructure/milk-harness
 BUILDKIT_IMAGE=moby/buildkit@sha256:ddd1ca44b21eda906e81ab14a3d467fa6c39cd73b9a39df1196210edcb8db59e
 BUILDKIT_VERSION=v0.23.2
@@ -518,7 +518,7 @@ for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
     if name in seen:
         raise SystemExit(1)
     seen[name] = visibility
-if seen.get("milk-gateway") != "private":
+if seen.get("milk-carton") != "private":
     raise SystemExit(1)
 for name in targets & seen.keys():
     if seen[name] != "private":

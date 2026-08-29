@@ -741,7 +741,7 @@ def private_image_release(
         "planner": "3" * 64,
         "jobs": "4" * 64,
     }
-    gateway = "ghcr.io/milkinfrastructure/milk-gateway@sha256:" + "5" * 64
+    gateway = "ghcr.io/milkinfrastructure/milk-carton@sha256:" + "5" * 64
     buildkit = "moby/buildkit@sha256:" + "6" * 64
     frontend = "docker/dockerfile@sha256:" + "7" * 64
     builder = {
@@ -1964,7 +1964,7 @@ class BasetenJobsTests(unittest.TestCase):
             "--max-dispatches",
             'from_environment(prefix="MILK_CAPTURE_STORE_")',
             'os.environ.get("MILK_CAPTURE_STORE_',
-            "dragontales-gateway",
+            "/usr/local/bin/milk-carton",
             "--allow-provider-creates",
         ):
             self.assertNotIn(forbidden, source)

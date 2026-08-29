@@ -245,7 +245,7 @@ class WinnerPureContractTest(unittest.TestCase):
             )
             gateway.chmod(0o700)
             command = command.replace(
-                "/usr/local/bin/dragontales-gateway", str(gateway)
+                "/usr/local/bin/milk-carton", str(gateway)
             ).replace("/tmp/dragontales", str(root / "dragontales"))
             result = subprocess.run(
                 ["/bin/sh", "-c", command],

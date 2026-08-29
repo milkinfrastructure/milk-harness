@@ -313,7 +313,7 @@ def truss_config(values, run_id):
         "if not valid or re.fullmatch(\"[0-9a-f]{64}\", expected or \"\") is None or hashlib.sha256(raw).hexdigest() != expected:\n"
         "    raise SystemExit(64)\n"
         "'\n"
-        "/usr/local/bin/dragontales-gateway "
+        "/usr/local/bin/milk-carton "
         "--config /tmp/dragontales/gateway.json materialize-student-winner "
         '--student-job-id "$DRAGONTALES_STUDENT_JOB_ID" '
         "--stage-dir /tmp/dragontales-winner "

@@ -29,7 +29,7 @@ from milk_harness.provider_acceptance import TEAM_NAME
 
 MAX_STREAM_BYTES = 1024 * 1024
 IMAGE_REPOSITORIES = {
-    "gateway": "ghcr.io/milkinfrastructure/milk-gateway",
+    "gateway": "ghcr.io/milkinfrastructure/milk-carton",
     "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
     "student_train": "ghcr.io/milkinfrastructure/milk-student-train",
     "student_branch": "ghcr.io/milkinfrastructure/milk-student-branch",

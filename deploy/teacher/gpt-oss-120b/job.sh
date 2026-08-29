@@ -21,7 +21,7 @@ case $config in /*) ;; *) usage ;; esac
 case $teacher_run_id in *[!0-9a-f]*|'') usage ;; esac
 [ "${#teacher_run_id}" -eq 64 ] || usage
 
-gateway=/usr/local/bin/dragontales-gateway
+gateway=/usr/local/bin/milk-carton
 runtime=/opt/dragontales/runtime.py
 [ -x "$gateway" ] || fail 'gateway executable is unavailable'
 [ -r "$runtime" ] || fail 'teacher runtime is unavailable'
@@ -74,7 +74,7 @@ run_execute_gateway() {
       MILK_CONTROL_STORE_ACCESS_KEY_ID="$control_store_access_key" \
       MILK_CONTROL_STORE_SECRET_ACCESS_KEY="$control_store_secret_key" \
       MILK_CONTROL_STORE_SESSION_TOKEN="$control_store_session_token" \
-      DRAGONTALES_TEACHER_API_KEY="$teacher_key" \
+      MILK_CARTON_TEACHER_API_KEY="$teacher_key" \
       "$gateway" --config "$config" execute-teacher-run \
       --teacher-run-id "$teacher_run_id"
   elif [ "$capture_store_session_set" = set ]; then
@@ -84,7 +84,7 @@ run_execute_gateway() {
       MILK_CAPTURE_STORE_SESSION_TOKEN="$capture_store_session_token" \
       MILK_CONTROL_STORE_ACCESS_KEY_ID="$control_store_access_key" \
       MILK_CONTROL_STORE_SECRET_ACCESS_KEY="$control_store_secret_key" \
-      DRAGONTALES_TEACHER_API_KEY="$teacher_key" \
+      MILK_CARTON_TEACHER_API_KEY="$teacher_key" \
       "$gateway" --config "$config" execute-teacher-run \
       --teacher-run-id "$teacher_run_id"
   elif [ "$control_store_session_set" = set ]; then
@@ -94,7 +94,7 @@ run_execute_gateway() {
       MILK_CONTROL_STORE_ACCESS_KEY_ID="$control_store_access_key" \
       MILK_CONTROL_STORE_SECRET_ACCESS_KEY="$control_store_secret_key" \
       MILK_CONTROL_STORE_SESSION_TOKEN="$control_store_session_token" \
-      DRAGONTALES_TEACHER_API_KEY="$teacher_key" \
+      MILK_CARTON_TEACHER_API_KEY="$teacher_key" \
       "$gateway" --config "$config" execute-teacher-run \
       --teacher-run-id "$teacher_run_id"
   else
@@ -103,7 +103,7 @@ run_execute_gateway() {
       MILK_CAPTURE_STORE_SECRET_ACCESS_KEY="$capture_store_secret_key" \
       MILK_CONTROL_STORE_ACCESS_KEY_ID="$control_store_access_key" \
       MILK_CONTROL_STORE_SECRET_ACCESS_KEY="$control_store_secret_key" \
-      DRAGONTALES_TEACHER_API_KEY="$teacher_key" \
+      MILK_CARTON_TEACHER_API_KEY="$teacher_key" \
       "$gateway" --config "$config" execute-teacher-run \
       --teacher-run-id "$teacher_run_id"
   fi
@@ -157,7 +157,7 @@ cleanup() {
       printf '%s\n' 'teacher-job: teacher run terminalization failed' >&2
     fi
   fi
-  unset DRAGONTALES_TEACHER_API_KEY teacher_key
+  unset MILK_CARTON_TEACHER_API_KEY teacher_key
   exit "$status"
 }
 trap cleanup EXIT
@@ -165,7 +165,7 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-unset DRAGONTALES_TEACHER_API_KEY
+unset MILK_CARTON_TEACHER_API_KEY
 if run_control_gateway begin-teacher-run \
   --teacher-run-id "$teacher_run_id" >"$begin_stdout"; then
   :
@@ -177,9 +177,9 @@ begun=1
 
 teacher_key=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
 [ "${#teacher_key}" -ge 32 ] || fail 'internal teacher credential generation failed'
-export DRAGONTALES_TEACHER_API_KEY=$teacher_key
+export MILK_CARTON_TEACHER_API_KEY=$teacher_key
 
-env -u DRAGONTALES_CONFIG_JSON \
+env -u MILK_CARTON_CONFIG_JSON \
   -u MILK_CAPTURE_STORE_ACCESS_KEY_ID \
   -u MILK_CAPTURE_STORE_SECRET_ACCESS_KEY \
   -u MILK_CAPTURE_STORE_SESSION_TOKEN \
@@ -189,11 +189,11 @@ env -u DRAGONTALES_CONFIG_JSON \
   -u MILK_ROUTE_STORE_ACCESS_KEY_ID \
   -u MILK_ROUTE_STORE_SECRET_ACCESS_KEY \
   -u MILK_ROUTE_STORE_SESSION_TOKEN \
-  DRAGONTALES_TEACHER_API_KEY="$teacher_key" \
+  MILK_CARTON_TEACHER_API_KEY="$teacher_key" \
   python3 "$runtime" serve >"$runtime_output" 2>&1 &
 runtime_pid=$!
 
-env -u DRAGONTALES_CONFIG_JSON \
+env -u MILK_CARTON_CONFIG_JSON \
   -u MILK_CAPTURE_STORE_ACCESS_KEY_ID \
   -u MILK_CAPTURE_STORE_SECRET_ACCESS_KEY \
   -u MILK_CAPTURE_STORE_SESSION_TOKEN \
@@ -203,7 +203,7 @@ env -u DRAGONTALES_CONFIG_JSON \
   -u MILK_ROUTE_STORE_ACCESS_KEY_ID \
   -u MILK_ROUTE_STORE_SECRET_ACCESS_KEY \
   -u MILK_ROUTE_STORE_SESSION_TOKEN \
-  DRAGONTALES_TEACHER_API_KEY="$teacher_key" \
+  MILK_CARTON_TEACHER_API_KEY="$teacher_key" \
   python3 "$runtime" wait-ready &
 readiness_pid=$!
 if wait "$readiness_pid"; then

@@ -292,7 +292,7 @@ class RuntimeTest(unittest.TestCase):
             )
             response = connection.getresponse()
             expected = (
-                b'{"schema_version":"dragontales.teacher-readiness.v1",'
+                b'{"schema_version":"milk.teacher-readiness.v1",'
                 b'"model":"openai/gpt-oss-120b","profile_sha256":"'
                 + hashlib.sha256((HERE / "profile.json").read_bytes()).hexdigest().encode()
                 + b'","state":"ready"}'
@@ -549,7 +549,7 @@ class RuntimeTest(unittest.TestCase):
         self.assertIn("secrets.token_urlsafe(32)", job)
         self.assertIn("-u MILK_CAPTURE_STORE_SECRET_ACCESS_KEY", job)
         self.assertIn("-u MILK_CONTROL_STORE_SECRET_ACCESS_KEY", job)
-        self.assertNotIn("DRAGONTALES_TEACHER_API_KEY", dockerfile)
+        self.assertNotIn("MILK_CARTON_TEACHER_API_KEY", dockerfile)
         runtime_source = (HERE / "runtime.py").read_text("utf-8")
         self.assertNotIn("print(", runtime_source)
         self.assertNotIn("--enable-log-requests", json.dumps(runtime.PROFILE))
@@ -625,8 +625,13 @@ import signal
 import sys
 import time
 
-if any(name.startswith("MILK_") for name in os.environ):
+if any(
+    name.startswith("MILK_") and name != "MILK_CARTON_TEACHER_API_KEY"
+    for name in os.environ
+):
     raise SystemExit(72)
+if len(os.environ.get("MILK_CARTON_TEACHER_API_KEY", "")) < 32:
+    raise SystemExit(73)
 if sys.argv[1] == "wait-ready":
     if os.environ.get("FAIL_READY") == "1":
         raise SystemExit(71)
@@ -650,7 +655,7 @@ while True:
                 job = root / "job.sh"
                 job.write_text(
                     source.replace(
-                        "gateway=/usr/local/bin/dragontales-gateway",
+                        "gateway=/usr/local/bin/milk-carton",
                         f"gateway={gateway}",
                     )
                     .replace("runtime=/opt/dragontales/runtime.py", f"runtime={fake_runtime}")

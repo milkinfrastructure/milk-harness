@@ -1,5 +1,5 @@
 {
-  "schema_version": "dragontales.gpt-oss-teacher-provenance.v1",
+  "schema_version": "milk.gpt-oss-teacher-provenance.v1",
   "model": {
     "publisher": "OpenAI",
     "repository": "https://huggingface.co/openai/gpt-oss-120b",

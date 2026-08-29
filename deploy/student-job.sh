@@ -60,7 +60,7 @@ control_store_access_key=${MILK_CONTROL_STORE_ACCESS_KEY_ID:-}
 control_store_secret_key=${MILK_CONTROL_STORE_SECRET_ACCESS_KEY:-}
 control_store_session_token=${MILK_CONTROL_STORE_SESSION_TOKEN-}
 control_store_session_set=${MILK_CONTROL_STORE_SESSION_TOKEN+set}
-unset DRAGONTALES_CONFIG_JSON
+unset MILK_CARTON_CONFIG_JSON
 unset MILK_CAPTURE_STORE_ACCESS_KEY_ID MILK_CAPTURE_STORE_SECRET_ACCESS_KEY
 unset MILK_CAPTURE_STORE_SESSION_TOKEN
 unset MILK_CONTROL_STORE_ACCESS_KEY_ID MILK_CONTROL_STORE_SECRET_ACCESS_KEY
@@ -160,7 +160,7 @@ if [ "$control_store_session_set" = set ] && [ -z "$control_store_session_token"
   fail 'control-store session token cannot be empty'
 fi
 
-gateway=$(resolve_executable /usr/local/bin/dragontales-gateway) ||
+gateway=$(resolve_executable /usr/local/bin/milk-carton) ||
   fail 'gateway executable is unavailable'
 runner=$(resolve_executable "$script_dir/student-run.sh") ||
   fail 'student runner is unavailable'

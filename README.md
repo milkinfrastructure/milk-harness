@@ -1,19 +1,18 @@
 # Milk Harness
 
-Milk Harness is the deterministic operator loop for
-[`milk-gateway`](https://github.com/milkinfrastructure/milk-gateway). The
-gateway accepts OpenAI-compatible Chat Completions and Responses traffic and
-writes sampled statistics and traces to one S3-compatible object store. The
-harness watches that store, processes closed hourly windows, writes derived
-objects, then exits.
+Milk Harness is a temporary implementation bridge, not a third product or a
+standing service. Milk has two products:
 
-The public system remains two repositories:
+- [`milk-carton`](https://github.com/milkinfrastructure/milk-carton): the Rust
+  API, routing, capture, object-store, and signed-route data plane;
+- [`milk-man`](https://github.com/milkinfrastructure/milk-man): the agentic
+  harness that invokes deterministic jobs as bounded tool calls.
 
-- `milk-gateway`: CPU request routing, capture, and signed route consumption;
-- `milk-harness`: summary statistics, semantic classification, readiness,
-  eval generation, and unsigned route proposals.
-
-There is no resident manager, database, or queue in this milestone.
+This repository currently holds the deterministic reconciliation and worker
+code being called from Milk Man while that code is moved behind its fixed job
+interface. It watches Carton's S3-compatible object store, processes closed
+hourly windows, writes derived objects, then exits. It has no route-signing or
+spend authority and does not add a resident manager, database, or queue.
 
 ## One pass
 
@@ -41,9 +40,9 @@ or create-only. Small `current.json` objects are compare-and-swap pointers. A
 replay with the same source objects makes no teacher call and produces the same
 identities.
 
-The harness never receives a route-signing key and cannot activate traffic.
+The bridge never receives a route-signing key and cannot activate traffic.
 An operator reviews the proposal, signs a gateway route manifest, and publishes
-it through `milk-gateway`.
+it through `milk-carton`.
 
 ## Configuration
 
@@ -100,7 +99,7 @@ activate that proposal. Scheduled runs always select `production`.
 
 ## Development
 
-The control path uses the Python standard library plus the `zstd` executable
+The bridge control path uses the Python standard library plus the `zstd` executable
 for production trace and result compression. Run the offline tests with:
 
 ```sh
