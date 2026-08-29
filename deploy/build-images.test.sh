@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 builder=$root/deploy/build-images.sh
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/milk-build-images-test.XXXXXX")
 
@@ -11,6 +11,15 @@ cleanup() {
   esac
 }
 trap cleanup EXIT HUP INT TERM
+
+assert_absent() {
+  if grep "$@"; then
+    return 1
+  else
+    grep_status=$?
+  fi
+  [ "$grep_status" -eq 1 ]
+}
 
 python3 - "$root" <<'PY'
 import ast
@@ -505,22 +514,27 @@ chmod 0700 \
   "$test_root/bin/git" "$test_root/bin/gh" "$test_root/bin/docker" \
   "$test_root/bin/python3"
 
+test_env() {
+  env -i \
+    HOME="$test_root/home" \
+    PATH="$test_root/bin:$PATH" \
+    TEST_REPO="$root" \
+    TEST_REAL_PYTHON="$(command -v python3)" \
+    TEST_FAKE_VERIFIER="$fake_verifier" \
+    TEST_REVISION="$revision" \
+    TEST_SOURCE_CONTEXT="$source_context" \
+    TEST_COMMAND_LOG="$test_root/commands.log" \
+    TEST_INDEX="$index" \
+    TEST_INDEX_DIGEST="$index_digest" \
+    TEST_MANIFEST="$manifest" \
+    TEST_MANIFEST_DIGEST="$manifest_digest" \
+    TEST_ATTESTATION="$attestation" \
+    TEST_ATTESTATION_DIGEST="$attestation_digest" \
+    "$@"
+}
+
 run_builder() {
-  HOME="$test_root/home" \
-  PATH="$test_root/bin:$PATH" \
-  TEST_REPO="$root" \
-  TEST_REAL_PYTHON="$(command -v python3)" \
-  TEST_FAKE_VERIFIER="$fake_verifier" \
-  TEST_REVISION="$revision" \
-  TEST_SOURCE_CONTEXT="$source_context" \
-  TEST_COMMAND_LOG="$test_root/commands.log" \
-  TEST_INDEX="$index" \
-  TEST_INDEX_DIGEST="$index_digest" \
-  TEST_MANIFEST="$manifest" \
-  TEST_MANIFEST_DIGEST="$manifest_digest" \
-  TEST_ATTESTATION="$attestation" \
-  TEST_ATTESTATION_DIGEST="$attestation_digest" \
-    "$builder" "$@"
+  test_env "$builder" "$@"
 }
 
 output=$test_root/evidence
@@ -544,7 +558,7 @@ for artifact in student-train student-branch teacher-gpt-oss jobs; do
   [ -s "$output/$artifact/admission.json" ]
 done
 [ -z "$(find "$output" -type f -name '*.log' -print)" ]
-! grep -R -Fq 'ephemeral-test-password' "$output" "$test_root/commands.log"
+assert_absent -R -Fq 'ephemeral-test-password' "$output" "$test_root/commands.log"
 
 [ "$(grep -c '^docker|.*buildx|build|' "$test_root/commands.log")" -eq 4 ]
 [ "$(grep -c '^docker|.*buildx|imagetools|inspect|--raw|' "$test_root/commands.log")" -eq 12 ]
@@ -766,8 +780,10 @@ run_builder --reuse-release-dir "$seed" "$gateway" "$selective" \
 [ "$(grep -c '^verifier|' "$test_root/commands.log")" -eq 1 ]
 grep -Fq -- "--tag|ghcr.io/milkinfrastructure/milk-jobs:source-$revision" \
   "$test_root/commands.log"
-! grep '^docker|.*buildx|build|' "$test_root/commands.log" | \
-  grep -Eq 'milk-(student-train|student-branch|teacher-gpt-oss)'
+if grep '^docker|.*buildx|build|' "$test_root/commands.log" | \
+  grep -Eq 'milk-(student-train|student-branch|teacher-gpt-oss)'; then
+  exit 1
+fi
 [ ! -e "$selective/planner" ]
 for artifact in student-train student-branch teacher-gpt-oss; do
   cmp "$seed/evidence/harness/$artifact/admission.json" \
@@ -845,46 +861,44 @@ assert_rejected() {
   [ ! -e "$test_root/rejected-$name" ]
 }
 
-base_env="HOME=$test_root/home PATH=$test_root/bin:$PATH TEST_REPO=$root TEST_REAL_PYTHON=$(command -v python3) TEST_FAKE_VERIFIER=$fake_verifier TEST_REVISION=$revision TEST_SOURCE_CONTEXT=$source_context TEST_COMMAND_LOG=$test_root/commands.log TEST_INDEX=$index TEST_INDEX_DIGEST=$index_digest TEST_MANIFEST=$manifest TEST_MANIFEST_DIGEST=$manifest_digest TEST_ATTESTATION=$attestation TEST_ATTESTATION_DIGEST=$attestation_digest"
-
-assert_rejected source-revision env $base_env \
+assert_rejected source-revision test_env \
   "$builder" "$gateway" "$revision" "$test_root/rejected-source-revision"
-assert_rejected mutable-gateway env $base_env \
+assert_rejected mutable-gateway test_env \
   "$builder" ghcr.io/milkinfrastructure/milk-gateway:latest "$test_root/rejected-mutable-gateway"
-assert_rejected wrong-gateway env $base_env \
-  "$builder" ghcr.io/shantanujoshi/milk-gateway@sha256:$(printf '%064d' 8) "$test_root/rejected-wrong-gateway"
-assert_rejected dirty env $base_env TEST_GIT_DIRTY=1 \
+assert_rejected wrong-gateway test_env \
+  "$builder" "ghcr.io/shantanujoshi/milk-gateway@sha256:$(printf '%064d' 8)" "$test_root/rejected-wrong-gateway"
+assert_rejected dirty test_env TEST_GIT_DIRTY=1 \
   "$builder" "$gateway" "$test_root/rejected-dirty"
-assert_rejected origin env $base_env TEST_ORIGIN=https://github.com/example/milk-harness.git \
+assert_rejected origin test_env TEST_ORIGIN=https://github.com/example/milk-harness.git \
   "$builder" "$gateway" "$test_root/rejected-origin"
-assert_rejected unpublished env $base_env TEST_REMOTE_REVISION=$(printf '%040d' 9) \
+assert_rejected unpublished test_env "TEST_REMOTE_REVISION=$(printf '%040d' 9)" \
   "$builder" "$gateway" "$test_root/rejected-unpublished"
 mkdir "$test_root/existing"
-assert_rejected existing env $base_env \
+assert_rejected existing test_env \
   "$builder" "$gateway" "$test_root/existing"
-assert_rejected registry-credential env $base_env GH_TOKEN=secret \
+assert_rejected registry-credential test_env GH_TOKEN=secret \
   "$builder" "$gateway" "$test_root/rejected-registry-credential"
-assert_rejected provider-credential env $base_env BASETEN_API_KEY=secret \
+assert_rejected provider-credential test_env BASETEN_API_KEY=secret \
   "$builder" "$gateway" "$test_root/rejected-provider-credential"
-assert_rejected store-credential env $base_env MILK_CONTROL_STORE_SESSION_TOKEN=secret \
+assert_rejected store-credential test_env MILK_CONTROL_STORE_SESSION_TOKEN=secret \
   "$builder" "$gateway" "$test_root/rejected-store-credential"
-assert_rejected r2-credential env $base_env MILK_EVIDENCE_R2_SECRET_ACCESS_KEY=secret \
+assert_rejected r2-credential test_env MILK_EVIDENCE_R2_SECRET_ACCESS_KEY=secret \
   "$builder" "$gateway" "$test_root/rejected-r2-credential"
-assert_rejected create-authority-credential env $base_env \
+assert_rejected create-authority-credential test_env \
   MILK_CREATE_AUTHORITY_WRITE_R2_SECRET_ACCESS_KEY=secret \
   "$builder" "$gateway" "$test_root/rejected-create-authority-credential"
-assert_rejected teacher-credential env $base_env TEACHER_API_KEY=secret \
+assert_rejected teacher-credential test_env TEACHER_API_KEY=secret \
   "$builder" "$gateway" "$test_root/rejected-teacher-credential"
-assert_rejected openai-credential env $base_env OPENAI_API_KEY=secret \
+assert_rejected openai-credential test_env OPENAI_API_KEY=secret \
   "$builder" "$gateway" "$test_root/rejected-openai-credential"
-assert_rejected codex-credential env $base_env CODEX_API_KEY=secret \
+assert_rejected codex-credential test_env CODEX_API_KEY=secret \
   "$builder" "$gateway" "$test_root/rejected-codex-credential"
-assert_rejected remote-docker env $base_env DOCKER_HOST=tcp://builder.example:2376 \
+assert_rejected remote-docker test_env DOCKER_HOST=tcp://builder.example:2376 \
   "$builder" "$gateway" "$test_root/rejected-remote-docker"
 
 rm -f -- "$test_root/commands.log"
 set +e
-env $base_env TEST_PUBLIC_PACKAGE=1 \
+test_env TEST_PUBLIC_PACKAGE=1 \
   "$builder" "$gateway" "$test_root/public-package" >/dev/null 2>&1
 status=$?
 set -e
@@ -894,7 +908,7 @@ set -e
 
 rm -f -- "$test_root/commands.log"
 set +e
-env $base_env TEST_FAIL_BUILD=1 \
+test_env TEST_FAIL_BUILD=1 \
   "$builder" "$gateway" "$test_root/build-failure" >/dev/null 2>&1
 status=$?
 set -e
@@ -903,7 +917,7 @@ set -e
 [ -s "$test_root/build-failure/jobs/build-log.json" ]
 [ -s "$test_root/build-failure/jobs/ops-log-reference.json" ]
 [ -z "$(find "$test_root/build-failure" -type f -name '*.log' -print)" ]
-! grep -R -Fq 'raw failing build output must not persist' "$test_root/build-failure"
+assert_absent -R -Fq 'raw failing build output must not persist' "$test_root/build-failure"
 python3 - "$test_root/build-failure" <<'PY'
 import json
 import sys
@@ -920,7 +934,7 @@ PY
 
 rm -f -- "$test_root/commands.log"
 set +e
-env $base_env TEST_FAIL_VERIFY=1 \
+test_env TEST_FAIL_VERIFY=1 \
   "$builder" "$gateway" "$test_root/verify-failure" >/dev/null 2>&1
 status=$?
 set -e
@@ -936,7 +950,7 @@ root = Path(sys.argv[1])
 failure = json.loads(root.joinpath("failure.json").read_bytes())
 assert failure["stage"] == "verify-jobs"
 PY
-! grep -R -Fq 'ephemeral-test-password' \
+assert_absent -R -Fq 'ephemeral-test-password' \
   "$test_root/verify-failure" "$test_root/commands.log"
 
 for dockerfile in \
@@ -948,24 +962,24 @@ for dockerfile in \
     "$dockerfile"
 done
 teacher_dockerfile=$root/deploy/teacher/gpt-oss-120b/Dockerfile
-! grep -Eq '^(ADD|RUN)[[:space:]]' "$teacher_dockerfile"
+assert_absent -Eq '^(ADD|RUN)[[:space:]]' "$teacher_dockerfile"
 [ "$(grep -c '^COPY .*--link' "$teacher_dockerfile")" -eq \
   "$(grep -c '^COPY ' "$teacher_dockerfile")" ]
 grep -Fq -- '--sbom=true' "$builder"
 grep -Fxq 'USER 65532:65532' "$root/Dockerfile.jobs"
 grep -Fq 'import modal' "$root/Dockerfile.jobs"
-! grep -Fq 'truss' "$root/Dockerfile.jobs"
+assert_absent -Fq 'truss' "$root/Dockerfile.jobs"
 grep -Fq 'milk_harness/image_admission.py' "$root/Dockerfile.jobs"
 grep -Fq 'milk_harness/provider_acceptance.py' "$root/Dockerfile.jobs"
 grep -Fq 'deploy/baseten/winner.py' "$root/Dockerfile.jobs"
 grep -Fq 'deploy/modal/admit.py' "$root/Dockerfile.jobs"
-! grep -Fq 'publish_image_admission.py' "$root/Dockerfile.jobs"
-! grep -Eq 'MILK_GATEWAY_IMAGE|dragontales-gateway|--from=gateway|/usr/share/licenses/dragontales|gpt-oss-120b/profile' \
+assert_absent -Fq 'publish_image_admission.py' "$root/Dockerfile.jobs"
+assert_absent -Eq 'MILK_GATEWAY_IMAGE|dragontales-gateway|--from=gateway|/usr/share/licenses/dragontales|gpt-oss-120b/profile' \
   "$root/Dockerfile.jobs"
 grep -Fxq '**' "$root/Dockerfile.jobs.dockerignore"
 grep -Fxq '!milk_harness/image_admission.py' "$root/Dockerfile.jobs.dockerignore"
-! grep -Fq '!milk_harness/publish_image_admission.py' "$root/Dockerfile.jobs.dockerignore"
-! grep -Fq '!deploy/teacher/' "$root/Dockerfile.jobs.dockerignore"
+assert_absent -Fq '!milk_harness/publish_image_admission.py' "$root/Dockerfile.jobs.dockerignore"
+assert_absent -Fq '!deploy/teacher/' "$root/Dockerfile.jobs.dockerignore"
 
 sh -n "$builder" "$0"
 python3 -m py_compile "$root/deploy/verify-private-image.py"

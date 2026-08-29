@@ -43,7 +43,7 @@ esac
 [ ! -e "$requested_evidence_dir" ] || fail 'evidence directory must be new' 64
 evidence_parent=$(dirname -- "$requested_evidence_dir")
 [ -d "$evidence_parent" ] || fail 'evidence directory parent does not exist' 64
-evidence_parent=$(CDPATH= cd -- "$evidence_parent" && pwd -P)
+evidence_parent=$(CDPATH='' cd -- "$evidence_parent" && pwd -P)
 evidence_dir=$evidence_parent/$(basename -- "$requested_evidence_dir")
 
 if [ -n "$reuse_release_dir" ]; then
@@ -65,7 +65,7 @@ if printf '%s\n' "$credential_names" | grep -Eq \
   fail 'build shell contains an ambient registry, provider, store, teacher, OpenAI, or Codex credential/configuration' 64
 fi
 
-repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+repo=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 cd "$repo"
 top_level=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'release source is not a git checkout' 64
 [ "$top_level" = "$repo" ] || fail 'release script must run from the milk-harness checkout' 64
@@ -86,6 +86,8 @@ case "$origin" in
 esac
 remote_head=$(git ls-remote --exit-code origin HEAD 2>/dev/null) || \
   fail 'cannot resolve origin HEAD' 64
+# git returns exactly two fields, which are validated immediately below.
+# shellcheck disable=SC2086
 set -- $remote_head
 [ "$#" -eq 2 ] && [ "$1" = "$commit" ] && [ "$2" = HEAD ] || \
   fail 'local HEAD must equal the published origin HEAD' 64
@@ -359,7 +361,7 @@ if ! "$gh" auth token --hostname github.com | \
   fail 'private GHCR login failed' 77
 fi
 
-failure_stage=package-preflight
+failure_stage='package-preflight'
 packages=$scratch/packages.tsv
 "$gh" api --hostname github.com --paginate \
   '/orgs/milkinfrastructure/packages?package_type=container&per_page=100' \
@@ -394,7 +396,7 @@ if sys.argv[2] and any(
     raise SystemExit(1)
 PY
 
-failure_stage=builder-create
+failure_stage='builder-create'
 "$docker" --config "$docker_config" buildx create \
   --name "$builder" \
   --driver docker-container \
@@ -402,7 +404,7 @@ failure_stage=builder-create
   "$endpoint" >/dev/null || fail 'cannot create the pinned local BuildKit builder' 70
 builder_created=1
 bootstrap_log=$scratch/builder.log
-failure_stage=builder-bootstrap
+failure_stage='builder-bootstrap'
 if ! "$docker" --config "$docker_config" buildx inspect "$builder" --bootstrap >"$bootstrap_log" 2>&1; then
   cat "$bootstrap_log" >&2 || :
   fail 'cannot bootstrap the pinned local BuildKit builder' 70
@@ -440,7 +442,6 @@ build_one() {
   dockerfile=$2
   repository=$3
   gateway_required=$4
-  package=${repository##*/}
   artifact_dir=$evidence_dir/$artifact
   mkdir -m 0700 -- "$artifact_dir"
   tagged=$repository:source-$commit
@@ -532,6 +533,8 @@ PY
   immutable=$(
     "$gh" auth token --hostname github.com | "$python" "$@"
   ) || fail "$artifact immutable manifest verification failed" 70
+  # The verifier returns exactly three fields, which are validated below.
+  # shellcheck disable=SC2086
   set -- $immutable
   [ "$#" -eq 3 ] || fail "$artifact admission receipt is invalid" 70
   immutable=$1
