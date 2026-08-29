@@ -18,6 +18,7 @@ from milk_harness.scheduler import (
     PROVIDER_LEASE_MAX_CLOCK_SKEW_SECONDS,
     PROVIDER_LEASE_TTL_SECONDS,
     active_provider_lease_reference,
+    _write_new_private_file,
     _validate_create_authority_environment,
     _require_no_create_authority_environment,
     acquire_provider_lease,
@@ -425,6 +426,17 @@ class SchedulerTest(unittest.TestCase):
         token_path.write_bytes(canonical_json(token) + b" ")
         with self.assertRaisesRegex(ValueError, "token is invalid"):
             load_provider_lease_token(token_path)
+
+    def test_private_new_file_ignores_process_umask(self):
+        path = self.root / "private.json"
+        previous = os.umask(0)
+        try:
+            _write_new_private_file(path, b"{}\n")
+        finally:
+            os.umask(previous)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        with self.assertRaises(FileExistsError):
+            _write_new_private_file(path, b"changed\n")
 
     def test_paid_create_confirmation_is_exact(self):
         self.assertIsNone(validate_create_confirmation("false", "", ""))

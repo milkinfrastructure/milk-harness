@@ -2215,6 +2215,17 @@ def load_provider_lease_token(path):
     return _provider_lease_token(value)
 
 
+def _write_new_private_file(path, raw):
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    with os.fdopen(descriptor, "wb") as output:
+        if output.write(raw) != len(raw):
+            raise OSError("private file write was incomplete")
+
+
 def _write_github_output(path, summary):
     path = Path(path)
     encoded = encode_summary(summary)
@@ -2633,7 +2644,7 @@ def main(argv=None):
                 create_authority_location,
                 authorization,
             )
-            output.write_bytes(canonical_json(token))
+            _write_new_private_file(output, canonical_json(token))
         except Exception:
             release_provider_lease(
                 store,

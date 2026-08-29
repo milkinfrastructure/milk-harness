@@ -308,6 +308,7 @@ jobs:
           scratch=$(mktemp -d "$RUNNER_TEMP/milk-provider-jobs.XXXXXX")
           candidate_socket_dir=$(mktemp -d "/tmp/milk-candidate-runtime.XXXXXX")
           lease_token=$scratch/provider-lease-token.json
+          lease_container_source=$scratch/provider-lease-token.container.json
           lease_container_token=/run/milk-provider-lease-token.json
           candidate_helper_pid=
           cleanup() {
@@ -575,6 +576,8 @@ jobs:
             --create-gate "$create_gate" \
             --configuration-verified "$configuration_verified" \
             --output "$lease_token"
+          sudo -n install -o 65532 -g 65532 -m 0600 -- \
+            "$lease_token" "$lease_container_source"
 
           helper_path="$gateway_source/tools/manage-candidate-credential.py"
           wrangler_dir="$gateway_source/deploy/cloudflare/node_modules/.bin"
@@ -635,7 +638,7 @@ jobs:
             --pids-limit 256 \
             --memory 2g \
             --cpus 2 \
-            --mount "type=bind,src=$lease_token,dst=$lease_container_token,readonly" \
+            --mount "type=bind,src=$lease_container_source,dst=$lease_container_token,readonly" \
             --mount "type=bind,src=$candidate_socket,dst=$candidate_container_socket" \
             "${provider_credential_env[@]}" \
             "${provider_store_env[@]}" \

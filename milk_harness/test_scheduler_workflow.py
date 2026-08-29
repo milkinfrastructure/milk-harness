@@ -129,10 +129,14 @@ class SchedulerWorkflowTest(unittest.TestCase):
 
     def test_campaign_lease_guards_every_provider_pass(self):
         acquire = self.provider.index("milk_harness.scheduler lease-acquire")
+        install = self.provider.index(
+            'install -o 65532 -g 65532 -m 0600 --'
+        )
         run_jobs = self.provider.index('"$MILK_JOBS_IMAGE" "${job_arguments[@]}"')
         archive = self.provider.index("milk_harness.scheduler archive")
         release = self.provider.rindex("milk_harness.scheduler lease-release")
-        self.assertLess(acquire, run_jobs)
+        self.assertLess(acquire, install)
+        self.assertLess(install, run_jobs)
         self.assertLess(run_jobs, archive)
         self.assertLess(archive, release)
         self.assertIn('timeout-minutes: 12', self.provider)
@@ -146,8 +150,11 @@ class SchedulerWorkflowTest(unittest.TestCase):
         self.assertIn('--lease-token "$lease_container_token"', self.provider)
         self.assertIn('--lease-token "$lease_token"', self.provider)
         self.assertIn(
-            '--mount "type=bind,src=$lease_token,dst=$lease_container_token,readonly"',
+            '--mount "type=bind,src=$lease_container_source,dst=$lease_container_token,readonly"',
             self.provider,
+        )
+        self.assertNotIn(
+            'src=$lease_token,dst=$lease_container_token', self.provider
         )
         self.assertIn("MILK_CREATE_AUTHORITY_WRITE_R2_ACCESS_KEY_ID", self.provider)
         self.assertIn("MILK_CREATE_AUTHORITY_READ_R2_ACCESS_KEY_ID", self.provider)
