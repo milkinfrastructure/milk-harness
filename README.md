@@ -84,21 +84,21 @@ Production uses three GitHub environments:
 
 The production workflow is [`production-loop.yml`](.github/workflows/production-loop.yml). Keep only that production workflow disabled until all three environments, the two eval variables, provider resources, and object-store credentials are complete. Offline CI in [`offline-gates.yml`](.github/workflows/offline-gates.yml) can run without production credentials or paid work. Enabling the production workflow starts the five-minute reconciliation clock; it does not by itself authorize paid work.
 
-Existing private-image evidence records these compressed `linux/amd64` sizes:
+The current release-candidate admission records these compressed `linux/amd64` sizes:
 
 | Image | Compressed size |
 | --- | ---: |
-| CPU `milk-gateway` | 12.02 MiB |
+| CPU `milk-gateway` | 12.05 MiB |
 | CPU `milk-jobs` | 58.23 MiB |
-| GPU `milk-teacher-gpt-oss` | 10,420.49 MiB |
-| GPU `milk-student-train` | 6,371.95 MiB |
-| GPU `milk-student-branch` | 10,836.92 MiB |
+| GPU `milk-teacher-gpt-oss` | 10,420.52 MiB |
+| GPU `milk-student-train` | 6,371.98 MiB |
+| GPU `milk-student-branch` | 10,836.95 MiB |
 
 Modal and Baseten pull those exact images. They do not rebuild them. The local Mac does not build or run GPU images.
 
-Alpine cannot materially shrink the pinned CUDA, PyTorch, and vLLM layers; model weights remain external and are mounted and hash-verified at runtime.
+Alpine cannot materially shrink the pinned CUDA, PyTorch, and vLLM layers; model weights remain external and are mounted and hash-verified at runtime. The teacher and branch share the same vLLM layers, so all five images contain 16.88 GiB of unique compressed content rather than their 27.05 GiB arithmetic sum. Milk adds 463.57 MiB across the five images; the remaining unique bytes are pinned upstream runtimes.
 
-Those image admissions predate the current eval-scoped source. The current source is a release candidate until it is rebuilt into new private images and passes the complete cloud proof below.
+These admissions bind gateway commit `bc1b53c45c337d95daa38cd8170da46c246e5a70` and harness commit `aa294358bede782d1e533fc1f6432615b5366a82`. The source and private-image build gates are complete. The hosted release remains a candidate until production publication/readback and the complete cloud proof below pass.
 
 See [`docs/reference/production-scheduler.md`](docs/reference/production-scheduler.md) for the credential boundaries and [`docs/reference/spend-policy.md`](docs/reference/spend-policy.md) for budget semantics.
 
@@ -122,7 +122,7 @@ Current qualification evidence and remaining gates are recorded in [`docs/refere
 One paid teacher result is the first provider gate, not production qualification. The complete cloud proof requires:
 
 1. A normal official-SDK response and its persisted completed trace.
-2. At least 251 retained teacher results: 50 TRAIN, 73 DEV, and 128 CALIBRATION. Partitioning or skipped traffic can require more requests. Generated traffic does not count.
+2. At least 251 retained teacher results: 50 TRAIN, 73 DEV, and 128 CALIBRATION. The current 80/10/10 partition should plan for roughly 1,280 eligible captures to obtain 128 CALIBRATION rows; skipped traffic can require more. Generated traffic and local fixtures do not count.
 3. One trained and merged student plus BF16, dynamic FP8, and static FP8 evaluations on the same ordered DEV set.
 4. A deterministic winner, authenticated canary, and verified baseline fallback.
 5. An active signed zero route and both Baseten and Modal observed at zero compute.
