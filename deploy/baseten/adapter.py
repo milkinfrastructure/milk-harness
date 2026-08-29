@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+import shlex
 
 
 MAX_GPU_SECONDS = 1_800
@@ -163,6 +164,33 @@ def _job_name(student_job_id, variant=None, branch_id=None):
     return f"dt-{variant.replace('_', '-')}-{identity}"
 
 
+def store_identity_commands(include_capture):
+    names = ["CONTROL"]
+    if include_capture:
+        names.insert(0, "CAPTURE")
+    program = (
+        "import hashlib,json,os,re\n"
+        f"for name in {json.dumps(names, separators=(',', ':'))}:\n"
+        " account=os.environ.get(f'MILK_{name}_STORE_ACCOUNT_ID')\n"
+        " access=os.environ.get(f'MILK_{name}_STORE_ACCESS_KEY_ID')\n"
+        " expected=os.environ.get(f'MILK_EXPECTED_{name}_STORE_IDENTITY_SHA256')\n"
+        " values=(account,access)\n"
+        " valid=all(value and not any(c.isspace() for c in value) for value in values)\n"
+        " raw=(json.dumps({'account_id':account,'access_key_id':access},"
+        "ensure_ascii=False,separators=(',',':'),sort_keys=True)+'\\n').encode()\n"
+        " if not valid or re.fullmatch('[0-9a-f]{64}',expected or '') is None or hashlib.sha256(raw).hexdigest()!=expected: raise SystemExit(64)"
+    )
+    variables = " ".join(
+        variable
+        for name in names
+        for variable in (
+            f"MILK_{name}_STORE_ACCOUNT_ID",
+            f"MILK_EXPECTED_{name}_STORE_IDENTITY_SHA256",
+        )
+    )
+    return (f"python3 -c {shlex.quote(program)} || exit $?", f"unset {variables}")
+
+
 def _start_command(stage):
     if stage == "train_merge":
         arguments = (
@@ -182,6 +210,7 @@ def _start_command(stage):
             '[ "${BT_RETRY_COUNT:-}" = "0" ] || '
             '{ printf "%s\\n" "BT_RETRY_COUNT must be zero" >&2; exit 75; }',
             "umask 077",
+            *store_identity_commands(False),
             "mkdir -m 0700 /tmp/dragontales",
             'printf "%s" "$DRAGONTALES_CONFIG_JSON" > /tmp/dragontales/gateway.json',
             "chmod 0400 /tmp/dragontales/gateway.json",
@@ -198,6 +227,7 @@ def _teacher_start_command(max_gpu_seconds):
             '[ "${BT_RETRY_COUNT:-}" = "0" ] || '
             '{ printf "%s\\n" "BT_RETRY_COUNT must be zero" >&2; exit 75; }',
             "umask 077",
+            *store_identity_commands(True),
             "mkdir -m 0700 /tmp/dragontales",
             'printf "%s" "$DRAGONTALES_CONFIG_JSON" > /tmp/dragontales/gateway.json',
             "chmod 0400 /tmp/dragontales/gateway.json",
@@ -217,6 +247,10 @@ def _secret(name):
 
 def _store_environment(settings, include_capture):
     environment = {
+        "MILK_CONTROL_STORE_ACCOUNT_ID": settings["control_store_account_id"],
+        "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": settings[
+            "control_store_identity_sha256"
+        ],
         "MILK_CONTROL_STORE_ACCESS_KEY_ID": _secret(
             settings["control_store_access_key_secret"]
         ),
@@ -230,6 +264,12 @@ def _store_environment(settings, include_capture):
     if include_capture:
         environment.update(
             {
+                "MILK_CAPTURE_STORE_ACCOUNT_ID": settings[
+                    "capture_store_account_id"
+                ],
+                "MILK_EXPECTED_CAPTURE_STORE_IDENTITY_SHA256": settings[
+                    "capture_store_identity_sha256"
+                ],
                 "MILK_CAPTURE_STORE_ACCESS_KEY_ID": _secret(
                     settings["capture_store_access_key_secret"]
                 ),

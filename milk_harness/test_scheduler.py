@@ -12,6 +12,7 @@ from pathlib import Path
 
 from milk_harness.evidence import LocalEvidenceStore, canonical_json
 from milk_harness.scheduler import (
+    PRODUCTION_PROOF_BUDGET_FIXED,
     RUN_ARTIFACTS,
     RUN_LIMITS,
     SANITIZATION_PROFILE_SHA256,
@@ -53,6 +54,16 @@ AUTHORITY_LOCATION = store_location_sha256("account", "create-authority")
 
 
 class SchedulerTest(unittest.TestCase):
+    def test_store_identity_rejects_cross_bucket_access_key_reuse(self):
+        self.assertEqual(
+            store_identity_sha256("account", "capture", "shared-access"),
+            store_identity_sha256("account", "control", "shared-access"),
+        )
+        self.assertNotEqual(
+            store_identity_sha256("account", "capture", "shared-access"),
+            store_identity_sha256("other-account", "control", "shared-access"),
+        )
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -758,6 +769,7 @@ class SchedulerTest(unittest.TestCase):
             "source_commit": "2" * 40,
             "image_admission_sha256": "3" * 64,
             "release_sha256": "4" * 64,
+            "official_openai_sdk_baseline_receipt_sha256": "6" * 64,
             "application_id": "00000000-0000-4000-8000-000000000020",
             "application_version": 7,
             "container_image": "registry.cloudflare.com/milk-gateway@sha256:" + "5" * 64,
@@ -819,7 +831,7 @@ class SchedulerTest(unittest.TestCase):
         }
         provider_runtime = {
             "baseten_team_name": "milk-production",
-            "winner_model_alias": "milk-student",
+            "winner_model_alias": "gpt-5.4",
             "modal_workspace_id": "ws-1",
             "modal_workspace_name": "milk-workspace",
             "modal_environment_id": "en-1",
@@ -851,6 +863,12 @@ class SchedulerTest(unittest.TestCase):
             "provider_control": store_identity_sha256(
                 "account", "control", "provider-control-access"
             ),
+            "provider_gpu_capture": store_identity_sha256(
+                "account", "capture", "provider-gpu-capture-access"
+            ),
+            "provider_gpu_control": store_identity_sha256(
+                "account", "control", "provider-gpu-control-access"
+            ),
             "evidence": store_identity_sha256(
                 "account", "evidence", "evidence-access"
             ),
@@ -878,7 +896,7 @@ class SchedulerTest(unittest.TestCase):
             ),
         }
         manifest = {
-            "schema_version": "milk.confirmed-production-run-config.v5",
+            "schema_version": "milk.confirmed-production-run-config.v6",
             "provider_policy": {"primary": "baseten", "fallback": "modal"},
             "harness_source_commit": source_commit,
             "campaign_id": campaign_id,
@@ -894,9 +912,53 @@ class SchedulerTest(unittest.TestCase):
             "store_identity_sha256s": store_identities,
             "harness_artifact_sha256s": artifacts,
             "limits": RUN_LIMITS,
+            "proof_budget": {
+                **PRODUCTION_PROOF_BUDGET_FIXED,
+                "gateway_tool_sha256": "1" * 64,
+            },
         }
         manifest_raw = canonical_json(manifest)
         confirmed = hashlib.sha256(manifest_raw).hexdigest()
+        wrong_winner_alias = {
+            **manifest,
+            "provider_runtime": {
+                **provider_runtime,
+                "winner_model_alias": "milk-student",
+            },
+        }
+        wrong_winner_alias_raw = canonical_json(wrong_winner_alias)
+        with self.assertRaisesRegex(ValueError, "winner model alias"):
+            verify_gateway_run_config(
+                wrong_winner_alias_raw,
+                hashlib.sha256(wrong_winner_alias_raw).hexdigest(),
+                source_commit,
+                root,
+                gateway_raw,
+                images["gateway"],
+                "gateway-capture-access",
+                "gateway-control-access",
+            )
+        duplicate_store_identity = {
+            **manifest,
+            "store_identity_sha256s": {
+                **store_identities,
+                "provider_gpu_control": store_identity_sha256(
+                    "account", "control", "provider-gpu-capture-access"
+                ),
+            },
+        }
+        duplicate_store_identity_raw = canonical_json(duplicate_store_identity)
+        with self.assertRaisesRegex(ValueError, "object-store identities"):
+            verify_gateway_run_config(
+                duplicate_store_identity_raw,
+                hashlib.sha256(duplicate_store_identity_raw).hexdigest(),
+                source_commit,
+                root,
+                gateway_raw,
+                images["gateway"],
+                "gateway-capture-access",
+                "gateway-control-access",
+            )
         same_student_digest = {
             **manifest,
             "images": {
@@ -1058,15 +1120,15 @@ class SchedulerTest(unittest.TestCase):
                 "route-routes-access",
                 "0" * 64,
             )
-        v4_manifest = {
+        v5_manifest = {
             **manifest,
-            "schema_version": "milk.confirmed-production-run-config.v4",
+            "schema_version": "milk.confirmed-production-run-config.v5",
         }
-        v4_raw = canonical_json(v4_manifest)
+        v5_raw = canonical_json(v5_manifest)
         with self.assertRaisesRegex(ValueError, "confirmed run config is invalid"):
             verify_gateway_run_config(
-                v4_raw,
-                hashlib.sha256(v4_raw).hexdigest(),
+                v5_raw,
+                hashlib.sha256(v5_raw).hexdigest(),
                 source_commit,
                 root,
                 gateway_raw,
@@ -1092,6 +1154,8 @@ class SchedulerTest(unittest.TestCase):
                     name: store_identities[name]
                     for name in (
                         "provider_control",
+                        "provider_gpu_capture",
+                        "provider_gpu_control",
                         "evidence",
                         "ops_log",
                         "create_authority_write",
@@ -1107,6 +1171,8 @@ class SchedulerTest(unittest.TestCase):
             name: store_identities[name]
             for name in (
                 "provider_control",
+                "provider_gpu_capture",
+                "provider_gpu_control",
                 "evidence",
                 "ops_log",
                 "gateway_ingest_control",
@@ -1132,6 +1198,26 @@ class SchedulerTest(unittest.TestCase):
             ),
             manifest,
         )
+        with self.assertRaisesRegex(ValueError, "actual provider settings"):
+            verify_provider_run_config(
+                manifest_raw,
+                confirmed,
+                source_commit,
+                root,
+                campaign_id="e" * 64,
+                provider_project_id="project_1",
+                scope_prefix=scope,
+                images=images,
+                image_release_sha256="f" * 64,
+                gateway_deployment=gateway_deployment,
+                provider_runtime=provider_runtime,
+                provider_secret_names=provider_secrets,
+                store_identities={
+                    **base_store_identities,
+                    "provider_gpu_capture": "0" * 64,
+                },
+                include_create_authority=False,
+            )
         with self.assertRaises(ValueError):
             verify_provider_run_config(
                 manifest_raw,
@@ -1150,6 +1236,8 @@ class SchedulerTest(unittest.TestCase):
                     name: store_identities[name]
                     for name in (
                         "provider_control",
+                        "provider_gpu_capture",
+                        "provider_gpu_control",
                         "evidence",
                         "ops_log",
                         "create_authority_write",
@@ -1179,6 +1267,8 @@ class SchedulerTest(unittest.TestCase):
                     name: store_identities[name]
                     for name in (
                         "provider_control",
+                        "provider_gpu_capture",
+                        "provider_gpu_control",
                         "evidence",
                         "ops_log",
                         "create_authority_write",
@@ -1207,6 +1297,8 @@ class SchedulerTest(unittest.TestCase):
                     name: store_identities[name]
                     for name in (
                         "provider_control",
+                        "provider_gpu_capture",
+                        "provider_gpu_control",
                         "evidence",
                         "ops_log",
                         "create_authority_write",

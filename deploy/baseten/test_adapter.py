@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,9 +29,13 @@ def settings():
         "teacher_image": TEACHER_IMAGE,
         "registry_secret": "dragontales_ghcr",
         "config_secret": "dragontales_config",
+        "capture_store_account_id": "gateway-account",
+        "capture_store_identity_sha256": "5" * 64,
         "capture_store_access_key_secret": "capture_access",
         "capture_store_secret_key_secret": "capture_secret",
         "capture_store_session_token_secret": "capture_session",
+        "control_store_account_id": "gateway-account",
+        "control_store_identity_sha256": "6" * 64,
         "control_store_access_key_secret": "control_access",
         "control_store_secret_key_secret": "control_secret",
         "control_store_session_token_secret": "control_session",
@@ -212,6 +217,8 @@ class AdapterTest(unittest.TestCase):
                 if key.startswith("MILK_")
             },
             {
+                "MILK_CONTROL_STORE_ACCOUNT_ID": "gateway-account",
+                "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": "6" * 64,
                 "MILK_CONTROL_STORE_ACCESS_KEY_ID": {"name": "control_access"},
                 "MILK_CONTROL_STORE_SECRET_ACCESS_KEY": {"name": "control_secret"},
                 "MILK_CONTROL_STORE_SESSION_TOKEN": {"name": "control_session"},
@@ -222,6 +229,14 @@ class AdapterTest(unittest.TestCase):
             f"/usr/bin/timeout --signal=TERM --kill-after=30s "
             f"{adapter.OUTER_TIMEOUT_SECONDS}s",
             command,
+        )
+        self.assertLess(
+            command.index("hashlib.sha256(raw).hexdigest()"),
+            command.index("/opt/dragontales/deploy/student-job.sh"),
+        )
+        self.assertLess(
+            command.index("unset MILK_CONTROL_STORE_ACCOUNT_ID"),
+            command.index("/opt/dragontales/deploy/student-job.sh"),
         )
         self.assertEqual(
             shlex.split(command.splitlines()[-1]),
@@ -292,9 +307,13 @@ class AdapterTest(unittest.TestCase):
                 if key.startswith("MILK_")
             },
             {
+                "MILK_CAPTURE_STORE_ACCOUNT_ID": "gateway-account",
+                "MILK_EXPECTED_CAPTURE_STORE_IDENTITY_SHA256": "5" * 64,
                 "MILK_CAPTURE_STORE_ACCESS_KEY_ID": {"name": "capture_access"},
                 "MILK_CAPTURE_STORE_SECRET_ACCESS_KEY": {"name": "capture_secret"},
                 "MILK_CAPTURE_STORE_SESSION_TOKEN": {"name": "capture_session"},
+                "MILK_CONTROL_STORE_ACCOUNT_ID": "gateway-account",
+                "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": "6" * 64,
                 "MILK_CONTROL_STORE_ACCESS_KEY_ID": {"name": "control_access"},
                 "MILK_CONTROL_STORE_SECRET_ACCESS_KEY": {"name": "control_secret"},
                 "MILK_CONTROL_STORE_SESSION_TOKEN": {"name": "control_session"},
@@ -302,11 +321,62 @@ class AdapterTest(unittest.TestCase):
         )
         self.assertNotIn("DRAGONTALES_TEACHER_API_KEY", environment)
         command = job["runtime"]["start_commands"][0]
+        self.assertLess(
+            command.index("hashlib.sha256(raw).hexdigest()"),
+            command.index("/opt/dragontales/job.sh"),
+        )
+        self.assertLess(
+            command.index("unset MILK_CAPTURE_STORE_ACCOUNT_ID"),
+            command.index("/opt/dragontales/job.sh"),
+        )
         self.assertIn(
             f"--kill-after={adapter.TEACHER_TERMINALIZATION_GRACE_SECONDS}s "
             "3600s",
             command,
         )
+
+    def test_store_identity_wrapper_fails_before_entrypoint_and_removes_identity_inputs(self):
+        account = "gateway-account"
+        access = "control-access"
+        expected = hashlib.sha256(
+            (json.dumps(
+                {"account_id": account, "access_key_id": access},
+                sort_keys=True,
+                separators=(",", ":"),
+            ) + "\n").encode()
+        ).hexdigest()
+        command = "\n".join(
+            (
+                *adapter.store_identity_commands(False),
+                '[ -z "${MILK_CONTROL_STORE_ACCOUNT_ID+x}" ]',
+                '[ -z "${MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256+x}" ]',
+                "printf passed",
+            )
+        )
+        environment = {
+            "PATH": os.environ["PATH"],
+            "MILK_CONTROL_STORE_ACCOUNT_ID": account,
+            "MILK_CONTROL_STORE_ACCESS_KEY_ID": access,
+            "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": expected,
+        }
+        passed = subprocess.run(
+            ["/bin/sh", "-c", command],
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(passed.returncode, 0, passed.stderr)
+        self.assertEqual(passed.stdout, "passed")
+        failed = subprocess.run(
+            ["/bin/sh", "-c", command],
+            env={**environment, "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": "0" * 64},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(failed.returncode, 64)
+        self.assertEqual(failed.stdout, "")
 
     def test_provider_response_validator_is_exact(self):
         name = f"dt-train-{STUDENT}"

@@ -65,6 +65,8 @@ STORE_IDENTITIES = (
     "gateway_capture",
     "gateway_control",
     "provider_control",
+    "provider_gpu_capture",
+    "provider_gpu_control",
     "evidence",
     "ops_log",
     "create_authority_write",
@@ -103,6 +105,7 @@ GATEWAY_DEPLOYMENT_FIELDS = (
     "source_commit",
     "image_admission_sha256",
     "release_sha256",
+    "official_openai_sdk_baseline_receipt_sha256",
     "application_id",
     "application_version",
     "container_image",
@@ -125,6 +128,23 @@ RUN_LIMITS = {
     "h100_reservation_rate_microusd_per_minute": H100_RESERVATION_RATE_MICROUSD_PER_MINUTE,
     "provider_request_timeout_seconds": 30,
     "provider_reconcile_timeout_seconds": 300,
+}
+PRODUCTION_PROOF_BUDGET_FIXED = {
+    "all_in_ceiling_microusd": 175_000_000,
+    "gpu_reservation_microusd": 160_000_000,
+    "external_reserve_microusd": 15_000_000,
+    "openai_model": "gpt-5.4",
+    "max_sdk_requests": 324,
+    "max_baseline_requests": 322,
+    "max_candidate_requests": 2,
+    "generated_mechanics_requests": 320,
+    "short_max_completion_tokens": 128,
+    "saturation_max_completion_tokens": 3_840,
+    "max_mechanics_invocations": 1,
+    "cloudflare_paid_months": 1,
+    "proof_contract_sha256": (
+        "cf9e41c3220544bc163a6dfb82721154a8e078c9db3c9fa86a148a84ea275263"
+    ),
 }
 PROVIDER_LEASE_TTL_SECONDS = 15 * 60
 PROVIDER_LEASE_MAX_CLOCK_SKEW_SECONDS = 30
@@ -539,7 +559,6 @@ def store_identity_sha256(account_id, bucket, access_key_id):
         canonical_json(
             {
                 "account_id": account_id,
-                "bucket": bucket,
                 "access_key_id": access_key_id,
             }
         )
@@ -1171,10 +1190,11 @@ def _validated_run_manifest(raw, confirmed_sha256, harness_source_commit, root):
         "store_identity_sha256s",
         "harness_artifact_sha256s",
         "limits",
+        "proof_budget",
     }
     if (
         set(manifest) != expected_keys
-        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v5"
+        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v6"
         or manifest.get("provider_policy")
         != {"primary": "baseten", "fallback": "modal"}
         or not isinstance(harness_source_commit, str)
@@ -1191,13 +1211,17 @@ def _validated_run_manifest(raw, confirmed_sha256, harness_source_commit, root):
     if _scope(manifest["scope_prefix"])["eval_id"] != manifest["campaign_id"]:
         raise ValueError("confirmed scope eval differs from its campaign")
     _gateway_deployment(manifest.get("gateway_deployment"))
-    _provider_runtime(manifest.get("provider_runtime"))
+    provider_runtime = _provider_runtime(manifest.get("provider_runtime"))
     _provider_secret_names(manifest.get("provider_secret_names"))
+    proof_budget = _proof_budget(manifest.get("proof_budget"))
+    if provider_runtime["winner_model_alias"] != proof_budget["openai_model"]:
+        raise ValueError("winner model alias differs from the production proof model")
     store_identities = manifest.get("store_identity_sha256s")
     if (
         not isinstance(store_identities, dict)
         or set(store_identities) != set(STORE_IDENTITIES)
         or any(HEX64.fullmatch(value or "") is None for value in store_identities.values())
+        or len(store_identities) != len(set(store_identities.values()))
     ):
         raise ValueError("confirmed object-store identities are invalid")
     images = manifest.get("images")
@@ -1252,6 +1276,17 @@ def _validated_run_manifest(raw, confirmed_sha256, harness_source_commit, root):
     return manifest
 
 
+def _proof_budget(value):
+    if (
+        not isinstance(value, dict)
+        or set(value) != {*PRODUCTION_PROOF_BUDGET_FIXED, "gateway_tool_sha256"}
+        or any(value.get(name) != expected for name, expected in PRODUCTION_PROOF_BUDGET_FIXED.items())
+        or HEX64.fullmatch(value.get("gateway_tool_sha256") or "") is None
+    ):
+        raise ValueError("production proof budget is invalid")
+    return value
+
+
 def _gateway_deployment(value):
     if not isinstance(value, dict) or set(value) != set(GATEWAY_DEPLOYMENT_FIELDS):
         raise ValueError("gateway deployment identity is invalid")
@@ -1267,6 +1302,10 @@ def _gateway_deployment(value):
         SOURCE_COMMIT.fullmatch(value.get("source_commit") or "") is None
         or HEX64.fullmatch(value.get("image_admission_sha256") or "") is None
         or HEX64.fullmatch(value.get("release_sha256") or "") is None
+        or HEX64.fullmatch(
+            value.get("official_openai_sdk_baseline_receipt_sha256") or ""
+        )
+        is None
         or type(value.get("application_version")) is not int
         or value["application_version"] <= 0
         or not isinstance(value.get("container_image"), str)
@@ -1281,6 +1320,9 @@ def _gateway_deployment_arguments(arguments):
         "source_commit": arguments.gateway_source_commit,
         "image_admission_sha256": arguments.gateway_image_admission_sha256,
         "release_sha256": arguments.gateway_release_sha256,
+        "official_openai_sdk_baseline_receipt_sha256": (
+            arguments.gateway_official_openai_sdk_baseline_receipt_sha256
+        ),
         "application_id": arguments.gateway_container_application_id,
         "application_version": arguments.gateway_container_application_version,
         "container_image": arguments.gateway_container_image,
@@ -1406,7 +1448,7 @@ def verify_gateway_ingest_run_config(
         manifest_raw not in {canonical_manifest, canonical_manifest.removesuffix(b"\n")}
         or not isinstance(confirmed_sha256, str)
         or hashlib.sha256(canonical_manifest).hexdigest() != confirmed_sha256
-        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v5"
+        or manifest.get("schema_version") != "milk.confirmed-production-run-config.v6"
         or manifest.get("provider_policy")
         != {"primary": "baseten", "fallback": "modal"}
         or not isinstance(manifest.get("images"), dict)
@@ -1423,6 +1465,7 @@ def verify_gateway_ingest_run_config(
         )
     ):
         raise ValueError("confirmed gateway ingest config is invalid")
+    _proof_budget(manifest.get("proof_budget"))
     _gateway_deployment(manifest.get("gateway_deployment"))
     config = _strict_object(gateway_config_raw)
     canonical_config = canonical_json(config)
@@ -1481,6 +1524,8 @@ def verify_provider_run_config(
     }
     required_store_identities = (
         "provider_control",
+        "provider_gpu_capture",
+        "provider_gpu_control",
         "evidence",
         "ops_log",
         "gateway_ingest_control",
@@ -2298,6 +2343,7 @@ def main(argv=None):
     run_config.add_argument("--gateway-source-commit")
     run_config.add_argument("--gateway-image-admission-sha256")
     run_config.add_argument("--gateway-release-sha256")
+    run_config.add_argument("--gateway-official-openai-sdk-baseline-receipt-sha256")
     run_config.add_argument("--gateway-container-application-id")
     run_config.add_argument("--gateway-container-application-version", type=int)
     run_config.add_argument("--gateway-container-image")
@@ -2468,6 +2514,12 @@ def main(argv=None):
                 },
                 store_identities={
                     "provider_control": _environment_store_identity("MILK_CONTROL_R2_"),
+                    "provider_gpu_capture": _environment_store_identity(
+                        "MILK_PROVIDER_GPU_CAPTURE_R2_"
+                    ),
+                    "provider_gpu_control": _environment_store_identity(
+                        "MILK_PROVIDER_GPU_CONTROL_R2_"
+                    ),
                     "evidence": _environment_store_identity("MILK_EVIDENCE_R2_"),
                     "ops_log": _environment_store_identity("MILK_OPS_LOG_R2_"),
                     "gateway_ingest_control": _environment_store_identity(
@@ -2483,6 +2535,9 @@ def main(argv=None):
                         "MILK_GATEWAY_IMAGE_ADMISSION_SHA256"
                     ),
                     "release_sha256": os.environ.get("MILK_GATEWAY_RELEASE_SHA256"),
+                    "official_openai_sdk_baseline_receipt_sha256": os.environ.get(
+                        "MILK_GATEWAY_OFFICIAL_OPENAI_SDK_BASELINE_RECEIPT_SHA256"
+                    ),
                     "application_id": os.environ.get(
                         "MILK_GATEWAY_CONTAINER_APPLICATION_ID"
                     ),
@@ -2564,6 +2619,12 @@ def main(argv=None):
                 },
                 store_identities={
                     "provider_control": _environment_store_identity("MILK_CONTROL_R2_"),
+                    "provider_gpu_capture": _environment_store_identity(
+                        "MILK_PROVIDER_GPU_CAPTURE_R2_"
+                    ),
+                    "provider_gpu_control": _environment_store_identity(
+                        "MILK_PROVIDER_GPU_CONTROL_R2_"
+                    ),
                     "evidence": _environment_store_identity("MILK_EVIDENCE_R2_"),
                     "ops_log": _environment_store_identity("MILK_OPS_LOG_R2_"),
                     **(

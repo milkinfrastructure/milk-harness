@@ -3105,6 +3105,8 @@ def recover_pending_baseten_winner_admissions(
             winner_model_alias,
             "DOCKER_REGISTRY_ghcr.io",
             settings["config_secret"],
+            settings["control_store_account_id"],
+            settings["control_store_identity_sha256"],
             settings["control_store_access_key_secret"],
             settings["control_store_secret_key_secret"],
             settings["control_store_session_token_secret"],
@@ -4986,6 +4988,8 @@ def dispatch_provider_teardowns(
             values.get("model_alias"),
             values.get("registry_secret"),
             values.get("config_secret"),
+            values.get("control_store_account_id"),
+            values.get("control_store_identity_sha256"),
             values.get("control_store_access_key_secret"),
             values.get("control_store_secret_key_secret"),
             values.get("control_store_session_token_secret"),
@@ -5813,9 +5817,19 @@ class BasetenJobs:
         )
         self.budget.initialize()
 
-    def preflight(self, team_name):
+    def preflight(self, team_name, secret_names):
         if not isinstance(team_name, str) or TEAM_NAME.fullmatch(team_name) is None:
             raise ValueError("Baseten team name is invalid")
+        if (
+            not isinstance(secret_names, tuple)
+            or not secret_names
+            or any(
+                not isinstance(name, str) or IDENTIFIER.fullmatch(name) is None
+                for name in secret_names
+            )
+            or len(secret_names) != len(set(secret_names))
+        ):
+            raise ValueError("Baseten preflight secret names are invalid")
         observed_at = _utc_text(self.now())
         try:
             raw = self._request(
@@ -5883,6 +5897,79 @@ class BasetenJobs:
         ):
             raise ValueError("Baseten training project preflight is invalid")
         try:
+            secrets_raw = self._request("GET", "/secrets")
+        except urllib.error.HTTPError as error:
+            status = error.code
+            if status == 429:
+                reason = "rate_limited"
+            elif 500 <= status <= 599:
+                reason = "server_unavailable"
+            else:
+                raise
+            return {
+                "schema_version": BASETEN_TRAINING_PREFLIGHT_SCHEMA,
+                "provider": "baseten",
+                "team_name": team_name,
+                "project_id": self.project_id,
+                "outcome": "retryable_unavailable",
+                "reason": reason,
+                "status": status,
+                "evidence_sha256": hashlib.sha256(
+                    f"{type(error).__name__}:{status}".encode()
+                ).hexdigest(),
+                "observed_at": observed_at,
+            }
+        except (TimeoutError, urllib.error.URLError) as error:
+            reason = getattr(error, "reason", error)
+            if not isinstance(reason, TimeoutError):
+                raise
+            return {
+                "schema_version": BASETEN_TRAINING_PREFLIGHT_SCHEMA,
+                "provider": "baseten",
+                "team_name": team_name,
+                "project_id": self.project_id,
+                "outcome": "retryable_unavailable",
+                "reason": "timeout",
+                "status": None,
+                "evidence_sha256": hashlib.sha256(
+                    type(reason).__name__.encode()
+                ).hexdigest(),
+                "observed_at": observed_at,
+            }
+        secret_response = _strict_object(secrets_raw)
+        secrets = secret_response.get("secrets")
+        required_secret_fields = {"id", "created_at", "name", "team_name"}
+        if (
+            set(secret_response) != {"secrets"}
+            or not isinstance(secrets, list)
+            or any(
+                not isinstance(item, dict)
+                or not required_secret_fields.issubset(item)
+                or not isinstance(item.get("id"), str)
+                or IDENTIFIER.fullmatch(item["id"]) is None
+                or not isinstance(item.get("name"), str)
+                or IDENTIFIER.fullmatch(item["name"]) is None
+                or not isinstance(item.get("team_name"), str)
+                or TEAM_NAME.fullmatch(item["team_name"]) is None
+                for item in secrets
+            )
+        ):
+            raise ValueError("Baseten secret metadata is invalid")
+        for item in secrets:
+            _utc(item["created_at"], "Baseten secret created_at")
+        matched = []
+        for name in secret_names:
+            matches = [
+                item
+                for item in secrets
+                if item["name"] == name and item["team_name"] == team_name
+            ]
+            if len(matches) != 1:
+                raise ValueError("configured Baseten secret metadata is absent or ambiguous")
+            matched.append(matches[0])
+        if len({item["id"] for item in matched}) != len(matched):
+            raise ValueError("configured Baseten secret identities are not distinct")
+        try:
             capacity_raw = self._request("GET", "/training/capacity")
         except urllib.error.HTTPError as error:
             status = error.code
@@ -5949,6 +6036,8 @@ class BasetenJobs:
             "evidence_sha256": hashlib.sha256(
                 b"milk.baseten-training-preflight.v1\0"
                 + raw
+                + b"\0"
+                + secrets_raw
                 + b"\0"
                 + capacity_raw
             ).hexdigest(),
@@ -8767,6 +8856,8 @@ def _winner_values(launch, values):
         values.get("model_alias"),
         values.get("registry_secret"),
         values.get("config_secret"),
+        values.get("control_store_account_id"),
+        values.get("control_store_identity_sha256"),
         values.get("control_store_access_key_secret"),
         values.get("control_store_secret_key_secret"),
         values.get("control_store_session_token_secret"),
@@ -8936,7 +9027,21 @@ def dispatch_cross_provider_outboxes(
                 baseten_project_id=baseten_jobs.project_id,
                 modal_identity=modal_identity,
                 baseten_preflight=lambda: baseten_jobs.preflight(
-                    baseten_team_name
+                    baseten_team_name,
+                    tuple(
+                        settings[name]
+                        for name in (
+                            "registry_secret",
+                            "config_secret",
+                            "capture_store_access_key_secret",
+                            "capture_store_secret_key_secret",
+                            "capture_store_session_token_secret",
+                            "control_store_access_key_secret",
+                            "control_store_secret_key_secret",
+                            "control_store_session_token_secret",
+                        )
+                        if settings[name] is not None
+                    ),
                 ),
                 modal_preflight=modal_preflight,
             )
@@ -9164,10 +9269,15 @@ def _modal_plan_resources(resources, kind):
     }
 
 
-def _modal_execution_command(unit):
+def _modal_execution_command(unit, settings):
     kind = unit["kind"]
+    identity = "; ".join(
+        adapter.store_identity_commands(kind == "teacher_run")
+    )
     common = (
-        "set -eu; umask 077; mkdir -m 0700 -p /tmp/dragontales; "
+        "set -eu; umask 077; "
+        + identity
+        + "; mkdir -m 0700 -p /tmp/dragontales; "
         "printf %s \"$DRAGONTALES_CONFIG_JSON\" >"
         "/tmp/dragontales/gateway.json; chmod 0400 "
         "/tmp/dragontales/gateway.json; unset DRAGONTALES_CONFIG_JSON; "
@@ -9179,7 +9289,17 @@ def _modal_execution_command(unit):
             "/tmp/dragontales/gateway.json --teacher-run-id "
             '"$DRAGONTALES_TEACHER_RUN_ID"'
         )
-        environment = {"DRAGONTALES_TEACHER_RUN_ID": unit["teacher_run_id"]}
+        environment = {
+            "DRAGONTALES_TEACHER_RUN_ID": unit["teacher_run_id"],
+            "MILK_CAPTURE_STORE_ACCOUNT_ID": settings["capture_store_account_id"],
+            "MILK_EXPECTED_CAPTURE_STORE_IDENTITY_SHA256": settings[
+                "capture_store_identity_sha256"
+            ],
+            "MILK_CONTROL_STORE_ACCOUNT_ID": settings["control_store_account_id"],
+            "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": settings[
+                "control_store_identity_sha256"
+            ],
+        }
     else:
         student_job_id = unit["student_job_id"]
         if kind == "student_train_merge":
@@ -9199,11 +9319,17 @@ def _modal_execution_command(unit):
             + arguments
             + " --work-dir /tmp/dragontales-work"
         )
-        environment = {"DRAGONTALES_STUDENT_JOB_ID": student_job_id}
+        environment = {
+            "DRAGONTALES_STUDENT_JOB_ID": student_job_id,
+            "MILK_CONTROL_STORE_ACCOUNT_ID": settings["control_store_account_id"],
+            "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": settings[
+                "control_store_identity_sha256"
+            ],
+        }
     return ["/bin/sh", "-c", command], environment
 
 
-def _modal_winner_command(student_job_id, model_alias):
+def _modal_winner_command(student_job_id, model_alias, settings):
     gateway_binary = "/usr/local/bin/dragontales-" + "gateway"
     command = (
         "set -eu; umask 077; mkdir -m 0700 -p /tmp/dragontales; "
@@ -9213,6 +9339,14 @@ def _modal_winner_command(student_job_id, model_alias):
         '"$DRAGONTALES_CANDIDATE_API_KEY" >'
         "/tmp/dragontales-candidate.key; chmod 0400 "
         "/tmp/dragontales-candidate.key; "
+        "python3 -c 'import hashlib,json,os,re; "
+        "account=os.environ.get(\"MILK_CONTROL_STORE_ACCOUNT_ID\"); "
+        "access=os.environ.get(\"MILK_CONTROL_STORE_ACCESS_KEY_ID\"); "
+        "expected=os.environ.get(\"MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256\"); "
+        "values=(account,access); "
+        "valid=all(value and not any(character.isspace() for character in value) for value in values); "
+        "raw=(json.dumps({\"account_id\":account,\"access_key_id\":access},ensure_ascii=False,separators=(\",\",\":\"),sort_keys=True)+\"\\n\").encode(); "
+        "raise SystemExit(0 if valid and re.fullmatch(\"[0-9a-f]{64}\",expected or \"\") and hashlib.sha256(raw).hexdigest()==expected else 64)'; "
         + gateway_binary
         + " "
         "--config /tmp/dragontales/gateway.json materialize-student-winner "
@@ -9221,7 +9355,9 @@ def _modal_winner_command(student_job_id, model_alias):
         "unset DRAGONTALES_CONFIG_JSON DRAGONTALES_CANDIDATE_API_KEY "
         "MILK_CONTROL_STORE_ACCESS_KEY_ID "
         "MILK_CONTROL_STORE_SECRET_ACCESS_KEY "
-        "MILK_CONTROL_STORE_SESSION_TOKEN; cat "
+        "MILK_CONTROL_STORE_SESSION_TOKEN "
+        "MILK_CONTROL_STORE_ACCOUNT_ID "
+        "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256; cat "
         "/tmp/dragontales/materialize.stdout; exec "
         "/opt/dragontales/deploy/student-job.sh serve --model "
         "/tmp/dragontales-winner/model --model-manifest "
@@ -9232,6 +9368,10 @@ def _modal_winner_command(student_job_id, model_alias):
     return ["/bin/sh", "-c", command], {
         "DRAGONTALES_MODEL_ALIAS": model_alias,
         "DRAGONTALES_STUDENT_JOB_ID": student_job_id,
+        "MILK_CONTROL_STORE_ACCOUNT_ID": settings["control_store_account_id"],
+        "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": settings[
+            "control_store_identity_sha256"
+        ],
     }
 
 
@@ -9266,6 +9406,7 @@ def deterministic_cross_provider_inputs(
             command, environment = _modal_winner_command(
                 operation["student_job_id"],
                 winner_model_alias,
+                settings,
             )
             units = [operation]
             winner_values[run_id] = winner_contract.settings(
@@ -9274,6 +9415,8 @@ def deterministic_cross_provider_inputs(
                 winner_model_alias,
                 "DOCKER_REGISTRY_ghcr.io",
                 settings["config_secret"],
+                settings["control_store_account_id"],
+                settings["control_store_identity_sha256"],
                 settings["control_store_access_key_secret"],
                 settings["control_store_secret_key_secret"],
                 settings["control_store_session_token_secret"],
@@ -9284,7 +9427,7 @@ def deterministic_cross_provider_inputs(
             del unused_entries
             run_id = _workload_run_id(campaign_id, workload)
             units = _modal_units(workload)
-            commands = [_modal_execution_command(unit) for unit in units]
+            commands = [_modal_execution_command(unit, settings) for unit in units]
         executions = []
         for ordinal, (unit, command_and_environment) in enumerate(
             zip(units, commands)
@@ -9531,8 +9674,12 @@ def _provider_settings_from_arguments(arguments, image_settings):
     required = (
         "registry_secret",
         "config_secret",
+        "capture_store_account_id",
+        "capture_store_identity_sha256",
         "capture_store_access_key_secret",
         "capture_store_secret_key_secret",
+        "control_store_account_id",
+        "control_store_identity_sha256",
         "control_store_access_key_secret",
         "control_store_secret_key_secret",
     )
@@ -9544,6 +9691,11 @@ def _provider_settings_from_arguments(arguments, image_settings):
         **image_settings,
         "registry_secret": adapter.identifier(arguments.registry_secret, "registry secret name"),
         "config_secret": adapter.identifier(arguments.config_secret, "config secret name"),
+        "capture_store_account_id": adapter.identifier(
+            arguments.capture_store_account_id,
+            "capture-store account ID",
+        ),
+        "capture_store_identity_sha256": arguments.capture_store_identity_sha256,
         "capture_store_access_key_secret": adapter.identifier(
             arguments.capture_store_access_key_secret,
             "capture-store access-key secret name",
@@ -9564,6 +9716,11 @@ def _provider_settings_from_arguments(arguments, image_settings):
             arguments.control_store_access_key_secret,
             "control-store access-key secret name",
         ),
+        "control_store_account_id": adapter.identifier(
+            arguments.control_store_account_id,
+            "control-store account ID",
+        ),
+        "control_store_identity_sha256": arguments.control_store_identity_sha256,
         "control_store_secret_key_secret": adapter.identifier(
             arguments.control_store_secret_key_secret,
             "control-store secret-key secret name",
@@ -9577,6 +9734,13 @@ def _provider_settings_from_arguments(arguments, image_settings):
             )
         ),
     }
+    if (
+        not _is_hex64(settings["capture_store_identity_sha256"])
+        or not _is_hex64(settings["control_store_identity_sha256"])
+        or settings["capture_store_identity_sha256"]
+        == settings["control_store_identity_sha256"]
+    ):
+        raise ValueError("provider store identities are invalid")
     secret_names = [
         settings[key]
         for key in (
@@ -9618,6 +9782,8 @@ def _baseten_teardown_values(records, settings):
             admission["model_alias"],
             "DOCKER_REGISTRY_ghcr.io",
             settings["config_secret"],
+            settings["control_store_account_id"],
+            settings["control_store_identity_sha256"],
             settings["control_store_access_key_secret"],
             settings["control_store_secret_key_secret"],
             settings["control_store_session_token_secret"],
@@ -9652,14 +9818,18 @@ def main(argv=None):
     parser.add_argument("--jobs-image")
     parser.add_argument("--registry-secret")
     parser.add_argument("--config-secret")
+    parser.add_argument("--capture-store-account-id")
+    parser.add_argument("--capture-store-identity-sha256")
     parser.add_argument("--capture-store-access-key-secret")
     parser.add_argument("--capture-store-secret-key-secret")
     parser.add_argument("--capture-store-session-token-secret")
+    parser.add_argument("--control-store-account-id")
+    parser.add_argument("--control-store-identity-sha256")
     parser.add_argument("--control-store-access-key-secret")
     parser.add_argument("--control-store-secret-key-secret")
     parser.add_argument("--control-store-session-token-secret")
     parser.add_argument("--image-release-sha256")
-    parser.add_argument("--winner-model-alias", default="milk-student")
+    parser.add_argument("--winner-model-alias", required=True)
     for name in (
         "modal-workspace-id",
         "modal-workspace-name",
