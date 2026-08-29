@@ -3,7 +3,6 @@ import hashlib
 import json
 import tempfile
 import unittest
-import urllib.error
 from unittest import mock
 
 from deploy.baseten import winner as winner_contract
@@ -11,38 +10,22 @@ from milk_harness import baseten_winner
 from milk_harness.evidence import LocalEvidenceStore, canonical_json
 from milk_harness.jobs import (
     _selection_key,
-    _provider_evidence_reference,
-    _winner_teardown_evidence,
     _winner_run_from_launch,
-    _workload_run_id,
-    _workload_and_entries,
     BasetenJobs,
     dispatch_baseten_outboxes,
     dispatch_provider_teardowns,
     discover_provider_teardown_authorizations,
-    build_provider_teardown_result,
     discover_gpu_launches,
     launch_baseten_winner,
-    launch_modal_gpu,
-    launch_modal_winner,
     recover_gateway_winner_result_references,
-    select_baseten_primary_modal_fallback,
-    select_winner_baseten_primary_modal_fallback,
+    select_winner_baseten_only,
     store_gateway_winner_result_handoff,
-    store_gateway_teardown_result_handoff,
     teardown_baseten_winner,
     teardown_authorized_baseten_winner,
-    teardown_authorized_modal_winner,
-    teardown_modal_gpu,
     validate_winner_result_references,
-    validate_teardown_result_references,
-    provider_teardown_result_bytes,
 )
 from milk_harness.test_jobs import (
     CAMPAIGN,
-    MODAL_APP,
-    MODAL_ENVIRONMENT,
-    MODAL_WORKSPACE,
     NOW,
     PROJECT,
     SCOPE,
@@ -57,12 +40,13 @@ from milk_harness.test_jobs import (
 from milk_harness.test_baseten_winner import (
     gateway_claim as strict_winner_gateway_claim,
 )
-from milk_harness.test_modal_jobs import winner_acceptance
+from milk_harness.test_provider_acceptance import (
+    FROZEN_GATEWAY_BASETEN_ACCEPTANCE,
+)
 
 
 UTC = dt.timezone.utc
 TEAM = "milk"
-STUDENT_TRAIN_IMAGE = TEST_IMAGE_ADMISSIONS["student-train"]["image_reference"]
 STUDENT_BRANCH_IMAGE = TEST_IMAGE_ADMISSIONS["student-branch"]["image_reference"]
 
 
@@ -83,16 +67,6 @@ class RecordingStore:
         return self.inner.replace(key, body, etag, content_type)
 
 
-def modal_identity():
-    return {
-        "provider": "modal",
-        "workspace_id": MODAL_WORKSPACE,
-        "workspace_name": "milk-production",
-        "environment_id": "en-main",
-        "environment_name": MODAL_ENVIRONMENT,
-        "app_id": "ap-milk-gpu-jobs",
-        "app_name": MODAL_APP,
-    }
 
 
 def baseten_preflight(outcome="retryable_unavailable"):
@@ -110,15 +84,6 @@ def baseten_preflight(outcome="retryable_unavailable"):
     return value
 
 
-def modal_preflight():
-    return {
-        "schema_version": "milk.modal-preflight.v1",
-        "provider": "modal",
-        "provider_identity": modal_identity(),
-        "outcome": "ready",
-        "evidence_sha256": "9" * 64,
-        "observed_at": "2026-08-27T19:59:00Z",
-    }
 
 
 def create_authorities():
@@ -206,171 +171,12 @@ def teardown_record(store, run_id, selected_provider):
     }
 
 
-def modal_absence_ack(record):
-    winner = record["winner_result"]
-    admission = winner["admission"]
-    verified = dt.datetime.fromisoformat(
-        record["authorization"]["authorized_at"].replace("Z", "+00:00")
-    ) + dt.timedelta(seconds=1)
-    return canonical_json(
-        {
-            "schema_version": "milk.modal-candidate-key-ack.v1",
-            "run_id": record["authorization"]["run_id"],
-            "selected_provider": "modal",
-            "winner_admission_sha256": hashlib.sha256(
-                winner_contract.receipt_bytes(admission)
-            ).hexdigest(),
-            "gateway_result_sha256": hashlib.sha256(
-                winner_contract.result_bytes(winner)
-            ).hexdigest(),
-            "candidate_key_sha256": admission["candidate_api_key_sha256"],
-            "service_not_after": admission["service_not_after"],
-            "gateway_anchor": {
-                "source_commit": "1" * 40,
-                "image_admission_sha256": "2" * 64,
-                "release_sha256": "3" * 64,
-                "application_id": "11111111-1111-1111-1111-111111111111",
-                "application_version": 1,
-                "container_image": "registry.cloudflare.com/gateway:1",
-                "worker_version_id": "22222222-2222-2222-2222-222222222222",
-            },
-            "state": "absent",
-            "gateway_release_id": "33333333-3333-3333-3333-333333333333",
-            "gateway_release_sha256": "4" * 64,
-            "verified_at": verified.isoformat().replace("+00:00", "Z"),
-        }
-    )
 
 
-def resources():
-    return {
-        "registry_secret": {
-            "name": "milk-registry",
-            "object_id": "st-registry",
-            "required_keys": ["REGISTRY_PASSWORD", "REGISTRY_USERNAME"],
-        },
-        "secrets": [
-            {
-                "name": "milk-student-job",
-                "object_id": "st-student-job",
-                "required_keys": ["DRAGONTALES_CONFIG_JSON"],
-            }
-        ],
-        "volumes": [
-            {
-                "name": "milk-student-model",
-                "object_id": "vo-student-model",
-                "mount_path": "/model",
-                "read_only": True,
-            }
-        ],
-    }
 
 
-class ModalLifecycle:
-    def __init__(self, store, events):
-        self.store = store
-        self.events = events
-
-    def launch(self, acceptance, definition, command, environment):
-        prefix = (
-            f"campaigns/v1/{CAMPAIGN}/jobs/{acceptance['run_id']}/modal"
-        )
-        self.store.get(f"{prefix}/provider-acceptance.json")
-        self.store.get(
-            f"{prefix}/execution-definitions/{definition['ordinal']:02d}.json"
-        )
-        self.events.append(("provider-create", definition["ordinal"]))
-        return {"ordinal": definition["ordinal"], "state": "created"}
-
-    def admit_winner(
-        self,
-        acceptance,
-        definition,
-        command,
-        environment,
-        *,
-        gateway_claim_raw,
-        observed_cost_microusd=0,
-    ):
-        del command, environment
-        claim = json.loads(gateway_claim_raw)
-        admitted = NOW + dt.timedelta(minutes=2)
-        admission = {
-            "schema_version": winner_contract.RECEIPT_SCHEMA,
-            "provider": "modal",
-            "student_job_id": definition["unit"]["student_job_id"],
-            "student_variant": definition["unit"]["winner"],
-            "model_manifest_sha256": claim["model_manifest"]["sha256"],
-            "model_alias": "milk-student",
-            "model_alias_sha256": "5" * 64,
-            "candidate_api_key_sha256": "6" * 64,
-            "student_branch_runtime_image_reference": definition[
-                "runtime_image_reference"
-            ],
-            "admission_program_sha256": claim["authority"][
-                "admission_program_sha256"
-            ],
-            "execution_id": "sb-winner",
-            "execution_name": "milk-winner",
-            "chat_completions_url": (
-                "https://unit.w.modal.host/v1/chat/completions"
-            ),
-            "models_response_sha256": "8" * 64,
-            "chat_request_sha256": "9" * 64,
-            "chat_response_sha256": "a" * 64,
-            "launch_started_at": NOW.isoformat().replace("+00:00", "Z"),
-            "ready_at": (NOW + dt.timedelta(minutes=1))
-            .isoformat()
-            .replace("+00:00", "Z"),
-            "admitted_at": admitted.isoformat().replace("+00:00", "Z"),
-            "service_not_after": acceptance["provider_not_after"],
-        }
-        result = {
-            "schema_version": winner_contract.RESULT_SCHEMA,
-            "scope": claim["scope"],
-            "student_job_id": definition["unit"]["student_job_id"],
-            "claim_sha256": acceptance["claim_sha256"],
-            "provider_binding_sha256": acceptance[
-                "provider_binding_sha256"
-            ],
-            "provider_acceptance": acceptance,
-            "observed_cost_microusd": observed_cost_microusd,
-            "admission": admission,
-        }
-        prefix = (
-            f"campaigns/v1/{acceptance['campaign_id']}/winner-jobs/"
-            f"{acceptance['run_id']}"
-        )
-        self.store.create(
-            f"{prefix}/winner-admission.json",
-            winner_contract.receipt_bytes(admission),
-            "application/json",
-        )
-        raw = winner_contract.result_bytes(result)
-        self.store.create(
-            f"{prefix}/gateway-result.json",
-            raw,
-            "application/json",
-        )
-        self.events.append(("winner-admit", acceptance["run_id"]))
-        return {"state": "admitted"}
 
 
-class LaterLeaseModalLifecycle:
-    def __init__(self):
-        self.calls = []
-
-    def terminate(self, acceptance, definition, command, environment):
-        self.calls.append(
-            (
-                acceptance["provider_pass_claim_sha256"],
-                definition["ordinal"],
-                command,
-                environment,
-            )
-        )
-        return {"ordinal": definition["ordinal"], "state": "zero"}
 
 
 class BasetenWinnerLifecycle:
@@ -522,36 +328,9 @@ class LaterLeaseBasetenWinnerLifecycle:
         return {"state": "zero"}
 
 
-class LaterLeaseModalWinnerLifecycle:
-    def __init__(self):
-        self.calls = []
-
-    def teardown_winner(
-        self,
-        acceptance,
-        definition,
-        command,
-        environment,
-        *,
-        gateway_claim_raw,
-        canary_route_raw,
-        zero_route_raw,
-    ):
-        self.calls.append(
-            (
-                acceptance["run_id"],
-                definition["unit"]["student_job_id"],
-                command,
-                environment,
-                gateway_claim_raw,
-                canary_route_raw,
-                zero_route_raw,
-            )
-        )
-        return {"state": "zero"}
 
 
-class ModalFallbackWinnerLifecycle:
+class UnavailableBasetenWinnerLifecycle:
     def __init__(self, events=None):
         self.calls = 0
         self.events = events
@@ -686,235 +465,9 @@ class JobsProviderIntegrationTest(unittest.TestCase):
             raise AssertionError("strict winner fixture was not discovered once")
         return launches[0]
 
-    def test_selection_precedes_reservation_acceptance_definition_and_create(self):
-        with tempfile.TemporaryDirectory() as root:
-            events = []
-            store = RecordingStore(root, events)
-            authorize(store)
-            source = workload("a", "student_train_merge")
-            run_id = _workload_run_id(CAMPAIGN, source)
 
-            def primary():
-                events.append(("baseten-preflight", None))
-                return baseten_preflight()
 
-            def fallback():
-                events.append(("modal-preflight", None))
-                return modal_preflight()
 
-            selection = select_baseten_primary_modal_fallback(
-                store=store,
-                campaign_id=CAMPAIGN,
-                run_id=run_id,
-                launch_source=source["launch_source"],
-                baseten_team_name=TEAM,
-                baseten_project_id=PROJECT,
-                modal_identity=modal_identity(),
-                baseten_preflight=primary,
-                modal_preflight=fallback,
-            )
-            replayed_selection = select_baseten_primary_modal_fallback(
-                store=store,
-                campaign_id=CAMPAIGN,
-                run_id=run_id,
-                launch_source=source["launch_source"],
-                baseten_team_name=TEAM,
-                baseten_project_id=PROJECT,
-                modal_identity=modal_identity(),
-                baseten_preflight=lambda: self.fail(
-                    "immutable selection repeated Baseten preflight"
-                ),
-                modal_preflight=lambda: self.fail(
-                    "immutable selection repeated Modal preflight"
-                ),
-            )
-            self.assertEqual(replayed_selection, selection)
-            self.assertEqual(
-                tuple(replayed_selection["selection"]),
-                (
-                    "selected_provider",
-                    "provider_identity",
-                    "primary_preflight",
-                    "fallback_preflight",
-                ),
-            )
-            plan = {
-                "schema_version": "milk.modal-execution-plan.v1",
-                "campaign_id": CAMPAIGN,
-                "run_id": run_id,
-                "executions": [
-                    {
-                        "ordinal": 0,
-                        "command": [
-                            "/opt/dragontales/deploy/student-job.sh",
-                            "train",
-                            "--config",
-                            "/tmp/dragontales/gateway.json",
-                            "--student-job-id",
-                            source["student_job_id"],
-                            "--work-dir",
-                            "/tmp/dragontales-work",
-                        ],
-                        "environment": {},
-                        "resources": resources(),
-                    }
-                ],
-            }
-            provider_pass_raw, authorization_raw = create_authorities()
-            result = launch_modal_gpu(
-                ModalLifecycle(store, events),
-                store=store,
-                campaign_id=CAMPAIGN,
-                workload=source,
-                runtime_image_reference=STUDENT_TRAIN_IMAGE,
-                selection_record=selection,
-                execution_plan=plan,
-                provider_pass_claim_raw=provider_pass_raw,
-                create_authorization_raw=authorization_raw,
-                now=lambda: NOW,
-            )
-            self.assertEqual(result["state"], "created")
-            replay = launch_modal_gpu(
-                ModalLifecycle(store, events),
-                store=store,
-                campaign_id=CAMPAIGN,
-                workload=source,
-                runtime_image_reference=STUDENT_TRAIN_IMAGE,
-                selection_record=replayed_selection,
-                execution_plan=plan,
-                provider_pass_claim_raw=provider_pass_raw,
-                create_authorization_raw=authorization_raw,
-                now=lambda: NOW,
-            )
-            self.assertEqual(replay["state"], "reconcile_only")
-            labels = [event[0] for event in events]
-            selection_index = next(
-                index
-                for index, event in enumerate(events)
-                if event
-                == ("store-create", _selection_key(CAMPAIGN, run_id))
-            )
-            reservation_index = next(
-                index
-                for index, event in enumerate(events)
-                if event[0] == "store-create"
-                and "/reservation-intents/" in event[1]
-            )
-            acceptance_index = next(
-                index
-                for index, event in enumerate(events)
-                if event[0] == "store-create"
-                and event[1].endswith("/modal/provider-acceptance.json")
-            )
-            definition_index = next(
-                index
-                for index, event in enumerate(events)
-                if event[0] == "store-create"
-                and "/execution-definitions/" in event[1]
-            )
-            create_index = labels.index("provider-create")
-            self.assertLess(labels.index("baseten-preflight"), labels.index("modal-preflight"))
-            self.assertLess(selection_index, reservation_index)
-            self.assertLess(reservation_index, acceptance_index)
-            self.assertLess(acceptance_index, definition_index)
-            self.assertLess(definition_index, create_index)
-
-            later = LaterLeaseModalLifecycle()
-            teardown = teardown_modal_gpu(
-                later,
-                store=store,
-                campaign_id=CAMPAIGN,
-                run_id=run_id,
-            )
-            self.assertEqual(teardown["state"], "zero")
-            self.assertEqual(len(later.calls), 1)
-            self.assertEqual(
-                later.calls[0][0],
-                hashlib.sha256(provider_pass_raw).hexdigest(),
-            )
-
-    def test_ready_baseten_training_skips_modal_preflight(self):
-        with tempfile.TemporaryDirectory() as root:
-            store = LocalEvidenceStore(root)
-            source = workload("b", "student_train_merge")
-            selection = select_baseten_primary_modal_fallback(
-                store=store,
-                campaign_id=CAMPAIGN,
-                run_id=_workload_run_id(CAMPAIGN, source),
-                launch_source=source["launch_source"],
-                baseten_team_name=TEAM,
-                baseten_project_id=PROJECT,
-                modal_identity=modal_identity(),
-                baseten_preflight=lambda: baseten_preflight("ready"),
-                modal_preflight=lambda: self.fail(
-                    "ready Baseten selection ran Modal preflight"
-                ),
-            )
-            self.assertEqual(
-                selection["selection"]["selected_provider"],
-                "baseten",
-            )
-
-    def test_modal_fallback_is_forbidden_after_any_baseten_budget_intent(self):
-        with tempfile.TemporaryDirectory() as root:
-            store = LocalEvidenceStore(root)
-            source = workload("b", "student_train_merge")
-            run_id = _workload_run_id(CAMPAIGN, source)
-            store.create(
-                f"campaigns/v1/{CAMPAIGN}/reservation-intents/{run_id}.json",
-                b"{}",
-                "application/json",
-            )
-            called = []
-            with self.assertRaisesRegex(RuntimeError, "fallback is forbidden"):
-                select_baseten_primary_modal_fallback(
-                    store=store,
-                    campaign_id=CAMPAIGN,
-                    run_id=run_id,
-                    launch_source=source["launch_source"],
-                    baseten_team_name=TEAM,
-                    baseten_project_id=PROJECT,
-                    modal_identity=modal_identity(),
-                    baseten_preflight=baseten_preflight,
-                    modal_preflight=lambda: called.append(True) or modal_preflight(),
-                )
-            self.assertEqual(called, [])
-
-    def test_modal_winner_fallback_is_forbidden_after_baseten_create_intent(self):
-        with tempfile.TemporaryDirectory() as root:
-            store = LocalEvidenceStore(f"{root}/evidence")
-            control = LocalEvidenceStore(f"{root}/control")
-            launch = self._winner_launch(control, 71)
-            run_id = _winner_run_from_launch(
-                CAMPAIGN,
-                launch,
-                TEST_IMAGE_RELEASE_SHA256,
-                TEST_IMAGE_ADMISSIONS["student-branch"]["sha256"],
-            )
-            store.create(
-                f"campaigns/v1/{CAMPAIGN}/winner-jobs/{run_id}/create-intent.json",
-                b"{}",
-                "application/json",
-            )
-            modal_calls = []
-            unavailable = baseten_winner.baseten_unavailable_preflight_receipt(
-                TEAM,
-                "server_unavailable",
-                503,
-                NOW,
-            )
-            with self.assertRaisesRegex(RuntimeError, "fallback is forbidden"):
-                select_winner_baseten_primary_modal_fallback(
-                    store=store,
-                    campaign_id=CAMPAIGN,
-                    run_id=run_id,
-                    launch_source=launch["launch_source"],
-                    baseten_team_name=TEAM,
-                    modal_identity=modal_identity(),
-                    baseten_preflight=lambda: unavailable,
-                    modal_preflight=lambda: modal_calls.append(True),
-                )
-            self.assertEqual(modal_calls, [])
 
     def test_baseten_winner_orders_authority_and_emits_content_free_handoff(self):
         with tempfile.TemporaryDirectory() as root:
@@ -937,18 +490,14 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 "3" * 64,
                 NOW,
             )
-            modal_calls = []
-            selection = select_winner_baseten_primary_modal_fallback(
+            selection = select_winner_baseten_only(
                 store=store,
                 campaign_id=CAMPAIGN,
                 run_id=run_id,
                 launch_source=launch["launch_source"],
                 baseten_team_name=TEAM,
-                modal_identity=modal_identity(),
                 baseten_preflight=lambda: ready,
-                modal_preflight=lambda: modal_calls.append(True),
             )
-            self.assertEqual(modal_calls, [])
             provider_pass_raw, authorization_raw = create_authorities()
             lifecycle = BasetenWinnerLifecycle(
                 store,
@@ -1070,249 +619,6 @@ class JobsProviderIntegrationTest(unittest.TestCase):
             self.assertEqual(authorized_teardown["state"], "zero")
             self.assertEqual(authorized_later.calls[0][0], run_id)
 
-    def test_modal_winner_admits_and_emits_content_free_handoff(self):
-        with tempfile.TemporaryDirectory() as root:
-            events = []
-            store = RecordingStore(root, events)
-            control = LocalEvidenceStore(f"{root}/control")
-            authorize(store)
-            launch = self._winner_launch(control, 72)
-            run_id = _winner_run_from_launch(
-                CAMPAIGN,
-                launch,
-                TEST_IMAGE_RELEASE_SHA256,
-                TEST_IMAGE_ADMISSIONS["student-branch"]["sha256"],
-            )
-            unavailable = baseten_winner.baseten_unavailable_preflight_receipt(
-                TEAM,
-                "server_unavailable",
-                503,
-                NOW,
-            )
-            selection = select_winner_baseten_primary_modal_fallback(
-                store=store,
-                campaign_id=CAMPAIGN,
-                run_id=run_id,
-                launch_source=launch["launch_source"],
-                baseten_team_name=TEAM,
-                modal_identity=modal_identity(),
-                baseten_preflight=lambda: unavailable,
-                modal_preflight=lambda: {
-                    **modal_preflight(),
-                    "observed_at": NOW.isoformat().replace("+00:00", "Z"),
-                },
-            )
-            command = [
-                "/bin/sh",
-                "-c",
-                (
-                    "umask 077; printf %s \"$DRAGONTALES_CANDIDATE_API_KEY\" "
-                    ">/tmp/dragontales-candidate.key; chmod 0400 "
-                    "/tmp/dragontales-candidate.key; unset "
-                    "DRAGONTALES_CANDIDATE_API_KEY; exec "
-                    "/opt/dragontales/deploy/student-job.sh serve --model "
-                    "/tmp/dragontales-winner/model --model-manifest "
-                    "/tmp/dragontales-winner/model-manifest.json "
-                    "--model-alias \"$DRAGONTALES_MODEL_ALIAS\" "
-                    "--api-key-file /tmp/dragontales-candidate.key"
-                ),
-            ]
-            plan = {
-                "schema_version": "milk.modal-execution-plan.v1",
-                "campaign_id": CAMPAIGN,
-                "run_id": run_id,
-                "executions": [
-                    {
-                        "ordinal": 0,
-                        "command": command,
-                        "environment": {
-                            "DRAGONTALES_MODEL_ALIAS": "milk-student"
-                        },
-                        "resources": {
-                            "registry_secret": resources()["registry_secret"],
-                            "secrets": [
-                                {
-                                    "name": "milk-winner-candidate",
-                                    "object_id": "st-winner-candidate",
-                                    "required_keys": [
-                                        "DRAGONTALES_CANDIDATE_API_KEY"
-                                    ],
-                                }
-                            ],
-                            "volumes": [],
-                        },
-                    }
-                ],
-            }
-            provider_pass_raw, authorization_raw = create_authorities()
-            result = launch_modal_winner(
-                ModalLifecycle(store, events),
-                store=store,
-                campaign_id=CAMPAIGN,
-                launch=launch,
-                selection_record=selection,
-                execution_plan=plan,
-                image_release_sha256=TEST_IMAGE_RELEASE_SHA256,
-                image_admission_sha256=TEST_IMAGE_ADMISSIONS["student-branch"][
-                    "sha256"
-                ],
-                provider_pass_claim_raw=provider_pass_raw,
-                create_authorization_raw=authorization_raw,
-                now=lambda: NOW,
-            )
-            self.assertEqual(result["state"], "admitted")
-            self.assertEqual(len(result["winner_result_references"]), 1)
-            create_events = events.count(("provider-create", 0))
-            replay = launch_modal_winner(
-                ModalLifecycle(store, events),
-                store=store,
-                campaign_id=CAMPAIGN,
-                launch=launch,
-                selection_record=selection,
-                execution_plan=plan,
-                image_release_sha256=TEST_IMAGE_RELEASE_SHA256,
-                image_admission_sha256=TEST_IMAGE_ADMISSIONS["student-branch"][
-                    "sha256"
-                ],
-                provider_pass_claim_raw=provider_pass_raw,
-                create_authorization_raw=authorization_raw,
-                now=lambda: NOW,
-            )
-            self.assertEqual(
-                replay["winner_result_references"],
-                result["winner_result_references"],
-            )
-            self.assertEqual(events.count(("provider-create", 0)), create_events)
-            acceptance_raw = store.get(
-                f"campaigns/v1/{CAMPAIGN}/jobs/{run_id}/modal/"
-                "provider-acceptance.json"
-            )
-            acceptance = json.loads(acceptance_raw)
-            self.assertEqual(
-                acceptance["selection"]["selected_provider"],
-                "modal",
-            )
-            self.assertEqual(
-                acceptance["provider_pass_claim_sha256"],
-                hashlib.sha256(provider_pass_raw).hexdigest(),
-            )
-            definition_index = next(
-                index
-                for index, event in enumerate(events)
-                if event[0] == "store-create"
-                and "/execution-definitions/" in event[1]
-            )
-            mutation_index = events.index(("provider-create", 0))
-            self.assertLess(definition_index, mutation_index)
-            later = LaterLeaseModalWinnerLifecycle()
-            record = teardown_record(store, run_id, "modal")
-            with mock.patch(
-                "milk_harness.jobs.discover_provider_teardown_authorizations",
-                return_value=[record],
-            ):
-                missing_ack = mock.Mock()
-                missing_ack.get.side_effect = urllib.error.HTTPError(
-                    "https://control.example/absent-ack.json",
-                    404,
-                    "not found",
-                    {},
-                    None,
-                )
-                with self.assertRaisesRegex(ValueError, "must select Baseten"):
-                    dispatch_provider_teardowns(
-                        object(),
-                        store=store,
-                        control_store=missing_ack,
-                        campaign_id=CAMPAIGN,
-                        scope_prefix=SCOPE_PREFIX,
-                        evidence_store_identity_sha256="d" * 64,
-                        baseten_values_by_run_id={},
-                        now=lambda: NOW,
-                    )
-            self.assertEqual(later.calls, [])
-            unsafe_ack = json.loads(modal_absence_ack(record))
-            self.assertNotEqual(
-                unsafe_ack["gateway_result_sha256"],
-                record["authorization"]["winner_result_sha256"],
-            )
-            self.assertEqual(
-                unsafe_ack["gateway_result_sha256"],
-                hashlib.sha256(
-                    winner_contract.result_bytes(record["winner_result"])
-                ).hexdigest(),
-            )
-            unsafe_ack["state"] = "installed"
-            with self.assertRaisesRegex(ValueError, "absence acknowledgement"):
-                teardown_authorized_modal_winner(
-                    later,
-                    store=store,
-                    campaign_id=CAMPAIGN,
-                    authorization_record=record,
-                    candidate_absence_raw=canonical_json(unsafe_ack),
-                )
-            self.assertEqual(later.calls, [])
-            teardown = teardown_authorized_modal_winner(
-                later,
-                store=store,
-                campaign_id=CAMPAIGN,
-                authorization_record=record,
-                candidate_absence_raw=modal_absence_ack(record),
-            )
-            self.assertEqual(teardown["state"], "zero")
-            self.assertEqual(later.calls[0][0], run_id)
-            self.assertEqual(later.calls[0][4], launch["gateway_claim_raw"])
-            record = teardown_record(store, run_id, "modal")
-            acceptance_sha256 = baseten_winner.provider_acceptance_sha256(
-                acceptance
-            )
-            observed = dt.datetime.fromisoformat(
-                record["authorization"]["authorized_at"].replace(
-                    "Z",
-                    "+00:00",
-                )
-            ) + dt.timedelta(minutes=1)
-            observed_at = observed.isoformat().replace("+00:00", "Z")
-            zero = {
-                "schema_version": "milk.modal-winner-teardown-result.v1",
-                "run_id": run_id,
-                "provider_acceptance_sha256": acceptance_sha256,
-                "zero_gpu_verification": {
-                    "observed_at": observed_at,
-                    "state": "zero",
-                },
-                "state": "zero",
-            }
-            winner_prefix = f"campaigns/v1/{CAMPAIGN}/winner-jobs/{run_id}"
-            store.create(
-                f"{winner_prefix}/modal-zero-gpu.json",
-                canonical_json(zero),
-                "application/json",
-            )
-            stream_id = "e" * 64
-            modal_prefix = f"campaigns/v1/{CAMPAIGN}/jobs/{run_id}/modal"
-            store.create(
-                f"{modal_prefix}/winner/log-plans/{stream_id}.json",
-                canonical_json({"stream_id": stream_id}),
-                "application/json",
-            )
-            store.create(
-                f"{modal_prefix}/logs/modal/{stream_id}/index.json",
-                canonical_json({"stream_id": stream_id}),
-                "application/json",
-            )
-            teardown_reference = _winner_teardown_evidence(
-                store,
-                campaign_id=CAMPAIGN,
-                authorization_record=record,
-                evidence_store_identity_sha256="d" * 64,
-            )
-            teardown_result = json.loads(
-                store.get(teardown_reference["object_key"])
-            )
-            self.assertEqual(
-                teardown_result["accounted_microusd"],
-                acceptance["reserved_microusd"],
-            )
 
     def test_gateway_control_is_strictly_read_only(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1331,73 +637,28 @@ class JobsProviderIntegrationTest(unittest.TestCase):
 
     def test_production_teardown_discovery_rejects_modal_authority(self):
         with tempfile.TemporaryDirectory() as root:
-            control = LocalEvidenceStore(f"{root}/control")
-            evidence = LocalEvidenceStore(f"{root}/evidence")
-            acceptance = winner_acceptance()
-            acceptance["campaign_id"] = CAMPAIGN
+            control = LocalEvidenceStore(root)
             student_job_id = "b" * 64
-            admission = {
-                "schema_version": winner_contract.RECEIPT_SCHEMA,
-                "provider": "modal",
-                "student_job_id": student_job_id,
-                "student_variant": "static_fp8",
-                "model_manifest_sha256": "4" * 64,
-                "model_alias": "milk-student",
-                "model_alias_sha256": "5" * 64,
-                "candidate_api_key_sha256": "6" * 64,
-                "student_branch_runtime_image_reference": STUDENT_BRANCH_IMAGE,
-                "admission_program_sha256": "7" * 64,
-                "execution_id": "sb-winner",
-                "execution_name": "milk-winner",
-                "chat_completions_url": (
-                    "https://unit.w.modal.host/v1/chat/completions"
-                ),
-                "models_response_sha256": "8" * 64,
-                "chat_request_sha256": "9" * 64,
-                "chat_response_sha256": "a" * 64,
-                "launch_started_at": "2026-08-27T20:00:00Z",
-                "ready_at": "2026-08-27T20:01:00Z",
-                "admitted_at": "2026-08-27T20:02:00Z",
-                "service_not_after": "2026-08-27T20:17:00Z",
-            }
-            winner = {
-                "schema_version": winner_contract.RESULT_SCHEMA,
-                "scope": SCOPE,
-                "student_job_id": student_job_id,
-                "claim_sha256": acceptance["claim_sha256"],
-                "provider_binding_sha256": acceptance[
-                    "provider_binding_sha256"
-                ],
-                "provider_acceptance": acceptance,
-                "observed_cost_microusd": 1234,
-                "admission": admission,
-            }
-            winner_raw = winner_contract.result_bytes(winner)[:-1]
             winner_key = (
                 f"{SCOPE_PREFIX}/jobs/student/{student_job_id}/"
                 "winner-deployment/result.json"
             )
-            control.create(winner_key, winner_raw, "application/json")
             authorization = {
                 "schema_version": (
                     "dragontales.provider-teardown-authorization.v1"
                 ),
                 "scope": SCOPE,
                 "student_job_id": student_job_id,
-                "claim_sha256": acceptance["claim_sha256"],
+                "claim_sha256": "1" * 64,
                 "winner_result_object_key": winner_key,
-                "winner_result_sha256": hashlib.sha256(
-                    winner_raw
-                ).hexdigest(),
-                "provider_acceptance_sha256": (
-                    baseten_winner.provider_acceptance_sha256(acceptance)
-                ),
-                "run_id": acceptance["run_id"],
+                "winner_result_sha256": "2" * 64,
+                "provider_acceptance_sha256": "3" * 64,
+                "run_id": "4" * 64,
                 "selected_provider": "modal",
-                "execution_id": admission["execution_id"],
+                "execution_id": "legacy-modal-winner",
                 "trigger": {
                     "kind": "service_expired",
-                    "service_not_after": admission["service_not_after"],
+                    "service_not_after": "2026-08-27T20:17:00Z",
                 },
                 "authorized_at": "2026-08-27T20:17:00Z",
             }
@@ -1520,7 +781,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
 
             jobs.preflight = unavailable_training
             provider_pass_raw, authorization_raw = create_authorities()
-            winner_lifecycle = ModalFallbackWinnerLifecycle(events)
+            winner_lifecycle = UnavailableBasetenWinnerLifecycle(events)
 
             result = dispatch_baseten_outboxes(
                 jobs,
@@ -1560,12 +821,10 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 in {
                     "baseten-training-preflight",
                     "baseten-winner-preflight",
-                    "modal-preflight",
                 }
             ]
             self.assertEqual(preflight_events.count("baseten-training-preflight"), 3)
             self.assertEqual(preflight_events.count("baseten-winner-preflight"), 1)
-            self.assertNotIn("modal-preflight", preflight_events)
             selection_indexes = [
                 index
                 for index, event in enumerate(events)
@@ -1653,11 +912,10 @@ class JobsProviderIntegrationTest(unittest.TestCase):
     def test_winner_result_reference_embeds_full_canonical_acceptance(self):
         with tempfile.TemporaryDirectory() as root:
             store = LocalEvidenceStore(root)
-            acceptance = winner_acceptance()
-            acceptance["campaign_id"] = CAMPAIGN
+            acceptance = json.loads(FROZEN_GATEWAY_BASETEN_ACCEPTANCE)
             admission = {
                 "schema_version": winner_contract.RECEIPT_SCHEMA,
-                "provider": "modal",
+                "provider": "baseten",
                 "student_job_id": "b" * 64,
                 "student_variant": "static_fp8",
                 "model_manifest_sha256": "4" * 64,
@@ -1666,10 +924,10 @@ class JobsProviderIntegrationTest(unittest.TestCase):
                 "candidate_api_key_sha256": "6" * 64,
                 "student_branch_runtime_image_reference": STUDENT_BRANCH_IMAGE,
                 "admission_program_sha256": "7" * 64,
-                "execution_id": "sb-winner",
+                "execution_id": "deployment_1",
                 "execution_name": "milk-winner",
                 "chat_completions_url": (
-                    "https://unit.w.modal.host/v1/chat/completions"
+                    "https://model.example.invalid/v1/chat/completions"
                 ),
                 "models_response_sha256": "8" * 64,
                 "chat_request_sha256": "9" * 64,
@@ -1681,7 +939,7 @@ class JobsProviderIntegrationTest(unittest.TestCase):
             }
             result = {
                 "schema_version": winner_contract.RESULT_SCHEMA,
-                "scope": SCOPE,
+                "scope": {**SCOPE, "eval_id": acceptance["campaign_id"]},
                 "student_job_id": "b" * 64,
                 "claim_sha256": acceptance["claim_sha256"],
                 "provider_binding_sha256": acceptance[

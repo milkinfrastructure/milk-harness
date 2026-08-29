@@ -11,7 +11,7 @@ from milk_harness.evidence import canonical_json
 MAX_LINE_BYTES = 64 * 1024
 MAX_CHUNK_BYTES = 1024 * 1024
 MAX_RUN_LOG_BYTES = 100 * 1024 * 1024
-SOURCES = {"local", "ci", "ghcr", "cloudflare", "baseten", "modal", "gateway"}
+SOURCES = {"local", "ci", "ghcr", "cloudflare", "baseten", "gateway"}
 STREAM_ID = re.compile(r"[0-9a-f]{64}\Z")
 CONTENT_WORDS = re.compile(
     r"(?i)(prompt|request[_ -]?body|response[_ -]?body|messages|dataset[_ -]?(?:row|sample)|training[_ -]?example)"

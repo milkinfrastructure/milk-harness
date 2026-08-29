@@ -22,7 +22,6 @@ from milk_harness.budget import (
     H100_RESERVATION_RATE_MICROUSD_PER_MINUTE as RESERVATION_RATE_MICROUSD_PER_MINUTE,
     baseten_provider_identity,
     baseten_serving_provider_identity,
-    modal_provider_identity,
 )
 from milk_harness import baseten_winner
 from milk_harness.evidence import (
@@ -46,19 +45,9 @@ from milk_harness.log_collection import (
     collect_baseten_terminal_logs,
 )
 from milk_harness.metrics_collection import collect_baseten_terminal_metrics
-try:
-    from milk_harness.modal_jobs import (
-        ModalJobs,
-        acceptance_key as modal_acceptance_key,
-        definition_key as modal_definition_key,
-        validate_definition as validate_modal_definition,
-    )
-except ImportError:  # Legacy Modal code is intentionally absent from production images.
-    ModalJobs = None
 from milk_harness.provider_acceptance import (
     OPAQUE,
     TEAM_NAME,
-    encode as encode_provider_acceptance,
     encode_baseten as encode_baseten_provider_acceptance,
     sha256 as provider_acceptance_sha256,
     validate_route_retirement,
@@ -100,7 +89,6 @@ CANDIDATE_KEY_SOCKET = "/run/milk-candidate-key.sock"
 MAX_CANDIDATE_KEY_DELIVERY_BYTES = 4096
 MAX_CANDIDATE_KEY_SOCKET_REQUEST_BYTES = 32 * 1024
 MAX_CANDIDATE_KEY_SOCKET_RESPONSE_BYTES = 4096
-MAX_MODAL_CANDIDATE_ACK_BYTES = 4096
 BASETEN_WINNER_ADMIT_STATES = {
     "admitted",
     "create_ambiguous_no_replay",
@@ -115,7 +103,6 @@ BASETEN_WINNER_ADMIT_STATES = {
     "candidate_key_delivery_recovery_failed_revoke_ambiguous",
 }
 BASETEN_TRAINING_PREFLIGHT_SCHEMA = "milk.baseten-training-preflight.v1"
-MODAL_PREFLIGHT_SCHEMA = "milk.modal-preflight.v1"
 PREPARATION_TIMEOUT_SECONDS = 60
 CREATE_MUTATION_TAIL_SECONDS = 120
 PROVIDER_CLOCK_SKEW_SECONDS = 300
@@ -1587,47 +1574,7 @@ def _baseten_training_preflight(value, team_name, project_id):
             "server_unavailable",
         }
     ):
-        raise ValueError("Baseten preflight is not safe for Modal fallback")
-    return value
-
-
-def _modal_preflight(value, provider_identity):
-    if (
-        not isinstance(value, dict)
-        or set(value)
-        != {
-            "schema_version",
-            "provider",
-            "provider_identity",
-            "outcome",
-            "evidence_sha256",
-            "observed_at",
-        }
-        or value.get("schema_version") != MODAL_PREFLIGHT_SCHEMA
-        or value.get("provider") != "modal"
-        or value.get("provider_identity") != provider_identity
-        or value.get("outcome") != "ready"
-        or not _is_hex64(value.get("evidence_sha256"))
-        or not isinstance(provider_identity, dict)
-        or tuple(provider_identity)
-        != (
-            "provider",
-            "workspace_id",
-            "workspace_name",
-            "environment_id",
-            "environment_name",
-            "app_id",
-            "app_name",
-        )
-        or provider_identity.get("provider") != "modal"
-        or any(
-            not isinstance(provider_identity.get(field), str)
-            or OPAQUE.fullmatch(provider_identity[field]) is None
-            for field in tuple(provider_identity)[1:]
-        )
-    ):
-        raise ValueError("Modal preflight is invalid")
-    _utc(value.get("observed_at"), "Modal preflight observed_at")
+        raise ValueError("Baseten retryable-unavailable preflight is invalid")
     return value
 
 
@@ -1645,152 +1592,37 @@ def _preflight_key(campaign_id, run_id, receipt):
 def _ordered_provider_selection(
     selection,
     baseten_team_name,
-    modal_identity,
 ):
-    """Validate stored selection semantics and restore acceptance wire order."""
+    """Validate a stored Baseten selection and restore acceptance wire order."""
     if not isinstance(selection, dict):
-        raise ValueError("provider selection is invalid")
-    selected = selection.get("selected_provider")
+        raise ValueError("Baseten provider selection is invalid")
     primary = selection.get("primary_preflight")
-    if selected == "baseten":
-        identity = selection.get("provider_identity")
-        if (
-            set(selection)
-            != {"selected_provider", "provider_identity", "primary_preflight"}
-            or identity
-            != {"provider": "baseten", "team_name": baseten_team_name}
-            or not isinstance(primary, dict)
-            or set(primary)
-            != {"provider", "outcome", "evidence_sha256", "observed_at"}
-            or primary.get("provider") != "baseten"
-            or primary.get("outcome") != "ready"
-            or not _is_hex64(primary.get("evidence_sha256"))
-        ):
-            raise ValueError("Baseten provider selection is invalid")
-        _utc(primary.get("observed_at"), "Baseten preflight observed_at")
-        return {
-            "selected_provider": "baseten",
-            "provider_identity": {
-                "provider": "baseten",
-                "team_name": baseten_team_name,
-            },
-            "primary_preflight": {
-                "provider": "baseten",
-                "outcome": "ready",
-                "evidence_sha256": primary["evidence_sha256"],
-                "observed_at": primary["observed_at"],
-            },
-        }
-    if selected != "modal":
-        raise ValueError("selected provider is invalid")
     identity = selection.get("provider_identity")
-    fallback = selection.get("fallback_preflight")
     if (
         set(selection)
-        != {
-            "selected_provider",
-            "provider_identity",
-            "primary_preflight",
-            "fallback_preflight",
-        }
-        or not isinstance(modal_identity, dict)
-        or set(modal_identity)
-        != {
-            "provider",
-            "workspace_id",
-            "workspace_name",
-            "environment_id",
-            "environment_name",
-            "app_id",
-            "app_name",
-        }
-        or identity != modal_identity
-        or modal_identity.get("provider") != "modal"
-        or any(
-            not isinstance(modal_identity.get(field), str)
-            or OPAQUE.fullmatch(modal_identity[field]) is None
-            for field in (
-                "workspace_id",
-                "workspace_name",
-                "environment_id",
-                "environment_name",
-                "app_id",
-                "app_name",
-            )
-        )
+        != {"selected_provider", "provider_identity", "primary_preflight"}
+        or selection.get("selected_provider") != "baseten"
+        or identity != {"provider": "baseten", "team_name": baseten_team_name}
         or not isinstance(primary, dict)
         or set(primary)
-        != {
-            "provider",
-            "outcome",
-            "reason",
-            "status",
-            "evidence_sha256",
-            "observed_at",
-        }
-        or primary.get("provider") != "baseten"
-        or primary.get("outcome") != "retryable_unavailable"
-        or not _is_hex64(primary.get("evidence_sha256"))
-        or not isinstance(fallback, dict)
-        or set(fallback)
         != {"provider", "outcome", "evidence_sha256", "observed_at"}
-        or fallback.get("provider") != "modal"
-        or fallback.get("outcome") != "ready"
-        or not _is_hex64(fallback.get("evidence_sha256"))
+        or primary.get("provider") != "baseten"
+        or primary.get("outcome") != "ready"
+        or not _is_hex64(primary.get("evidence_sha256"))
     ):
-        raise ValueError("Modal fallback provider selection is invalid")
-    reason = primary["reason"]
-    status = primary["status"]
-    if (
-        reason == "capability_unavailable"
-        and status is not None
-        or reason == "timeout"
-        and status is not None
-        or reason == "rate_limited"
-        and status != 429
-        or reason == "server_unavailable"
-        and (type(status) is not int or not 500 <= status <= 599)
-        or reason
-        not in {
-            "capability_unavailable",
-            "timeout",
-            "rate_limited",
-            "server_unavailable",
-        }
-    ):
-        raise ValueError("Baseten preflight is not safe for Modal fallback")
-    primary_at = _utc(primary.get("observed_at"), "Baseten preflight observed_at")
-    fallback_at = _utc(fallback.get("observed_at"), "Modal preflight observed_at")
-    if fallback_at < primary_at:
-        raise ValueError("Modal preflight precedes Baseten unavailability")
-    ordered_identity = {
-        field: modal_identity[field]
-        for field in (
-            "provider",
-            "workspace_id",
-            "workspace_name",
-            "environment_id",
-            "environment_name",
-            "app_id",
-            "app_name",
-        )
-    }
+        raise ValueError("Baseten provider selection is invalid")
+    _utc(primary.get("observed_at"), "Baseten preflight observed_at")
     return {
-        "selected_provider": "modal",
-        "provider_identity": ordered_identity,
+        "selected_provider": "baseten",
+        "provider_identity": {
+            "provider": "baseten",
+            "team_name": baseten_team_name,
+        },
         "primary_preflight": {
             "provider": "baseten",
-            "outcome": "retryable_unavailable",
-            "reason": reason,
-            "status": status,
+            "outcome": "ready",
             "evidence_sha256": primary["evidence_sha256"],
             "observed_at": primary["observed_at"],
-        },
-        "fallback_preflight": {
-            "provider": "modal",
-            "outcome": "ready",
-            "evidence_sha256": fallback["evidence_sha256"],
-            "observed_at": fallback["observed_at"],
         },
     }
 
@@ -1802,7 +1634,6 @@ def _load_selection(
     launch_source,
     baseten_team_name,
     baseten_project_id,
-    modal_identity,
 ):
     value = _strict_object(store.get(_selection_key(campaign_id, run_id)))
     if (
@@ -1828,64 +1659,26 @@ def _load_selection(
     selection = _ordered_provider_selection(
         value.get("selection"),
         baseten_team_name,
-        modal_identity,
     )
     value["selection"] = selection
-    selected = selection["selected_provider"]
     primary = selection["primary_preflight"]
-    if selected == "baseten":
-        if (
-            selection.get("provider_identity")
-            != {"provider": "baseten", "team_name": baseten_team_name}
-        ):
-            raise ValueError("stored Baseten selection is invalid")
-        receipt = _strict_object(
-            store.get(
-                f"campaigns/v1/{campaign_id}/provider-selections/{run_id}/"
-                f"preflights/{primary.get('evidence_sha256')}.json"
-            )
-        )
-        _baseten_training_preflight(receipt, baseten_team_name, baseten_project_id)
-    elif selected == "modal":
-        fallback = selection.get("fallback_preflight")
-        if (
-            selection.get("provider_identity") != modal_identity
-        ):
-            raise ValueError("stored Modal fallback selection is invalid")
-        primary_receipt = _strict_object(
-            store.get(
-                f"campaigns/v1/{campaign_id}/provider-selections/{run_id}/"
-                f"preflights/{primary.get('evidence_sha256')}.json"
-            )
-        )
-        fallback_receipt = _strict_object(
-            store.get(
-                f"campaigns/v1/{campaign_id}/provider-selections/{run_id}/"
-                f"preflights/{fallback.get('evidence_sha256')}.json"
-            )
-        )
-        _baseten_training_preflight(
-            primary_receipt,
-            baseten_team_name,
-            baseten_project_id,
-        )
-        _modal_preflight(fallback_receipt, modal_identity)
-    else:
-        raise ValueError("stored selected provider is invalid")
-    for item, receipt in (
-        (primary, receipt if selected == "baseten" else primary_receipt),
-        (
-            selection.get("fallback_preflight"),
-            None if selected == "baseten" else fallback_receipt,
-        ),
+    if (
+        selection.get("provider_identity")
+        != {"provider": "baseten", "team_name": baseten_team_name}
     ):
-        if item is None:
-            continue
-        if (
-            item.get("evidence_sha256") != _digest(receipt)
-            or item.get("observed_at") != receipt["observed_at"]
-        ):
-            raise ValueError("stored provider selection evidence differs")
+        raise ValueError("stored Baseten selection is invalid")
+    receipt = _strict_object(
+        store.get(
+            f"campaigns/v1/{campaign_id}/provider-selections/{run_id}/"
+            f"preflights/{primary.get('evidence_sha256')}.json"
+        )
+    )
+    _baseten_training_preflight(receipt, baseten_team_name, baseten_project_id)
+    if (
+        primary.get("evidence_sha256") != _digest(receipt)
+        or primary.get("observed_at") != receipt["observed_at"]
+    ):
+        raise ValueError("stored provider selection evidence differs")
     return value
 
 
@@ -1910,121 +1703,6 @@ def _baseten_create_is_frozen(store, campaign_id, run_id):
     )
 
 
-def select_baseten_primary_modal_fallback(
-    *,
-    store,
-    campaign_id,
-    run_id,
-    launch_source,
-    baseten_team_name,
-    baseten_project_id,
-    modal_identity,
-    baseten_preflight,
-    modal_preflight,
-):
-    if not callable(baseten_preflight) or not callable(modal_preflight):
-        raise ValueError("fixed provider preflight callbacks are required")
-    if not _is_hex64(campaign_id) or not _is_hex64(run_id):
-        raise ValueError("fixed provider selection identity is invalid")
-    _validate_launch_source(launch_source)
-    if launch_source["scope"]["eval_id"] != campaign_id:
-        raise ValueError("provider selection eval differs from its campaign")
-    try:
-        return _load_selection(
-            store,
-            campaign_id,
-            run_id,
-            launch_source,
-            baseten_team_name,
-            baseten_project_id,
-            modal_identity,
-        )
-    except FileNotFoundError:
-        pass
-    primary = _baseten_training_preflight(
-        baseten_preflight(),
-        baseten_team_name,
-        baseten_project_id,
-    )
-    primary_digest = _digest(primary)
-    create_same(
-        store,
-        _preflight_key(campaign_id, run_id, primary),
-        canonical_json(primary),
-        "application/json",
-    )
-    if primary["outcome"] == "ready":
-        selection = {
-            "selected_provider": "baseten",
-            "provider_identity": {
-                "provider": "baseten",
-                "team_name": baseten_team_name,
-            },
-            "primary_preflight": {
-                "provider": "baseten",
-                "outcome": "ready",
-                "evidence_sha256": primary_digest,
-                "observed_at": primary["observed_at"],
-            },
-        }
-    else:
-        if _baseten_create_is_frozen(store, campaign_id, run_id):
-            raise RuntimeError("Modal fallback is forbidden after Baseten create authority")
-        fallback = _modal_preflight(modal_preflight(), modal_identity)
-        if _utc(fallback["observed_at"], "Modal preflight observed_at") < _utc(
-            primary["observed_at"], "Baseten preflight observed_at"
-        ):
-            raise ValueError("Modal preflight precedes Baseten unavailability")
-        fallback_digest = _digest(fallback)
-        create_same(
-            store,
-            _preflight_key(campaign_id, run_id, fallback),
-            canonical_json(fallback),
-            "application/json",
-        )
-        selection = {
-            "selected_provider": "modal",
-            "provider_identity": copy.deepcopy(modal_identity),
-            "primary_preflight": {
-                "provider": "baseten",
-                "outcome": "retryable_unavailable",
-                "reason": primary["reason"],
-                "status": primary["status"],
-                "evidence_sha256": primary_digest,
-                "observed_at": primary["observed_at"],
-            },
-            "fallback_preflight": {
-                "provider": "modal",
-                "outcome": "ready",
-                "evidence_sha256": fallback_digest,
-                "observed_at": fallback["observed_at"],
-            },
-        }
-    value = {
-        "schema_version": "milk.provider-selection.v1",
-        "campaign_id": campaign_id,
-        "run_id": run_id,
-        "claim_sha256": launch_source["claim_sha256"],
-        "outbox_sha256": launch_source["outbox_sha256"],
-        "selection": selection,
-        "state": "selected",
-    }
-    key = _selection_key(campaign_id, run_id)
-    raw = canonical_json(value)
-    if not store.create(key, raw, "application/json"):
-        existing = _load_selection(
-            store,
-            campaign_id,
-            run_id,
-            launch_source,
-            baseten_team_name,
-            baseten_project_id,
-            modal_identity,
-        )
-        if existing != value:
-            raise RuntimeError("provider selection is already immutable")
-        return existing
-    return value
 
 
 def _baseten_winner_preflight(value, team_name):
@@ -2060,7 +1738,6 @@ def _load_winner_selection(
     run_id,
     launch_source,
     baseten_team_name,
-    modal_identity,
 ):
     raw = store.get(_selection_key(campaign_id, run_id))
     value = _strict_object(raw)
@@ -2087,173 +1764,27 @@ def _load_winner_selection(
     selection = _ordered_provider_selection(
         value.get("selection"),
         baseten_team_name,
-        modal_identity,
     )
     value["selection"] = selection
-    selected = selection["selected_provider"]
     primary = selection["primary_preflight"]
-    if selected == "baseten":
-        if (
-            selection.get("provider_identity")
-            != {"provider": "baseten", "team_name": baseten_team_name}
-            or not isinstance(primary, dict)
-            or primary.get("outcome") != "ready"
-            or selection.get("fallback_preflight") is not None
-        ):
-            raise ValueError("stored Baseten winner selection is invalid")
-        receipts = [primary]
-    elif selected == "modal":
-        fallback = selection.get("fallback_preflight")
-        if (
-            selection.get("provider_identity") != modal_identity
-            or not isinstance(primary, dict)
-            or primary.get("outcome") != "retryable_unavailable"
-            or not isinstance(fallback, dict)
-            or fallback.get("outcome") != "ready"
-        ):
-            raise ValueError("stored Modal winner selection is invalid")
-        receipts = [primary, fallback]
-    else:
-        raise ValueError("stored winner selected provider is invalid")
-    full = []
-    for receipt in receipts:
-        evidence_sha256 = receipt.get("evidence_sha256")
-        if not _is_hex64(evidence_sha256):
-            raise ValueError("stored winner preflight reference is invalid")
-        evidence = _strict_object(
-            store.get(
-                f"campaigns/v1/{campaign_id}/provider-selections/{run_id}/"
-                f"preflights/{evidence_sha256}.json"
-            )
+    evidence_sha256 = primary.get("evidence_sha256")
+    if not _is_hex64(evidence_sha256):
+        raise ValueError("stored winner preflight reference is invalid")
+    evidence = _strict_object(
+        store.get(
+            f"campaigns/v1/{campaign_id}/provider-selections/{run_id}/"
+            f"preflights/{evidence_sha256}.json"
         )
-        if (
-            _digest(evidence) != evidence_sha256
-            or evidence.get("observed_at") != receipt.get("observed_at")
-        ):
-            raise ValueError("stored winner preflight evidence differs")
-        full.append(evidence)
-    _baseten_winner_preflight(full[0], baseten_team_name)
-    if selected == "modal":
-        _modal_preflight(full[1], modal_identity)
-    return value
-
-
-def select_winner_baseten_primary_modal_fallback(
-    *,
-    store,
-    campaign_id,
-    run_id,
-    launch_source,
-    baseten_team_name,
-    modal_identity,
-    baseten_preflight,
-    modal_preflight,
-):
+    )
     if (
-        not _is_hex64(campaign_id)
-        or not _is_hex64(run_id)
-        or not callable(baseten_preflight)
-        or not callable(modal_preflight)
+        _digest(evidence) != evidence_sha256
+        or evidence.get("observed_at") != primary.get("observed_at")
     ):
-        raise ValueError("fixed winner provider selection is invalid")
-    _validate_launch_source(launch_source)
-    if launch_source["scope"]["eval_id"] != campaign_id:
-        raise ValueError("winner selection eval differs from its campaign")
-    try:
-        return _load_winner_selection(
-            store,
-            campaign_id,
-            run_id,
-            launch_source,
-            baseten_team_name,
-            modal_identity,
-        )
-    except FileNotFoundError:
-        pass
-    primary = _baseten_winner_preflight(
-        baseten_preflight(),
-        baseten_team_name,
-    )
-    primary_sha256 = _digest(primary)
-    create_same(
-        store,
-        _preflight_key(campaign_id, run_id, primary),
-        canonical_json(primary),
-        "application/json",
-    )
-    if primary["outcome"] == "ready":
-        selection = {
-            "selected_provider": "baseten",
-            "provider_identity": {
-                "provider": "baseten",
-                "team_name": baseten_team_name,
-            },
-            "primary_preflight": {
-                "provider": "baseten",
-                "outcome": "ready",
-                "evidence_sha256": primary_sha256,
-                "observed_at": primary["observed_at"],
-            },
-        }
-    else:
-        if _baseten_create_is_frozen(store, campaign_id, run_id):
-            raise RuntimeError(
-                "Modal winner fallback is forbidden after Baseten create authority"
-            )
-        fallback = _modal_preflight(modal_preflight(), modal_identity)
-        if _utc(fallback["observed_at"], "Modal winner preflight time") < _utc(
-            primary["observed_at"],
-            "Baseten winner preflight time",
-        ):
-            raise ValueError("Modal winner preflight precedes Baseten unavailability")
-        fallback_sha256 = _digest(fallback)
-        create_same(
-            store,
-            _preflight_key(campaign_id, run_id, fallback),
-            canonical_json(fallback),
-            "application/json",
-        )
-        selection = {
-            "selected_provider": "modal",
-            "provider_identity": copy.deepcopy(modal_identity),
-            "primary_preflight": {
-                "provider": "baseten",
-                "outcome": "retryable_unavailable",
-                "reason": primary["reason"],
-                "status": primary["status"],
-                "evidence_sha256": primary_sha256,
-                "observed_at": primary["observed_at"],
-            },
-            "fallback_preflight": {
-                "provider": "modal",
-                "outcome": "ready",
-                "evidence_sha256": fallback_sha256,
-                "observed_at": fallback["observed_at"],
-            },
-        }
-    value = {
-        "schema_version": "milk.provider-selection.v1",
-        "campaign_id": campaign_id,
-        "run_id": run_id,
-        "claim_sha256": launch_source["claim_sha256"],
-        "outbox_sha256": launch_source["outbox_sha256"],
-        "selection": selection,
-        "state": "selected",
-    }
-    key = _selection_key(campaign_id, run_id)
-    if not store.create(key, canonical_json(value), "application/json"):
-        existing = _load_winner_selection(
-            store,
-            campaign_id,
-            run_id,
-            launch_source,
-            baseten_team_name,
-            modal_identity,
-        )
-        if existing != value:
-            raise RuntimeError("winner provider selection is already immutable")
-        return existing
+        raise ValueError("stored winner preflight evidence differs")
+    _baseten_winner_preflight(evidence, baseten_team_name)
     return value
+
+
 
 
 def select_baseten_only(
@@ -2282,7 +1813,6 @@ def select_baseten_only(
             launch_source,
             baseten_team_name,
             baseten_project_id,
-            None,
         )
     except FileNotFoundError:
         pass
@@ -2338,7 +1868,6 @@ def select_baseten_only(
             launch_source,
             baseten_team_name,
             baseten_project_id,
-            None,
         )
         if existing != value:
             raise RuntimeError("Baseten provider selection is already immutable")
@@ -2372,7 +1901,6 @@ def select_winner_baseten_only(
             run_id,
             launch_source,
             baseten_team_name,
-            None,
         )
     except FileNotFoundError:
         pass
@@ -2426,7 +1954,6 @@ def select_winner_baseten_only(
             run_id,
             launch_source,
             baseten_team_name,
-            None,
         )
         if existing != value:
             raise RuntimeError("Baseten winner selection is already immutable")
@@ -2576,7 +2103,7 @@ def _operation_from_workload(workload):
     return operation
 
 
-def gpu_provider_acceptance(
+def baseten_gpu_provider_acceptance(
     *,
     campaign_id,
     workload,
@@ -2628,15 +2155,10 @@ def gpu_provider_acceptance(
         or reservation.get("run_id") != run_id
         or reservation.get("provider_identity")
         != expected_budget_provider_identity
-        or reservation.get("provider_role")
-        != (
-            "training"
-            if expected_budget_provider_identity.get("provider") == "baseten"
-            and "project_id" in expected_budget_provider_identity
-            else "serving"
-            if expected_budget_provider_identity.get("provider") == "baseten"
-            else "sandbox"
-        )
+        or reservation.get("provider_role") != "training"
+        or not isinstance(expected_budget_provider_identity, dict)
+        or expected_budget_provider_identity.get("provider") != "baseten"
+        or "project_id" not in expected_budget_provider_identity
         or reservation.get("state") != "reserved"
         or type(reservation.get("amount_microusd")) is not int
         or reservation["amount_microusd"] <= 0
@@ -2646,15 +2168,16 @@ def gpu_provider_acceptance(
     ):
         raise ValueError("GPU provider reservation authority is invalid")
     selection = copy.deepcopy(selection_record["selection"])
-    selected = selection.get("selected_provider") if isinstance(selection, dict) else None
+    selected = (
+        selection.get("selected_provider")
+        if isinstance(selection, dict)
+        else None
+    )
     if (
-        selected == "baseten"
-        and expected_budget_provider_identity.get("provider") != "baseten"
-        or selected == "modal"
-        and expected_budget_provider_identity.get("provider") != "modal"
-        or selected not in {"baseten", "modal"}
+        selected != "baseten"
+        or expected_budget_provider_identity.get("provider") != "baseten"
     ):
-        raise ValueError("selected provider differs from its budget authority")
+        raise ValueError("production GPU acceptance requires Baseten authority")
     reserved_at = _utc_text(reserved_at)
     accepted_at = _utc_text(accepted_at)
     reserved_time = _utc(reserved_at, "budget reserved_at")
@@ -2670,12 +2193,8 @@ def gpu_provider_acceptance(
         "provider lease expires_at",
     )
     observed_time = _utc(
-        (
-            selection["primary_preflight"]["observed_at"]
-            if selected == "baseten"
-            else selection["fallback_preflight"]["observed_at"]
-        ),
-        "selected provider preflight observed_at",
+        selection["primary_preflight"]["observed_at"],
+        "Baseten preflight observed_at",
     )
     wall_seconds = (
         max(branch["max_gpu_seconds"] for branch in operation["branches"])
@@ -2718,186 +2237,12 @@ def gpu_provider_acceptance(
         "max_cost_microusd": amount,
         "state": "accepted",
     }
-    encode_provider_acceptance(value)
-    return value
-
-
-def baseten_gpu_provider_acceptance(**arguments):
-    selection_record = arguments.get("selection_record")
-    selection = (
-        selection_record.get("selection")
-        if isinstance(selection_record, dict)
-        else None
-    )
-    budget_identity = arguments.get("expected_budget_provider_identity")
-    if (
-        not isinstance(selection, dict)
-        or selection.get("selected_provider") != "baseten"
-        or not isinstance(budget_identity, dict)
-        or budget_identity.get("provider") != "baseten"
-    ):
-        raise ValueError("production GPU acceptance requires Baseten authority")
-    value = gpu_provider_acceptance(**arguments)
     encode_baseten_provider_acceptance(value)
     return value
 
 
-def modal_winner_provider_acceptance(
-    *,
-    campaign_id,
-    launch,
-    run_id,
-    selection_record,
-    reservation,
-    image_release_sha256,
-    image_admission_sha256,
-    provider_pass_claim_raw,
-    create_authorization_raw,
-    reserved_at,
-    accepted_at,
-):
-    expected_run_id = _winner_run_from_launch(
-        campaign_id,
-        launch,
-        image_release_sha256,
-        image_admission_sha256,
-    )
-    if run_id != expected_run_id:
-        raise ValueError("Modal winner run ID is not provider-neutral")
-    source = launch["launch_source"]
-    operation = launch["operation"]
-    provider_pass, unused_authorization = _creation_authorities(
-        provider_pass_claim_raw,
-        create_authorization_raw,
-        campaign_id,
-        _scope_prefix(source["scope"]),
-    )
-    del unused_authorization
-    selection = (
-        selection_record.get("selection")
-        if isinstance(selection_record, dict)
-        else None
-    )
-    identity = (
-        selection.get("provider_identity")
-        if isinstance(selection, dict)
-        else None
-    )
-    budget_identity = _modal_budget_identity(identity)
-    amount = (
-        _minutes(operation["max_wall_seconds"])
-        * RESERVATION_RATE_MICROUSD_PER_MINUTE
-    )
-    if (
-        not isinstance(selection_record, dict)
-        or selection_record.get("run_id") != run_id
-        or selection_record.get("claim_sha256") != source["claim_sha256"]
-        or selection_record.get("outbox_sha256") != source["outbox_sha256"]
-        or not isinstance(selection, dict)
-        or selection.get("selected_provider") != "modal"
-        or not isinstance(reservation, dict)
-        or set(reservation)
-        != {
-            "schema_version",
-            "campaign_id",
-            "run_id",
-            "amount_microusd",
-            "preparation_sha256",
-            "provider_deadline_epoch_seconds",
-            "intent_sha256",
-            "state",
-            "provider_role",
-            "provider_identity",
-            "pricing_receipt_sha256",
-            "provider_rate_microusd_per_minute",
-            "reservation_rate_microusd_per_minute",
-        }
-        or reservation.get("schema_version")
-        != "milk.campaign-budget-reservation.v4"
-        or reservation.get("campaign_id") != campaign_id
-        or reservation.get("run_id") != run_id
-        or reservation.get("amount_microusd") != amount
-        or reservation.get("provider_role") != "sandbox"
-        or reservation.get("provider_identity") != budget_identity
-        or reservation.get("state") != "reserved"
-        or not _is_hex64(reservation.get("preparation_sha256"))
-        or not _is_hex64(reservation.get("intent_sha256"))
-        or type(reservation.get("provider_deadline_epoch_seconds")) is not int
-        or amount > operation["max_cost_microusd"]
-    ):
-        raise ValueError("Modal winner reservation authority is invalid")
-    reserved_at = _utc_text(reserved_at)
-    accepted_at = _utc_text(accepted_at)
-    reserved_time = _utc(reserved_at, "winner budget reserved_at")
-    accepted_time = _utc(accepted_at, "winner provider accepted_at")
-    create_time = accepted_time + dt.timedelta(seconds=60)
-    provider_time = dt.datetime.fromtimestamp(
-        reservation["provider_deadline_epoch_seconds"],
-        tz=dt.timezone.utc,
-    )
-    fallback_time = _utc(
-        selection["fallback_preflight"]["observed_at"],
-        "Modal winner preflight time",
-    )
-    lease_time = _utc(
-        provider_pass["lease_expires_at"],
-        "provider lease expires_at",
-    )
-    claim_time = _gateway_time(source["expires_at"], "winner expiry")[0]
-    if not (
-        _utc(provider_pass["claimed_at"], "provider pass claimed_at")
-        <= reserved_time
-        and fallback_time <= reserved_time <= accepted_time < create_time
-        <= provider_time <= claim_time
-        and create_time <= lease_time
-        and provider_time - accepted_time
-        <= dt.timedelta(seconds=operation["max_wall_seconds"])
-    ):
-        raise ValueError("Modal winner acceptance interval is invalid")
-    value = {
-        "schema_version": "milk.winner-provider-acceptance.v1",
-        "campaign_id": campaign_id,
-        "run_id": run_id,
-        "claim_sha256": source["claim_sha256"],
-        "outbox_sha256": source["outbox_sha256"],
-        "provider_binding_sha256": operation["provider_binding_sha256"],
-        "selection": copy.deepcopy(selection),
-        "image_release_sha256": image_release_sha256,
-        "image_admission_sha256": image_admission_sha256,
-        "provider_pass_claim_sha256": hashlib.sha256(
-            provider_pass_claim_raw
-        ).hexdigest(),
-        "create_authorization_sha256": hashlib.sha256(
-            create_authorization_raw
-        ).hexdigest(),
-        "budget_reservation_sha256": _digest(reservation),
-        "reserved_microusd": amount,
-        "reserved_at": reserved_at,
-        "accepted_at": accepted_at,
-        "create_not_after": _utc_text(create_time),
-        "provider_not_after": _utc_text(provider_time),
-        "max_wall_seconds": operation["max_wall_seconds"],
-        "max_cost_microusd": operation["max_cost_microusd"],
-        "state": "accepted",
-    }
-    encode_provider_acceptance(value)
-    return value
 
 
-def _modal_units(workload):
-    operation = _operation_from_workload(workload)
-    if operation["kind"] != "student_fanout":
-        return [operation]
-    return [
-        {
-            "kind": "student_branch",
-            "student_job_id": operation["student_job_id"],
-            "branch_id": branch["branch_id"],
-            "variant": branch["variant"],
-            "max_gpu_seconds": branch["max_gpu_seconds"],
-        }
-        for branch in operation["branches"]
-    ]
 
 
 def _winner_run_from_launch(
@@ -3419,767 +2764,21 @@ def teardown_baseten_winner(
     )
 
 
-def _validate_modal_execution_plan(plan, campaign_id, run_id, unit_count):
-    executions = plan.get("executions") if isinstance(plan, dict) else None
-    if (
-        not isinstance(plan, dict)
-        or set(plan)
-        != {"schema_version", "campaign_id", "run_id", "executions"}
-        or plan.get("schema_version") != "milk.modal-execution-plan.v1"
-        or plan.get("campaign_id") != campaign_id
-        or plan.get("run_id") != run_id
-        or not isinstance(executions, list)
-        or len(executions) != unit_count
-    ):
-        raise ValueError("Modal execution plan is invalid")
-    for ordinal, item in enumerate(executions):
-        if (
-            not isinstance(item, dict)
-            or set(item) != {"ordinal", "command", "environment", "resources"}
-            or item.get("ordinal") != ordinal
-            or not isinstance(item.get("command"), list)
-            or not isinstance(item.get("environment"), dict)
-            or not isinstance(item.get("resources"), dict)
-        ):
-            raise ValueError("Modal execution plan entry is invalid")
-    canonical_json(plan)
-    return plan
 
 
-def _modal_budget_identity(modal_identity):
-    if not isinstance(modal_identity, dict):
-        raise ValueError("Modal provider identity is invalid")
-    return modal_provider_identity(
-        modal_identity.get("workspace_id"),
-        modal_identity.get("environment_name"),
-        modal_identity.get("app_name"),
-    )
 
 
-def launch_modal_gpu(
-    modal_jobs,
-    *,
-    store,
-    campaign_id,
-    workload,
-    runtime_image_reference,
-    selection_record,
-    execution_plan,
-    provider_pass_claim_raw,
-    create_authorization_raw,
-    now=lambda: dt.datetime.now(dt.timezone.utc),
-):
-    """Reserve and launch one already-selected Modal GPU operation.
-
-    Provider selection is deliberately outside this function. The immutable
-    selection must exist before this function can prepare or reserve budget.
-    """
-    if not callable(now) or not hasattr(modal_jobs, "launch"):
-        raise ValueError("Modal jobs lifecycle and clock are required")
-    source = _validate_workload(workload)
-    run_id = _workload_run_id(campaign_id, workload)
-    selection = (
-        selection_record.get("selection")
-        if isinstance(selection_record, dict)
-        else None
-    )
-    modal_identity = (
-        selection.get("provider_identity")
-        if isinstance(selection, dict)
-        else None
-    )
-    if (
-        not isinstance(selection_record, dict)
-        or selection_record.get("run_id") != run_id
-        or not isinstance(selection, dict)
-        or selection.get("selected_provider") != "modal"
-        or store.get(_selection_key(campaign_id, run_id))
-        != canonical_json(selection_record)
-    ):
-        raise ValueError("Modal launch requires its immutable fixed selection")
-    budget_identity = _modal_budget_identity(modal_identity)
-    units = _modal_units(workload)
-    plan = _validate_modal_execution_plan(
-        execution_plan,
-        campaign_id,
-        run_id,
-        len(units),
-    )
-    prefix = f"campaigns/v1/{campaign_id}/jobs/{run_id}/modal"
-    create_same(
-        store,
-        f"{prefix}/execution-plan.json",
-        canonical_json(plan),
-        "application/json",
-    )
-    budget = CampaignBudget(
-        store,
-        campaign_id,
-        budget_identity,
-        now=now,
-    )
-    budget.initialize()
-    try:
-        existing_preparation_raw = store.get(f"{prefix}/preparation.json")
-    except FileNotFoundError:
-        existing_preparation = None
-    else:
-        existing_preparation = _strict_object(existing_preparation_raw)
-        if (
-            canonical_json(existing_preparation) != existing_preparation_raw
-            or existing_preparation.get("schema_version")
-            != "milk.modal-launch-group-preparation.v1"
-            or existing_preparation.get("campaign_id") != campaign_id
-            or existing_preparation.get("run_id") != run_id
-            or existing_preparation.get("selection_sha256")
-            != _digest(selection_record)
-            or existing_preparation.get("execution_plan_sha256")
-            != _digest(plan)
-            or existing_preparation.get("state") != "preparing"
-        ):
-            raise ValueError("stored Modal preparation differs")
-        outstanding = budget.status()["outstanding"].get(run_id)
-        if (
-            outstanding is None
-            or outstanding.get("preparation_sha256")
-            != _digest(existing_preparation)
-            or outstanding.get("provider_identity") != budget_identity
-            or outstanding.get("provider_role") != "sandbox"
-        ):
-            raise ValueError("stored Modal preparation differs from budget")
-        return {
-            "schema_version": "milk.modal-launch-group-result.v1",
-            "run_id": run_id,
-            "state": "reconcile_only",
-            "executions": [],
-        }
-
-    current = now()
-    if (
-        not isinstance(current, dt.datetime)
-        or current.tzinfo is None
-        or current.utcoffset() != dt.timedelta(0)
-        or current.microsecond
-    ):
-        raise ValueError("Modal budget clock must return whole-second UTC")
-    wall_seconds = (
-        max(branch["max_gpu_seconds"] for branch in workload["branches"])
-        if workload["type"] == "student_fanout"
-        else workload["max_gpu_seconds"]
-    )
-    preparation_deadline = current + dt.timedelta(
-        seconds=PREPARATION_TIMEOUT_SECONDS
-    )
-    provider_deadline = min(
-        current + dt.timedelta(seconds=wall_seconds),
-        _workload_expiry(workload),
-    )
-    if provider_deadline <= preparation_deadline:
-        raise ValueError("Modal launch has insufficient provider runway")
-    preparation = {
-        "schema_version": "milk.modal-launch-group-preparation.v1",
-        "campaign_id": campaign_id,
-        "run_id": run_id,
-        "selection_sha256": _digest(selection_record),
-        "execution_plan_sha256": _digest(plan),
-        "requested_at": _utc_text(current),
-        "preparation_deadline": _utc_text(preparation_deadline),
-        "provider_deadline_epoch_seconds": math.floor(
-            provider_deadline.timestamp()
-        ),
-        "state": "preparing",
-    }
-    preparation_sha256 = _digest(preparation)
-    owner = budget.prepare(
-        run_id,
-        preparation_sha256,
-        math.floor(preparation_deadline.timestamp()),
-        preparation["provider_deadline_epoch_seconds"],
-    )
-    if owner == "existing":
-        return {
-            "schema_version": "milk.modal-launch-group-result.v1",
-            "run_id": run_id,
-            "state": "reconcile_only",
-            "executions": [],
-        }
-    if owner not in {"created", "switched"}:
-        raise ValueError("Modal budget preparation state is invalid")
-    create_same(
-        store,
-        f"{prefix}/preparation.json",
-        canonical_json(preparation),
-        "application/json",
-    )
-    amount = sum(
-        _minutes(
-            unit.get("max_gpu_seconds", wall_seconds)
-        )
-        * RESERVATION_RATE_MICROUSD_PER_MINUTE
-        for unit in units
-    )
-    reservation = budget.reserve(run_id, amount, preparation_sha256)
-    reserved_at = now()
-    create_same(
-        store,
-        f"{prefix}/reservation.json",
-        canonical_json(reservation),
-        "application/json",
-    )
-    if reservation["state"] != "reserved":
-        return {
-            "schema_version": "milk.modal-launch-group-result.v1",
-            "run_id": run_id,
-            "state": "blocked_budget",
-            "executions": [],
-        }
-    acceptance = gpu_provider_acceptance(
-        campaign_id=campaign_id,
-        workload=workload,
-        selection_record=selection_record,
-        reservation=reservation,
-        provider_pass_claim_raw=provider_pass_claim_raw,
-        create_authorization_raw=create_authorization_raw,
-        expected_budget_provider_identity=budget_identity,
-        reserved_at=reserved_at,
-        accepted_at=now(),
-    )
-    acceptance_raw = encode_provider_acceptance(acceptance)
-    create_same(
-        store,
-        f"claims/v1/{source['claim_sha256']}.json",
-        acceptance_raw,
-        "application/json",
-    )
-    create_same(
-        store,
-        modal_acceptance_key(acceptance),
-        acceptance_raw,
-        "application/json",
-    )
-    timeout_seconds = math.floor(
-        (
-            _utc(acceptance["provider_not_after"], "Modal provider deadline")
-            - _utc(acceptance["create_not_after"], "Modal create deadline")
-        ).total_seconds()
-    )
-    if timeout_seconds < 60:
-        raise ValueError("Modal launch has insufficient accepted sandbox runway")
-    definitions = []
-    for ordinal, (unit, item) in enumerate(zip(units, plan["executions"])):
-        definition = {
-            "schema_version": "milk.modal-execution-definition.v1",
-            "campaign_id": campaign_id,
-            "run_id": run_id,
-            "ordinal": ordinal,
-            "provider_acceptance_sha256": provider_acceptance_sha256(
-                acceptance
-            ),
-            "unit": unit,
-            "runtime_image_reference": runtime_image_reference,
-            "sandbox": {
-                "cpu_physical_cores": 8,
-                "memory_mib": 65_536,
-                "timeout_seconds": timeout_seconds,
-                "workdir": "/opt/dragontales/deploy",
-                "command_sha256": _digest(item["command"]),
-                "environment_sha256": _digest(item["environment"]),
-            },
-            "resources": copy.deepcopy(item["resources"]),
-        }
-        validate_modal_definition(acceptance, definition)
-        definitions.append(definition)
-    for definition in definitions:
-        create_same(
-            store,
-            modal_definition_key(acceptance, definition),
-            canonical_json(definition),
-            "application/json",
-        )
-
-    results = []
-    for definition, item in zip(definitions, plan["executions"]):
-        results.append(
-            modal_jobs.launch(
-                acceptance,
-                definition,
-                item["command"],
-                item["environment"],
-            )
-        )
-    result = {
-        "schema_version": "milk.modal-launch-group-result.v1",
-        "run_id": run_id,
-        "state": (
-            "created"
-            if all(item.get("state") == "created" for item in results)
-            else "hold"
-        ),
-        "executions": results,
-    }
-    create_same(
-        store,
-        f"{prefix}/launch-result.json",
-        canonical_json(result),
-        "application/json",
-    )
-    return result
 
 
-def launch_modal_winner(
-    modal_jobs,
-    *,
-    store,
-    campaign_id,
-    launch,
-    selection_record,
-    execution_plan,
-    image_release_sha256,
-    image_admission_sha256,
-    provider_pass_claim_raw,
-    create_authorization_raw,
-    observed_cost_microusd=0,
-    now=lambda: dt.datetime.now(dt.timezone.utc),
-):
-    """Launch and admit one accepted Modal winner."""
-    if (
-        not callable(now)
-        or not hasattr(modal_jobs, "launch")
-        or not hasattr(modal_jobs, "admit_winner")
-    ):
-        raise ValueError("Modal winner lifecycle and clock are required")
-    run_id = _winner_run_from_launch(
-        campaign_id,
-        launch,
-        image_release_sha256,
-        image_admission_sha256,
-    )
-    source = launch["launch_source"]
-    selection = (
-        selection_record.get("selection")
-        if isinstance(selection_record, dict)
-        else None
-    )
-    identity = (
-        selection.get("provider_identity")
-        if isinstance(selection, dict)
-        else None
-    )
-    if (
-        not isinstance(selection_record, dict)
-        or selection_record.get("run_id") != run_id
-        or selection_record.get("claim_sha256") != source["claim_sha256"]
-        or selection_record.get("outbox_sha256") != source["outbox_sha256"]
-        or not isinstance(selection, dict)
-        or selection.get("selected_provider") != "modal"
-        or store.get(_selection_key(campaign_id, run_id))
-        != canonical_json(selection_record)
-    ):
-        raise ValueError("Modal winner launch requires its immutable selection")
-    budget_identity = _modal_budget_identity(identity)
-    plan = _validate_modal_execution_plan(
-        execution_plan,
-        campaign_id,
-        run_id,
-        1,
-    )
-    prefix = f"campaigns/v1/{campaign_id}/jobs/{run_id}/modal"
-    create_same(
-        store,
-        f"{prefix}/gateway-launch.json",
-        bytes(launch["gateway_launch_raw"]),
-        "application/json",
-    )
-    create_same(
-        store,
-        f"{prefix}/gateway-claim.json",
-        bytes(launch["gateway_claim_raw"]),
-        "application/json",
-    )
-    create_same(
-        store,
-        f"{prefix}/execution-plan.json",
-        canonical_json(plan),
-        "application/json",
-    )
-    try:
-        recovered_reference = store_gateway_winner_result_handoff(
-            store,
-            campaign_id=campaign_id,
-            run_id=run_id,
-        )
-    except FileNotFoundError:
-        pass
-    else:
-        return {
-            "schema_version": "milk.modal-winner-dispatch-result.v1",
-            "run_id": run_id,
-            "state": "admitted",
-            "winner_result_references": [recovered_reference],
-        }
-    budget = CampaignBudget(
-        store,
-        campaign_id,
-        budget_identity,
-        now=now,
-    )
-    budget.initialize()
-    try:
-        existing_preparation_raw = store.get(
-            f"{prefix}/budget-preparation.json"
-        )
-    except FileNotFoundError:
-        existing_preparation = None
-    else:
-        existing_preparation = _strict_object(existing_preparation_raw)
-        if (
-            canonical_json(existing_preparation) != existing_preparation_raw
-            or existing_preparation.get("schema_version")
-            != "milk.modal-winner-budget-preparation.v1"
-            or existing_preparation.get("campaign_id") != campaign_id
-            or existing_preparation.get("run_id") != run_id
-            or existing_preparation.get("selection_sha256")
-            != _digest(selection_record)
-            or existing_preparation.get("execution_plan_sha256")
-            != _digest(plan)
-            or existing_preparation.get("claim_sha256")
-            != source["claim_sha256"]
-            or existing_preparation.get("outbox_sha256")
-            != source["outbox_sha256"]
-            or existing_preparation.get("image_release_sha256")
-            != image_release_sha256
-            or existing_preparation.get("image_admission_sha256")
-            != image_admission_sha256
-            or existing_preparation.get("state") != "preparing"
-        ):
-            raise ValueError("stored Modal winner preparation differs")
-        outstanding = budget.status()["outstanding"].get(run_id)
-        if (
-            outstanding is None
-            or outstanding.get("preparation_sha256")
-            != _digest(existing_preparation)
-            or outstanding.get("provider_identity") != budget_identity
-            or outstanding.get("provider_role") != "sandbox"
-        ):
-            raise ValueError(
-                "stored Modal winner preparation differs from budget"
-            )
-        try:
-            store.get(f"{prefix}/create-intents/00.json")
-        except FileNotFoundError:
-            admitted = None
-        else:
-            acceptance, stored_plan, definitions = _stored_modal_run(
-                store,
-                campaign_id,
-                run_id,
-            )
-            if acceptance.get("selection") != selection:
-                raise ValueError("stored Modal winner acceptance differs")
-            item = stored_plan["executions"][0]
-            admitted = modal_jobs.admit_winner(
-                acceptance,
-                definitions[0],
-                item["command"],
-                item["environment"],
-                gateway_claim_raw=store.get(
-                    f"{prefix}/gateway-claim.json"
-                ),
-                observed_cost_microusd=observed_cost_microusd,
-            )
-        references = []
-        if admitted is not None and admitted.get("state") == "admitted":
-            references.append(
-                store_gateway_winner_result_handoff(
-                    store,
-                    campaign_id=campaign_id,
-                    run_id=run_id,
-                )
-            )
-        return {
-            "schema_version": "milk.modal-winner-dispatch-result.v1",
-            "run_id": run_id,
-            "state": (
-                "reconcile_only"
-                if admitted is None
-                else admitted.get("state")
-            ),
-            "winner_result_references": references,
-        }
-    current = now()
-    if (
-        not isinstance(current, dt.datetime)
-        or current.tzinfo is None
-        or current.utcoffset() != dt.timedelta(0)
-        or current.microsecond
-    ):
-        raise ValueError("Modal winner budget clock must return whole-second UTC")
-    wall_seconds = launch["operation"]["max_wall_seconds"]
-    preparation_deadline = current + dt.timedelta(
-        seconds=PREPARATION_TIMEOUT_SECONDS
-    )
-    provider_deadline = min(
-        current + dt.timedelta(seconds=wall_seconds),
-        _gateway_time(source["expires_at"], "winner expiry")[0],
-    )
-    if provider_deadline <= preparation_deadline:
-        raise ValueError("Modal winner has insufficient provider runway")
-    preparation = {
-        "schema_version": "milk.modal-winner-budget-preparation.v1",
-        "campaign_id": campaign_id,
-        "run_id": run_id,
-        "selection_sha256": _digest(selection_record),
-        "execution_plan_sha256": _digest(plan),
-        "claim_sha256": source["claim_sha256"],
-        "outbox_sha256": source["outbox_sha256"],
-        "image_release_sha256": image_release_sha256,
-        "image_admission_sha256": image_admission_sha256,
-        "requested_at": _utc_text(current),
-        "preparation_deadline": _utc_text(preparation_deadline),
-        "provider_deadline_epoch_seconds": math.floor(
-            provider_deadline.timestamp()
-        ),
-        "state": "preparing",
-    }
-    preparation_sha256 = _digest(preparation)
-    owner = budget.prepare(
-        run_id,
-        preparation_sha256,
-        math.floor(preparation_deadline.timestamp()),
-        preparation["provider_deadline_epoch_seconds"],
-    )
-    if owner != "created":
-        return {
-            "schema_version": "milk.modal-winner-dispatch-result.v1",
-            "run_id": run_id,
-            "state": "reconcile_only",
-            "winner_result_references": [],
-        }
-    create_same(
-        store,
-        f"{prefix}/budget-preparation.json",
-        canonical_json(preparation),
-        "application/json",
-    )
-    amount = _minutes(wall_seconds) * RESERVATION_RATE_MICROUSD_PER_MINUTE
-    if amount > launch["operation"]["max_cost_microusd"]:
-        raise ValueError("Modal winner cost authority is insufficient")
-    reservation = budget.reserve(run_id, amount, preparation_sha256)
-    reserved_at = now()
-    create_same(
-        store,
-        f"{prefix}/reservation.json",
-        canonical_json(reservation),
-        "application/json",
-    )
-    if reservation["state"] != "reserved":
-        return {
-            "schema_version": "milk.modal-winner-dispatch-result.v1",
-            "run_id": run_id,
-            "state": "blocked_budget",
-            "winner_result_references": [],
-        }
-    acceptance = modal_winner_provider_acceptance(
-        campaign_id=campaign_id,
-        launch=launch,
-        run_id=run_id,
-        selection_record=selection_record,
-        reservation=reservation,
-        image_release_sha256=image_release_sha256,
-        image_admission_sha256=image_admission_sha256,
-        provider_pass_claim_raw=provider_pass_claim_raw,
-        create_authorization_raw=create_authorization_raw,
-        reserved_at=reserved_at,
-        accepted_at=now(),
-    )
-    acceptance_raw = encode_provider_acceptance(acceptance)
-    create_same(
-        store,
-        f"claims/v1/{source['claim_sha256']}.json",
-        acceptance_raw,
-        "application/json",
-    )
-    create_same(
-        store,
-        modal_acceptance_key(acceptance),
-        acceptance_raw,
-        "application/json",
-    )
-    timeout_seconds = math.floor(
-        (
-            _utc(acceptance["provider_not_after"], "Modal winner deadline")
-            - _utc(acceptance["create_not_after"], "Modal winner create deadline")
-        ).total_seconds()
-    )
-    if timeout_seconds < 60:
-        raise ValueError("Modal winner has insufficient accepted sandbox runway")
-    item = plan["executions"][0]
-    operation = launch["operation"]
-    definition = {
-        "schema_version": "milk.modal-execution-definition.v1",
-        "campaign_id": campaign_id,
-        "run_id": run_id,
-        "ordinal": 0,
-        "provider_acceptance_sha256": provider_acceptance_sha256(acceptance),
-        "unit": {
-            "kind": "student_winner_deployment",
-            "student_job_id": operation["student_job_id"],
-            "student_result_sha256": operation["student_result_sha256"],
-            "winner": operation["winner"],
-        },
-        "runtime_image_reference": launch["runtime_image_reference"],
-        "sandbox": {
-            "cpu_physical_cores": 8,
-            "memory_mib": 65_536,
-            "timeout_seconds": timeout_seconds,
-            "workdir": "/opt/dragontales/deploy",
-            "command_sha256": _digest(item["command"]),
-            "environment_sha256": _digest(item["environment"]),
-        },
-        "resources": copy.deepcopy(item["resources"]),
-    }
-    validate_modal_definition(acceptance, definition)
-    create_same(
-        store,
-        modal_definition_key(acceptance, definition),
-        canonical_json(definition),
-        "application/json",
-    )
-    launched = modal_jobs.launch(
-        acceptance,
-        definition,
-        item["command"],
-        item["environment"],
-    )
-    admitted = modal_jobs.admit_winner(
-        acceptance,
-        definition,
-        item["command"],
-        item["environment"],
-        gateway_claim_raw=launch["gateway_claim_raw"],
-        observed_cost_microusd=observed_cost_microusd,
-    )
-    references = []
-    if admitted.get("state") == "admitted":
-        references.append(
-            store_gateway_winner_result_handoff(
-                store,
-                campaign_id=campaign_id,
-                run_id=run_id,
-            )
-        )
-    validate_winner_result_references(campaign_id, references)
-    result = {
-        "schema_version": "milk.modal-winner-dispatch-result.v1",
-        "run_id": run_id,
-        "state": admitted.get("state", launched.get("state", "hold")),
-        "winner_result_references": references,
-    }
-    create_same(
-        store,
-        f"{prefix}/launch-result.json",
-        canonical_json(result),
-        "application/json",
-    )
-    return result
 
 
-def _stored_modal_run(store, campaign_id, run_id):
-    if not _is_hex64(campaign_id) or not _is_hex64(run_id):
-        raise ValueError("Modal run identity is invalid")
-    prefix = f"campaigns/v1/{campaign_id}/jobs/{run_id}/modal"
-    acceptance_raw = store.get(f"{prefix}/provider-acceptance.json")
-    acceptance = _strict_object(acceptance_raw)
-    if (
-        acceptance.get("campaign_id") != campaign_id
-        or acceptance.get("run_id") != run_id
-        or encode_provider_acceptance(acceptance) != acceptance_raw
-    ):
-        raise ValueError("stored Modal provider acceptance differs")
-    plan_raw = store.get(f"{prefix}/execution-plan.json")
-    plan = _strict_object(plan_raw)
-    if canonical_json(plan) != plan_raw:
-        raise ValueError("stored Modal execution plan is not canonical")
-    executions = plan.get("executions") if isinstance(plan, dict) else None
-    expected_count = (
-        1
-        if acceptance.get("schema_version")
-        == "milk.winner-provider-acceptance.v1"
-        or acceptance.get("operation", {}).get("kind")
-        in {"teacher_run", "student_train_merge"}
-        else 3
-        if acceptance.get("operation", {}).get("kind") == "student_fanout"
-        else -1
-    )
-    _validate_modal_execution_plan(
-        plan,
-        campaign_id,
-        run_id,
-        expected_count,
-    )
-    definitions = []
-    for item in executions:
-        key = f"{prefix}/execution-definitions/{item['ordinal']:02d}.json"
-        definition_raw = store.get(key)
-        definition = _strict_object(definition_raw)
-        if canonical_json(definition) != definition_raw:
-            raise ValueError("stored Modal execution definition is not canonical")
-        validate_modal_definition(acceptance, definition)
-        definitions.append(definition)
-    return acceptance, plan, definitions
 
 
-def reconcile_modal_gpu(modal_jobs, *, store, campaign_id, run_id):
-    """Recover Modal work under the caller's current reconcile lease."""
-    acceptance, plan, definitions = _stored_modal_run(
-        store,
-        campaign_id,
-        run_id,
-    )
-    results = [
-        modal_jobs.recover(
-            acceptance,
-            definition,
-            item["command"],
-            item["environment"],
-        )
-        for definition, item in zip(definitions, plan["executions"])
-    ]
-    return {
-        "schema_version": "milk.modal-reconciliation-result.v1",
-        "run_id": run_id,
-        "state": "reconciled",
-        "executions": results,
-    }
 
 
-def teardown_modal_gpu(modal_jobs, *, store, campaign_id, run_id):
-    """Terminate Modal work under a later lease without original create bytes."""
-    acceptance, plan, definitions = _stored_modal_run(
-        store,
-        campaign_id,
-        run_id,
-    )
-    results = [
-        modal_jobs.terminate(
-            acceptance,
-            definition,
-            item["command"],
-            item["environment"],
-        )
-        for definition, item in zip(definitions, plan["executions"])
-    ]
-    return {
-        "schema_version": "milk.modal-teardown-result.v1",
-        "run_id": run_id,
-        "state": "zero"
-        if all(item.get("state") in {"terminated", "zero"} for item in results)
-        else "hold",
-        "executions": results,
-    }
 
 
-def _authorized_winner_acceptance(authorization_record, selected_provider):
+def _authorized_winner_acceptance(authorization_record):
     if not isinstance(authorization_record, dict):
         raise ValueError("provider teardown authority record is invalid")
     authorization = authorization_record.get("authorization")
@@ -4188,7 +2787,7 @@ def _authorized_winner_acceptance(authorization_record, selected_provider):
     gateway_claim_raw = authorization_record.get("gateway_claim_raw")
     if (
         not isinstance(authorization, dict)
-        or authorization.get("selected_provider") != selected_provider
+        or authorization.get("selected_provider") != "baseten"
         or not isinstance(authorization_raw, (bytes, bytearray))
         or hashlib.sha256(authorization_raw).hexdigest()
         != authorization_record.get("authorization_sha256")
@@ -4211,14 +2810,14 @@ def _authorized_winner_acceptance(authorization_record, selected_provider):
         or acceptance.get("claim_sha256")
         != authorization.get("claim_sha256")
         or acceptance.get("selection", {}).get("selected_provider")
-        != selected_provider
+        != "baseten"
         or winner_result.get("student_job_id")
         != authorization.get("student_job_id")
         or winner_result.get("admission", {}).get("execution_id")
         != authorization.get("execution_id")
     ):
         raise ValueError("provider teardown winner acceptance differs")
-    encode_provider_acceptance(acceptance)
+    encode_baseten_provider_acceptance(acceptance)
     return authorization, winner_result, acceptance
 
 
@@ -4233,7 +2832,6 @@ def teardown_authorized_baseten_winner(
     """Run one gateway-authorized Baseten teardown under the live lease."""
     authorization, unused_result, embedded = _authorized_winner_acceptance(
         authorization_record,
-        "baseten",
     )
     del unused_result
     if embedded.get("campaign_id") != campaign_id:
@@ -4245,7 +2843,7 @@ def teardown_authorized_baseten_winner(
     stored_raw = store.get(f"{prefix}/provider-acceptance.json")
     stored = _strict_object(stored_raw)
     if (
-        encode_provider_acceptance(stored) != stored_raw
+        encode_baseten_provider_acceptance(stored) != stored_raw
         or stored != embedded
         or hashlib.sha256(
             store.get(f"{prefix}/gateway-claim.json")
@@ -4284,139 +2882,8 @@ def teardown_authorized_baseten_winner(
     return result
 
 
-def teardown_authorized_modal_winner(
-    modal_jobs,
-    *,
-    store,
-    campaign_id,
-    authorization_record,
-    candidate_absence_raw,
-):
-    """Run one gateway-authorized Modal teardown under the live lease."""
-    authorization, unused_result, embedded = _authorized_winner_acceptance(
-        authorization_record,
-        "modal",
-    )
-    del unused_result
-    if (
-        embedded.get("campaign_id") != campaign_id
-        or not hasattr(modal_jobs, "teardown_winner")
-    ):
-        raise ValueError("Modal teardown campaign or lifecycle differs")
-    _validate_modal_candidate_absence_ack(
-        candidate_absence_raw,
-        authorization,
-        authorization_record["winner_result"],
-    )
-    run_id = authorization["run_id"]
-    acceptance, plan, definitions = _stored_modal_run(
-        store,
-        campaign_id,
-        run_id,
-    )
-    prefix = f"campaigns/v1/{campaign_id}/jobs/{run_id}/modal"
-    claim_raw = store.get(f"{prefix}/gateway-claim.json")
-    if (
-        acceptance != embedded
-        or len(definitions) != 1
-        or hashlib.sha256(claim_raw).hexdigest()
-        != authorization["claim_sha256"]
-        or authorization_record.get("gateway_claim_raw") is not None
-        and claim_raw != authorization_record["gateway_claim_raw"]
-    ):
-        raise ValueError("stored Modal winner differs from teardown authority")
-    item = plan["executions"][0]
-    result = modal_jobs.teardown_winner(
-        acceptance,
-        definitions[0],
-        item["command"],
-        item["environment"],
-        gateway_claim_raw=claim_raw,
-        canary_route_raw=authorization_record.get("canary_route_raw"),
-        zero_route_raw=authorization_record.get("zero_route_raw"),
-    )
-    if result.get("state") != "zero":
-        raise RuntimeError("Modal winner teardown did not verify zero GPU")
-    return result
 
 
-def _validate_modal_candidate_absence_ack(raw, authorization, winner_result):
-    if (
-        not isinstance(raw, (bytes, bytearray))
-        or not 1 <= len(raw) <= MAX_MODAL_CANDIDATE_ACK_BYTES
-    ):
-        raise ValueError("Modal candidate absence acknowledgement is invalid")
-    raw = bytes(raw)
-    value = _strict_object(raw)
-    anchor = value.get("gateway_anchor")
-    admission = winner_result.get("admission")
-    if (
-        canonical_json(value) != raw
-        or set(value)
-        != {
-            "candidate_key_sha256",
-            "gateway_anchor",
-            "gateway_release_id",
-            "gateway_release_sha256",
-            "gateway_result_sha256",
-            "run_id",
-            "schema_version",
-            "selected_provider",
-            "service_not_after",
-            "state",
-            "verified_at",
-            "winner_admission_sha256",
-        }
-        or value.get("schema_version")
-        != "milk.modal-candidate-key-ack.v1"
-        or value.get("selected_provider") != "modal"
-        or value.get("state") != "absent"
-        or value.get("run_id") != authorization.get("run_id")
-        or value.get("gateway_result_sha256")
-        != hashlib.sha256(
-            winner_contract.result_bytes(winner_result)
-        ).hexdigest()
-        or not isinstance(admission, dict)
-        or value.get("candidate_key_sha256")
-        != admission.get("candidate_api_key_sha256")
-        or value.get("service_not_after")
-        != admission.get("service_not_after")
-        or value.get("winner_admission_sha256")
-        != hashlib.sha256(winner_contract.receipt_bytes(admission)).hexdigest()
-        or not _valid_uuid(value.get("gateway_release_id"))
-        or not _is_hex64(value.get("gateway_release_sha256"))
-        or not isinstance(anchor, dict)
-        or set(anchor)
-        != {
-            "source_commit",
-            "image_admission_sha256",
-            "release_sha256",
-            "application_id",
-            "application_version",
-            "container_image",
-            "worker_version_id",
-        }
-        or re.fullmatch(r"[0-9a-f]{40}", anchor.get("source_commit") or "")
-        is None
-        or not _is_hex64(anchor.get("image_admission_sha256"))
-        or not _is_hex64(anchor.get("release_sha256"))
-        or not _valid_uuid(anchor.get("application_id"))
-        or type(anchor.get("application_version")) is not int
-        or anchor["application_version"] <= 0
-        or not isinstance(anchor.get("container_image"), str)
-        or not 1 <= len(anchor["container_image"].encode()) <= 2048
-        or not _valid_uuid(anchor.get("worker_version_id"))
-        or _gateway_time(
-            value.get("verified_at"),
-            "Modal candidate absence verified_at",
-        )[0]
-        < _gateway_time(
-            authorization.get("authorized_at"),
-            "provider teardown authorized_at",
-        )[0]
-    ):
-        raise ValueError("Modal candidate absence acknowledgement differs")
-    return value
 
 
 def store_gateway_winner_result_handoff(
@@ -4834,7 +3301,7 @@ def provider_teardown_result_bytes(result):
         or not _is_hex64(result.get("student_job_id"))
         or not _is_hex64(result.get("claim_sha256"))
         or not _is_hex64(result.get("run_id"))
-        or result.get("selected_provider") not in {"baseten", "modal"}
+        or result.get("selected_provider") != "baseten"
         or not isinstance(result.get("execution_id"), str)
         or OPAQUE.fullmatch(result["execution_id"]) is None
         or not _is_hex64(result.get("teardown_authorization_sha256"))
@@ -5028,65 +3495,24 @@ def _winner_teardown_evidence(
 ):
     authorization, winner_result, acceptance = _authorized_winner_acceptance(
         authorization_record,
-        authorization_record["authorization"]["selected_provider"],
     )
     run_id = authorization["run_id"]
-    provider = authorization["selected_provider"]
     winner_prefix = f"campaigns/v1/{campaign_id}/winner-jobs/{run_id}"
-    if provider == "baseten":
-        zero_key = f"{winner_prefix}/zero-gpu.json"
-        log_key = (
-            f"{winner_prefix}/logs/baseten/"
-            f"{provider_acceptance_sha256(acceptance)}/index.json"
-        )
-        zero = _strict_object(store.get(zero_key))
-        observed_at = zero.get("observed_at")
-        if (
-            zero.get("schema_version")
-            != "milk.baseten-zero-gpu-verification.v1"
-            or zero.get("provider_acceptance_sha256")
-            != provider_acceptance_sha256(acceptance)
-            or zero.get("state") != "zero"
-        ):
-            raise ValueError("Baseten zero-GPU evidence differs")
-    else:
-        zero_key = f"{winner_prefix}/modal-zero-gpu.json"
-        zero = _strict_object(store.get(zero_key))
-        verification = zero.get("zero_gpu_verification")
-        observed_at = (
-            verification.get("observed_at")
-            if isinstance(verification, dict)
-            else None
-        )
-        if (
-            zero.get("schema_version")
-            != "milk.modal-winner-teardown-result.v1"
-            or zero.get("provider_acceptance_sha256")
-            != provider_acceptance_sha256(acceptance)
-            or zero.get("state") != "zero"
-            or not isinstance(verification, dict)
-            or verification.get("state") != "zero"
-        ):
-            raise ValueError("Modal zero-GPU evidence differs")
-        plans_prefix = (
-            f"campaigns/v1/{campaign_id}/jobs/{run_id}/modal/"
-            "winner/log-plans"
-        )
-        plan_keys = store.list(plans_prefix, limit=2)
-        if (
-            len(plan_keys) != 1
-            or not plan_keys[0].startswith(plans_prefix + "/")
-            or not plan_keys[0].endswith(".json")
-            or not _is_hex64(
-                plan_keys[0][len(plans_prefix) + 1 : -len(".json")]
-            )
-        ):
-            raise ValueError("Modal winner private log plan is not unique")
-        stream_id = plan_keys[0][len(plans_prefix) + 1 : -len(".json")]
-        log_key = (
-            f"campaigns/v1/{campaign_id}/jobs/{run_id}/modal/"
-            f"logs/modal/{stream_id}/index.json"
-        )
+    zero_key = f"{winner_prefix}/zero-gpu.json"
+    log_key = (
+        f"{winner_prefix}/logs/baseten/"
+        f"{provider_acceptance_sha256(acceptance)}/index.json"
+    )
+    zero = _strict_object(store.get(zero_key))
+    observed_at = zero.get("observed_at")
+    if (
+        zero.get("schema_version")
+        != "milk.baseten-zero-gpu-verification.v1"
+        or zero.get("provider_acceptance_sha256")
+        != provider_acceptance_sha256(acceptance)
+        or zero.get("state") != "zero"
+    ):
+        raise ValueError("Baseten zero-GPU evidence differs")
     observed_at = _gateway_time(
         observed_at,
         "provider zero observed_at",
@@ -5103,10 +3529,8 @@ def _winner_teardown_evidence(
     # billing receipt is verified, settle the full reservation fail-closed.
     accounted_microusd = acceptance["reserved_microusd"]
     provider_identity = acceptance["selection"]["provider_identity"]
-    budget_identity = (
-        baseten_serving_provider_identity(provider_identity.get("team_name"))
-        if provider == "baseten"
-        else _modal_budget_identity(provider_identity)
+    budget_identity = baseten_serving_provider_identity(
+        provider_identity.get("team_name")
     )
     budget = CampaignBudget(store, campaign_id, budget_identity)
     budget.initialize()
@@ -9274,427 +7698,20 @@ def dispatch_baseten_outboxes(
     }
 
 
-def _modal_identity_from_arguments(arguments):
-    value = {
-        "provider": "modal",
-        "workspace_id": arguments.modal_workspace_id,
-        "workspace_name": arguments.modal_workspace_name,
-        "environment_id": arguments.modal_environment_id,
-        "environment_name": arguments.modal_environment_name,
-        "app_id": arguments.modal_app_id,
-        "app_name": arguments.modal_app_name,
-    }
-    _modal_preflight(
-        {
-            "schema_version": MODAL_PREFLIGHT_SCHEMA,
-            "provider": "modal",
-            "provider_identity": value,
-            "outcome": "ready",
-            "evidence_sha256": "0" * 64,
-            "observed_at": "1970-01-01T00:00:00Z",
-        },
-        value,
-    )
-    return value
 
 
-def _modal_named_resource(name, object_id, required_keys):
-    value = {
-        "name": name,
-        "object_id": object_id,
-        "required_keys": sorted(required_keys),
-    }
-    if (
-        not isinstance(name, str)
-        or OPAQUE.fullmatch(name) is None
-        or not isinstance(object_id, str)
-        or OPAQUE.fullmatch(object_id) is None
-        or not required_keys
-    ):
-        raise ValueError("Modal named resource is invalid")
-    return value
 
 
-def _modal_resources_from_arguments(arguments, settings):
-    control_keys = [
-        "MILK_CONTROL_STORE_ACCESS_KEY_ID",
-        "MILK_CONTROL_STORE_SECRET_ACCESS_KEY",
-    ]
-    if settings["control_store_session_token_secret"] is not None:
-        control_keys.append("MILK_CONTROL_STORE_SESSION_TOKEN")
-    capture_keys = [
-        "MILK_CAPTURE" + "_STORE_ACCESS_KEY_ID",
-        "MILK_CAPTURE" + "_STORE_SECRET_ACCESS_KEY",
-    ]
-    if settings["capture_store_session_token_secret"] is not None:
-        capture_keys.append("MILK_CAPTURE" + "_STORE_SESSION_TOKEN")
-    resources = {
-        "registry": _modal_named_resource(
-            arguments.modal_registry_secret_name,
-            arguments.modal_registry_secret_id,
-            ["REGISTRY_PASSWORD", "REGISTRY_USERNAME"],
-        ),
-        "config": _modal_named_resource(
-            arguments.modal_config_secret_name,
-            arguments.modal_config_secret_id,
-            ["DRAGONTALES_CONFIG_JSON"],
-        ),
-        "control": _modal_named_resource(
-            arguments.modal_control_secret_name,
-            arguments.modal_control_secret_id,
-            control_keys,
-        ),
-        "capture": _modal_named_resource(
-            arguments.modal_capture_secret_name,
-            arguments.modal_capture_secret_id,
-            capture_keys,
-        ),
-        "candidate": _modal_named_resource(
-            arguments.modal_candidate_secret_name,
-            arguments.modal_candidate_secret_id,
-            ["DRAGONTALES_CANDIDATE_API_KEY"],
-        ),
-        "teacher_volume": {
-            "name": arguments.modal_teacher_volume_name,
-            "object_id": arguments.modal_teacher_volume_id,
-            "mount_path": adapter.TEACHER_MODEL_MOUNT,
-            "read_only": True,
-        },
-        "student_train_volume": {
-            "name": arguments.modal_student_train_volume_name,
-            "object_id": arguments.modal_student_train_volume_id,
-            "mount_path": adapter.STUDENT_MODEL_MOUNT,
-            "read_only": True,
-        },
-    }
-    named = [
-        resources[key]
-        for key in ("registry", "config", "control", "capture", "candidate")
-    ] + [resources["teacher_volume"], resources["student_train_volume"]]
-    if (
-        any(
-            not isinstance(item.get("name"), str)
-            or OPAQUE.fullmatch(item["name"]) is None
-            or not isinstance(item.get("object_id"), str)
-            or OPAQUE.fullmatch(item["object_id"]) is None
-            for item in named
-        )
-        or len({item["name"] for item in named}) != len(named)
-        or len({item["object_id"] for item in named}) != len(named)
-    ):
-        raise ValueError("Modal resource identities must be pairwise distinct")
-    return resources
 
 
-def _modal_plan_resources(resources, kind):
-    secrets = [resources["config"], resources["control"]]
-    volumes = []
-    if kind == "teacher_run":
-        secrets.append(resources["capture"])
-        volumes.append(resources["teacher_volume"])
-    elif kind == "student_train_merge":
-        volumes.append(resources["student_train_volume"])
-    elif kind == "student_winner_deployment":
-        secrets.append(resources["candidate"])
-    return {
-        "registry_secret": copy.deepcopy(resources["registry"]),
-        "secrets": copy.deepcopy(secrets),
-        "volumes": copy.deepcopy(volumes),
-    }
 
 
-def _modal_execution_command(unit, settings):
-    kind = unit["kind"]
-    identity = "; ".join(
-        adapter.store_identity_commands(kind == "teacher_run")
-    )
-    common = (
-        "set -eu; umask 077; "
-        + identity
-        + "; mkdir -m 0700 -p /tmp/dragontales; "
-        "printf %s \"$DRAGONTALES_CONFIG_JSON\" >"
-        "/tmp/dragontales/gateway.json; chmod 0400 "
-        "/tmp/dragontales/gateway.json; unset DRAGONTALES_CONFIG_JSON; "
-    )
-    if kind == "teacher_run":
-        command = (
-            common
-            + "exec /opt/dragontales/job.sh --config "
-            "/tmp/dragontales/gateway.json --teacher-run-id "
-            '"$DRAGONTALES_TEACHER_RUN_ID"'
-        )
-        environment = {
-            "DRAGONTALES_TEACHER_RUN_ID": unit["teacher_run_id"],
-            "MILK_CAPTURE_STORE_ACCOUNT_ID": settings["capture_store_account_id"],
-            "MILK_EXPECTED_CAPTURE_STORE_IDENTITY_SHA256": settings[
-                "capture_store_identity_sha256"
-            ],
-            "MILK_CONTROL_STORE_ACCOUNT_ID": settings["control_store_account_id"],
-            "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": settings[
-                "control_store_identity_sha256"
-            ],
-        }
-    else:
-        student_job_id = unit["student_job_id"]
-        if kind == "student_train_merge":
-            action = "train"
-            arguments = ""
-        elif kind == "student_branch":
-            action = "branch"
-            arguments = f" --variant {unit['variant']}"
-        else:
-            raise ValueError("Modal ordinary GPU unit is invalid")
-        command = (
-            common
-            + "exec /opt/dragontales/deploy/student-job.sh "
-            + action
-            + " --config /tmp/dragontales/gateway.json --student-job-id "
-            '"$DRAGONTALES_STUDENT_JOB_ID"'
-            + arguments
-            + " --work-dir /tmp/dragontales-work"
-        )
-        environment = {
-            "DRAGONTALES_STUDENT_JOB_ID": student_job_id,
-            "MILK_CONTROL_STORE_ACCOUNT_ID": settings["control_store_account_id"],
-            "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": settings[
-                "control_store_identity_sha256"
-            ],
-        }
-    return ["/bin/sh", "-c", command], environment
 
 
-def _modal_winner_command(student_job_id, model_alias, settings):
-    gateway_binary = "/usr/local/bin/dragontales-" + "gateway"
-    command = (
-        "set -eu; umask 077; mkdir -m 0700 -p /tmp/dragontales; "
-        "printf %s \"$DRAGONTALES_CONFIG_JSON\" >"
-        "/tmp/dragontales/gateway.json; chmod 0400 "
-        "/tmp/dragontales/gateway.json; printf %s "
-        '"$DRAGONTALES_CANDIDATE_API_KEY" >'
-        "/tmp/dragontales-candidate.key; chmod 0400 "
-        "/tmp/dragontales-candidate.key; "
-        "python3 -c 'import hashlib,json,os,re; "
-        "account=os.environ.get(\"MILK_CONTROL_STORE_ACCOUNT_ID\"); "
-        "access=os.environ.get(\"MILK_CONTROL_STORE_ACCESS_KEY_ID\"); "
-        "expected=os.environ.get(\"MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256\"); "
-        "values=(account,access); "
-        "valid=all(value and not any(character.isspace() for character in value) for value in values); "
-        "raw=(json.dumps({\"account_id\":account,\"access_key_id\":access},ensure_ascii=False,separators=(\",\",\":\"),sort_keys=True)+\"\\n\").encode(); "
-        "raise SystemExit(0 if valid and re.fullmatch(\"[0-9a-f]{64}\",expected or \"\") and hashlib.sha256(raw).hexdigest()==expected else 64)'; "
-        + gateway_binary
-        + " "
-        "--config /tmp/dragontales/gateway.json materialize-student-winner "
-        '--student-job-id "$DRAGONTALES_STUDENT_JOB_ID" --stage-dir '
-        "/tmp/dragontales-winner > /tmp/dragontales/materialize.stdout; "
-        "unset DRAGONTALES_CONFIG_JSON DRAGONTALES_CANDIDATE_API_KEY "
-        "MILK_CONTROL_STORE_ACCESS_KEY_ID "
-        "MILK_CONTROL_STORE_SECRET_ACCESS_KEY "
-        "MILK_CONTROL_STORE_SESSION_TOKEN "
-        "MILK_CONTROL_STORE_ACCOUNT_ID "
-        "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256; cat "
-        "/tmp/dragontales/materialize.stdout; exec "
-        "/opt/dragontales/deploy/student-job.sh serve --model "
-        "/tmp/dragontales-winner/model --model-manifest "
-        "/tmp/dragontales-winner/model-manifest.json --model-alias "
-        '"$DRAGONTALES_MODEL_ALIAS" --api-key-file '
-        "/tmp/dragontales-candidate.key"
-    )
-    return ["/bin/sh", "-c", command], {
-        "DRAGONTALES_MODEL_ALIAS": model_alias,
-        "DRAGONTALES_STUDENT_JOB_ID": student_job_id,
-        "MILK_CONTROL_STORE_ACCOUNT_ID": settings["control_store_account_id"],
-        "MILK_EXPECTED_CONTROL_STORE_IDENTITY_SHA256": settings[
-            "control_store_identity_sha256"
-        ],
-    }
 
 
-def deterministic_cross_provider_inputs(
-    control_store,
-    *,
-    campaign_id,
-    scope_prefix,
-    settings,
-    modal_resources,
-    winner_model_alias,
-    current,
-):
-    """Build every provider plan from the one immutable pass configuration."""
-    if (
-        not isinstance(winner_model_alias, str)
-        or winner_contract.MODEL_ALIAS.fullmatch(winner_model_alias) is None
-    ):
-        raise ValueError("winner model alias is invalid")
-    launches = discover_gpu_launches(control_store, scope_prefix, current)
-    plans = {}
-    winner_values = {}
-    for launch in launches:
-        operation = launch["operation"]
-        if operation["kind"] == "student_winner_deployment":
-            run_id = _winner_run_from_launch(
-                campaign_id,
-                launch,
-                settings["image_release_sha256"],
-                settings["student_branch_image_admission_sha256"],
-            )
-            command, environment = _modal_winner_command(
-                operation["student_job_id"],
-                winner_model_alias,
-                settings,
-            )
-            units = [operation]
-            winner_values[run_id] = winner_contract.settings(
-                launch["runtime_image_reference"],
-                operation["student_job_id"],
-                winner_model_alias,
-                "DOCKER_REGISTRY_ghcr.io",
-                settings["config_secret"],
-                settings["control_store_account_id"],
-                settings["control_store_identity_sha256"],
-                settings["control_store_access_key_secret"],
-                settings["control_store_secret_key_secret"],
-                settings["control_store_session_token_secret"],
-            )
-            commands = [(command, environment)]
-        else:
-            workload, unused_entries = _workload_and_entries(launch, settings)
-            del unused_entries
-            run_id = _workload_run_id(campaign_id, workload)
-            units = _modal_units(workload)
-            commands = [_modal_execution_command(unit, settings) for unit in units]
-        executions = []
-        for ordinal, (unit, command_and_environment) in enumerate(
-            zip(units, commands)
-        ):
-            command, environment = command_and_environment
-            executions.append(
-                {
-                    "ordinal": ordinal,
-                    "command": command,
-                    "environment": environment,
-                    "resources": _modal_plan_resources(
-                        modal_resources,
-                        unit["kind"],
-                    ),
-                }
-            )
-        plans[run_id] = {
-            "schema_version": "milk.modal-execution-plan.v1",
-            "campaign_id": campaign_id,
-            "run_id": run_id,
-            "executions": executions,
-        }
-        _validate_modal_execution_plan(
-            plans[run_id],
-            campaign_id,
-            run_id,
-            len(units),
-        )
-    return plans, winner_values
 
 
-def modal_ready_preflight(
-    modal_jobs,
-    provider_identity,
-    plans,
-    *,
-    now=lambda: dt.datetime.now(dt.timezone.utc).replace(microsecond=0),
-):
-    """Verify the exact existing Modal workspace, app, and named resources."""
-    if not isinstance(modal_jobs, ModalJobs) or not callable(now):
-        raise ValueError("concrete Modal preflight runtime is required")
-    sdk = modal_jobs.modal
-
-    def call(function, *arguments, **keywords):
-        modal_jobs.request_guard()
-        return function(*arguments, **keywords)
-
-    workspace = call(sdk.Workspace.from_context)
-    call(workspace.hydrate)
-    environment = call(
-        sdk.Environment.from_name,
-        provider_identity["environment_name"],
-        create_if_missing=False,
-    )
-    call(environment.hydrate)
-    app = call(
-        sdk.App.lookup,
-        provider_identity["app_name"],
-        create_if_missing=False,
-        environment_name=provider_identity["environment_name"],
-    )
-    if (
-        getattr(workspace, "name", None) != provider_identity["workspace_name"]
-        or getattr(environment, "object_id", None)
-        != provider_identity["environment_id"]
-        or getattr(environment, "name", None)
-        != provider_identity["environment_name"]
-        or getattr(app, "app_id", None) != provider_identity["app_id"]
-        or getattr(app, "name", None) != provider_identity["app_name"]
-    ):
-        raise ValueError("Modal provider identity differs during preflight")
-    resources = {}
-    campaign_ids = set()
-    for plan in plans.values():
-        campaign_ids.add(plan.get("campaign_id"))
-        for execution in plan["executions"]:
-            accepted = execution["resources"]
-            for spec in [accepted["registry_secret"], *accepted["secrets"]]:
-                key = ("secret", spec["object_id"])
-                if key in resources and resources[key] != spec:
-                    raise ValueError("Modal named resource identity conflicts")
-                resources[key] = spec
-            for spec in accepted["volumes"]:
-                key = ("volume", spec["object_id"])
-                if key in resources and resources[key] != spec:
-                    raise ValueError("Modal named resource identity conflicts")
-                resources[key] = spec
-    if len(campaign_ids) != 1 or not _is_hex64(next(iter(campaign_ids), None)):
-        raise ValueError("Modal preflight plans differ by campaign")
-    for (kind, unused_object_id), spec in sorted(resources.items()):
-        del unused_object_id
-        if kind == "secret":
-            handle = call(
-                sdk.Secret.from_name,
-                spec["name"],
-                required_keys=spec["required_keys"],
-                environment_name=provider_identity["environment_name"],
-            )
-        else:
-            handle = call(
-                sdk.Volume.from_name,
-                spec["name"],
-                create_if_missing=False,
-                environment_name=provider_identity["environment_name"],
-            )
-        call(handle.hydrate)
-        if getattr(handle, "object_id", None) != spec["object_id"]:
-            raise ValueError("Modal named resource identity differs")
-    observed_at = _utc_text(now())
-    evidence = {
-        "schema_version": "milk.modal-resource-preflight-evidence.v1",
-        "provider_identity": copy.deepcopy(provider_identity),
-        "resources": [copy.deepcopy(resources[key]) for key in sorted(resources)],
-        "observed_at": observed_at,
-    }
-    evidence_sha256 = _digest(evidence)
-    create_same(
-        modal_jobs.store,
-        (
-            f"campaigns/v1/{next(iter(campaign_ids))}/provider-preflights/"
-            f"modal/{evidence_sha256}.json"
-        ),
-        canonical_json(evidence),
-        "application/json",
-    )
-    return {
-        "schema_version": MODAL_PREFLIGHT_SCHEMA,
-        "provider": "modal",
-        "provider_identity": copy.deepcopy(provider_identity),
-        "outcome": "ready",
-        "evidence_sha256": evidence_sha256,
-        "observed_at": observed_at,
-    }
 
 
 def dispatch_outboxes(

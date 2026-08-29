@@ -1585,7 +1585,7 @@ class SchedulerTest(unittest.TestCase):
             },
         )
         self.assertNotIn("steps", authority)
-        self.assertEqual(len(artifact["coverage"]), 9)
+        self.assertEqual(len(artifact["coverage"]), 8)
 
         changed = dict(arguments)
         changed["event"] = "workflow_dispatch"

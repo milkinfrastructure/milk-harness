@@ -31,9 +31,6 @@ BASETEN_PRICING_OBSERVATION_PREFIX = (
 BASETEN_PRICING_SOURCE_BODY_PREFIX = (
     "authority/v1/baseten-h100-pricing-source-bodies"
 )
-# Kept only for parsing historical jobs evidence while that surface is removed.
-# Active budget authority never accepts Modal pricing or identities.
-MODAL_RATES_SOURCE_COMMAND = "modal billing rates --json"
 MAX_CAS_ATTEMPTS = 32
 PROJECT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 TEAM_NAME = re.compile(
@@ -82,15 +79,6 @@ def _parse_utc(value, label):
     return parsed
 
 
-def _opaque_identity(value, label):
-    if (
-        not isinstance(value, str)
-        or not 1 <= len(value) <= 256
-        or value != value.strip()
-        or any(ord(character) < 0x21 or ord(character) > 0x7E for character in value)
-    ):
-        raise ValueError(f"{label} is invalid")
-    return value
 
 
 def baseten_provider_identity(project_id):
@@ -105,16 +93,6 @@ def baseten_serving_provider_identity(team_name):
     return {"provider": "baseten", "team_name": team_name}
 
 
-def modal_provider_identity(workspace_id, environment_name, app_name):
-    return {
-        "provider": "modal",
-        "workspace_id": _opaque_identity(workspace_id, "Modal workspace ID"),
-        "environment_name": _opaque_identity(
-            environment_name,
-            "Modal environment name",
-        ),
-        "app_name": _opaque_identity(app_name, "Modal app name"),
-    }
 
 
 def _validate_provider_identity(value, authority=None):

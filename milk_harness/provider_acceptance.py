@@ -295,81 +295,6 @@ def _baseten_selection(value):
     return _time(primary["observed_at"], "Baseten preflight time")
 
 
-def _modal_selection(value):
-    if not isinstance(value, dict) or tuple(value) != (
-        "selected_provider",
-        "provider_identity",
-        "primary_preflight",
-        "fallback_preflight",
-    ):
-        raise ValueError("Modal winner provider selection fields are invalid")
-    identity = value["provider_identity"]
-    primary = value["primary_preflight"]
-    fallback = value["fallback_preflight"]
-    if (
-        value["selected_provider"] != "modal"
-        or not isinstance(identity, dict)
-        or tuple(identity)
-        != (
-            "provider",
-            "workspace_id",
-            "workspace_name",
-            "environment_id",
-            "environment_name",
-            "app_id",
-            "app_name",
-        )
-        or identity["provider"] != "modal"
-        or any(
-            not _match(OPAQUE, identity.get(key))
-            for key in tuple(identity)[1:]
-        )
-        or not isinstance(primary, dict)
-        or tuple(primary)
-        != (
-            "provider",
-            "outcome",
-            "reason",
-            "status",
-            "evidence_sha256",
-            "observed_at",
-        )
-        or primary["provider"] != "baseten"
-        or primary["outcome"] != "retryable_unavailable"
-        or not _match(HEX64, primary.get("evidence_sha256"))
-        or not isinstance(fallback, dict)
-        or tuple(fallback)
-        != ("provider", "outcome", "evidence_sha256", "observed_at")
-        or fallback["provider"] != "modal"
-        or fallback["outcome"] != "ready"
-        or not _match(HEX64, fallback.get("evidence_sha256"))
-    ):
-        raise ValueError("Modal winner provider selection is invalid")
-    reason = primary["reason"]
-    status = primary["status"]
-    if (
-        reason == "capability_unavailable"
-        and status is not None
-        or reason == "timeout"
-        and status is not None
-        or reason == "rate_limited"
-        and status != 429
-        or reason == "server_unavailable"
-        and (type(status) is not int or not 500 <= status <= 599)
-        or reason
-        not in {
-            "capability_unavailable",
-            "timeout",
-            "rate_limited",
-            "server_unavailable",
-        }
-    ):
-        raise ValueError("Baseten primary preflight is not fallback-safe")
-    primary_at = _time(primary["observed_at"], "Baseten preflight time")
-    fallback_at = _time(fallback["observed_at"], "Modal preflight time")
-    if primary_at > fallback_at:
-        raise ValueError("winner provider preflight order is invalid")
-    return fallback_at
 
 
 def _gpu_operation(value):
@@ -481,30 +406,15 @@ def validate(value):
     ):
         raise ValueError("winner provider acceptance is invalid")
     selection = value.get("selection")
-    selected = selection.get("selected_provider") if isinstance(selection, dict) else None
     if schema == SCHEMA:
         if not _match(HEX64, value.get("provider_binding_sha256")):
             raise ValueError("winner provider binding is invalid")
-        observed = (
-            _baseten_selection(selection)
-            if selected == "baseten"
-            else _modal_selection(selection)
-            if selected == "modal"
-            else None
-        )
+        observed = _baseten_selection(selection)
     else:
         operation_wall = _gpu_operation(value.get("operation"))
         if value["max_wall_seconds"] != operation_wall:
             raise ValueError("GPU provider acceptance authority is invalid")
-        observed = (
-            _baseten_selection(selection)
-            if selected == "baseten"
-            else _modal_selection(selection)
-            if selected == "modal"
-            else None
-        )
-    if observed is None:
-        raise ValueError("winner selected provider is invalid")
+        observed = _baseten_selection(selection)
     reserved = _time(value["reserved_at"], "budget reservation time")
     accepted = _time(value["accepted_at"], "provider acceptance time")
     create_deadline = _time(value["create_not_after"], "provider create deadline")
@@ -524,14 +434,7 @@ def encode(value):
 
 
 def validate_baseten(value):
-    validate(value)
-    selection = value.get("selection")
-    if (
-        not isinstance(selection, dict)
-        or selection.get("selected_provider") != "baseten"
-    ):
-        raise ValueError("production provider acceptance must select Baseten")
-    return value
+    return validate(value)
 
 
 def encode_baseten(value):

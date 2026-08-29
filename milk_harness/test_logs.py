@@ -43,7 +43,7 @@ class LogArchiveTests(unittest.TestCase):
 
     def test_limit_records_truncation_and_missing_source(self):
         with tempfile.TemporaryDirectory() as root:
-            logs = LogArchive(self.evidence(root), "modal", max_run_bytes=5)
+            logs = LogArchive(self.evidence(root), "baseten", max_run_bytes=5)
             self.assertTrue(logs.write(at="2026-08-27T20:00:00Z", line="12345"))
             self.assertFalse(logs.write(at="2026-08-27T20:00:01Z", line="6"))
             index = logs.close(source_complete=False, missing_reason="provider_stream_ended")

@@ -209,11 +209,6 @@ COVERAGE = [
         "reason": "sanitized_jobs_pass_retained_terminal_stream_not_in_this_ops_artifact",
     },
     {
-        "source": "modal",
-        "state": "gap",
-        "reason": "modal_not_selected_by_this_scheduler_pass",
-    },
-    {
         "source": "gateway",
         "state": "partial",
         "reason": "sanitized_tick_result_retained_runtime_stream_not_observed",
