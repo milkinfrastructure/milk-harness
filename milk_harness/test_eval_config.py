@@ -23,7 +23,6 @@ from milk_harness.scheduler import (
 
 
 ROOT = Path(__file__).parents[1]
-SELF_HOST_EXAMPLE = ROOT / "examples/self-host/milk.eval.example.json"
 
 
 def eval_document():
@@ -272,21 +271,6 @@ class EvalConfigTest(unittest.TestCase):
                 "d" * 40,
                 ROOT,
             )
-
-    def test_bundled_self_host_example_is_a_bounded_nonsecret_config_smoke(self):
-        raw = SELF_HOST_EXAMPLE.read_bytes()
-        value = json.loads(raw)
-        validated, _, _ = validate_eval_document(
-            raw,
-            value["manifest"]["campaign_id"],
-            value["manifest"]["harness_source_commit"],
-            ROOT,
-        )
-        self.assertEqual(validated["gateway_config"]["teacher"]["max_decisions"], 1)
-        self.assertEqual(
-            validated["manifest"]["gateway_job_contract"]["teacher_max_decisions"],
-            1,
-        )
 
     def test_validates_and_materializes_the_single_eval_authority(self):
         value = eval_document()

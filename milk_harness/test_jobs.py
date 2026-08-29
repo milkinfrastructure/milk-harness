@@ -41,12 +41,11 @@ from milk_harness.scheduler import (
 from milk_harness.jobs import (
     BasetenJobs,
     BasetenTransport,
-    GPU_LAUNCH_SCAN_LIMIT,
     JobEvidence,
     RESERVATION_RATE_MICROUSD_PER_MINUTE,
+    _image_settings_from_arguments,
+    _provider_settings_from_arguments,
     _require_separate_control_store,
-    dispatch_outboxes,
-    settings_from_arguments,
 )
 
 
@@ -1845,21 +1844,23 @@ class BasetenJobsTests(unittest.TestCase):
             store = LocalEvidenceStore(Path(root) / "evidence")
             release = publish_release(store, Path(root) / "release")
             arguments = provider_arguments(release["release_sha256"])
+            image_settings = _image_settings_from_arguments(arguments, store)
             self.assertEqual(
-                settings_from_arguments(arguments, store)["control_store_access_key_secret"],
+                _provider_settings_from_arguments(arguments, image_settings)[
+                    "control_store_access_key_secret"
+                ],
                 "control-access",
             )
             arguments.control_store_access_key_secret = "capture-access"
             with self.assertRaisesRegex(ValueError, "pairwise distinct"):
-                settings_from_arguments(arguments, store)
+                _provider_settings_from_arguments(arguments, image_settings)
             arguments = provider_arguments(release["release_sha256"])
             arguments.control_store_identity_sha256 = (
                 arguments.capture_store_identity_sha256
             )
+            image_settings = _image_settings_from_arguments(arguments, store)
             with self.assertRaisesRegex(ValueError, "store identities"):
-                settings_from_arguments(arguments, store)
-
-
+                _provider_settings_from_arguments(arguments, image_settings)
 
     def test_provider_images_are_exact_private_milk_repositories(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1867,7 +1868,9 @@ class BasetenJobsTests(unittest.TestCase):
             release = publish_release(store, Path(root) / "release")
             arguments = provider_arguments(release["release_sha256"])
             self.assertEqual(
-                settings_from_arguments(arguments, store)["student_branch_image"],
+                _image_settings_from_arguments(arguments, store)[
+                    "student_branch_image"
+                ],
                 arguments.student_branch_image,
             )
             for field, image in (
@@ -1887,13 +1890,13 @@ class BasetenJobsTests(unittest.TestCase):
                 rejected = provider_arguments(release["release_sha256"])
                 setattr(rejected, field, image)
                 with self.assertRaisesRegex(ValueError, "private Milk repository"):
-                    settings_from_arguments(rejected, store)
+                    _image_settings_from_arguments(rejected, store)
             rejected = provider_arguments(release["release_sha256"])
             rejected.jobs_image = (
                 "ghcr.io/milkinfrastructure/not-the-jobs@sha256:" + "4" * 64
             )
             with self.assertRaisesRegex(ValueError, "private Milk repository"):
-                settings_from_arguments(rejected, store)
+                _image_settings_from_arguments(rejected, store)
             for field, image in (
                 (
                     "student_train_image",
@@ -1907,13 +1910,13 @@ class BasetenJobsTests(unittest.TestCase):
                 mismatched = provider_arguments(release["release_sha256"])
                 setattr(mismatched, field, image)
                 with self.assertRaisesRegex(ValueError, "private build admission"):
-                    settings_from_arguments(mismatched, store)
+                    _image_settings_from_arguments(mismatched, store)
             same_digest = provider_arguments(release["release_sha256"])
             same_digest.student_train_image = (
                 "ghcr.io/milkinfrastructure/milk-student-train@sha256:" + "f" * 64
             )
             with self.assertRaisesRegex(ValueError, "distinct digests"):
-                settings_from_arguments(same_digest, store)
+                _image_settings_from_arguments(same_digest, store)
 
     def test_private_image_release_publish_replays_and_loads_without_local_files(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1947,208 +1950,9 @@ class BasetenJobsTests(unittest.TestCase):
             arguments = provider_arguments(release_sha)
             self.assertFalse(hasattr(arguments, "image_release_evidence_dir"))
             self.assertEqual(
-                settings_from_arguments(arguments, store)["jobs_image"],
+                _image_settings_from_arguments(arguments, store)["jobs_image"],
                 arguments.jobs_image,
             )
-
-    def test_control_outbox_accepts_all_operations_and_restart_never_replays(self):
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
-            control = LocalEvidenceStore(root / "control")
-            launches = [
-                control_launch(control, "teacher_run", 1),
-                control_launch(control, "student_train_merge", 2),
-                control_launch(control, "student_fanout", 3),
-            ]
-            evidence = LocalEvidenceStore(root / "evidence")
-            authorize(evidence)
-            release = publish_release(evidence, root / "release")
-            settings = settings_from_arguments(
-                provider_arguments(release["release_sha256"]),
-                evidence,
-            )
-            transport = FakeTransport(
-                lambda _method, _path, body, _query: provider_job(
-                    body["training_job"]["name"],
-                    "job_" + hashlib.sha256(
-                        body["training_job"]["name"].encode()
-                    ).hexdigest()[:16],
-                )
-            )
-            service = BasetenJobs(
-                store=evidence,
-                campaign_id=CAMPAIGN,
-                project_id=PROJECT,
-                transport=transport,
-                now=lambda: NOW,
-            )
-            first = dispatch_outboxes(
-                service,
-                control_store=control,
-                scope_prefix=SCOPE_PREFIX,
-                settings=settings,
-            )
-            self.assertEqual(first["frontier_scan_limit"], GPU_LAUNCH_SCAN_LIMIT)
-            self.assertEqual(first["verified"], 3)
-            self.assertEqual(first["dispatched"], 3)
-            self.assertEqual(len(transport.calls), 5)
-            for launch in launches:
-                acceptance = json.loads(
-                    evidence.get(
-                        f"claims/v1/{launch['claim_sha256']}.json"
-                    )
-                )
-                self.assertEqual(
-                    acceptance["schema_version"],
-                    "milk.gateway-launch-acceptance.v1",
-                )
-                self.assertEqual(
-                    acceptance["launch_source"]["claim_object_key"],
-                    launch["claim_key"],
-                )
-            second = dispatch_outboxes(
-                service,
-                control_store=control,
-                scope_prefix=SCOPE_PREFIX,
-                settings=settings,
-            )
-            self.assertEqual(
-                [item["state"] for item in second["results"]],
-                ["reconcile_only"] * 3,
-            )
-            self.assertEqual(len(transport.calls), 5)
-
-    def test_all_frontier_chains_verify_before_any_acceptance_or_provider_call(self):
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
-            control = LocalEvidenceStore(root / "control")
-            control_launch(control, "teacher_run", 1)
-            control_launch(
-                control,
-                "student_train_merge",
-                2,
-                claim_mutator=lambda claim: claim.__setitem__("unknown", True),
-            )
-            evidence = LocalEvidenceStore(root / "evidence")
-            authorize(evidence)
-            release = publish_release(evidence, root / "release")
-            settings = settings_from_arguments(
-                provider_arguments(release["release_sha256"]),
-                evidence,
-            )
-            transport = FakeTransport(
-                lambda *_arguments: self.fail("provider called before verification")
-            )
-            service = BasetenJobs(
-                store=evidence,
-                campaign_id=CAMPAIGN,
-                project_id=PROJECT,
-                transport=transport,
-                now=lambda: NOW,
-            )
-            with self.assertRaisesRegex(ValueError, "claim is invalid"):
-                dispatch_outboxes(
-                    service,
-                    control_store=control,
-                    scope_prefix=SCOPE_PREFIX,
-                    settings=settings,
-                )
-            self.assertEqual(transport.calls, [])
-            self.assertEqual(evidence.list("claims/v1"), [])
-
-    def test_control_frontier_rejects_hash_mismatch_and_nineteenth_entry(self):
-        class OverrideGet:
-            def __init__(self, store, key, raw):
-                self.store = store
-                self.key = key
-                self.raw = raw
-
-            def list(self, *arguments, **keywords):
-                return self.store.list(*arguments, **keywords)
-
-            def get(self, key):
-                return self.raw if key == self.key else self.store.get(key)
-
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
-            control = LocalEvidenceStore(root / "control-hash")
-            launch = control_launch(control, "teacher_run", 1)
-            evidence = LocalEvidenceStore(root / "evidence-hash")
-            authorize(evidence)
-            service = BasetenJobs(
-                store=evidence,
-                campaign_id=CAMPAIGN,
-                project_id=PROJECT,
-                transport=FakeTransport(
-                    lambda *_arguments: self.fail("provider called")
-                ),
-                now=lambda: NOW,
-            )
-            release = publish_release(evidence, root / "release-hash")
-            settings = settings_from_arguments(
-                provider_arguments(release["release_sha256"]),
-                evidence,
-            )
-            with self.assertRaisesRegex(ValueError, "claim hash differs"):
-                dispatch_outboxes(
-                    service,
-                    control_store=OverrideGet(
-                        control,
-                        launch["claim_key"],
-                        launch["claim_raw"] + b" ",
-                    ),
-                    scope_prefix=SCOPE_PREFIX,
-                    settings=settings,
-                )
-            self.assertEqual(service.transport.calls, [])
-
-            crowded = LocalEvidenceStore(root / "control-crowded")
-            for nonce in range(1, GPU_LAUNCH_SCAN_LIMIT + 1):
-                control_launch(crowded, "teacher_run", nonce)
-            with self.assertRaisesRegex(ValueError, "hard active bound"):
-                dispatch_outboxes(
-                    service,
-                    control_store=crowded,
-                    scope_prefix=SCOPE_PREFIX,
-                    settings=settings,
-                )
-            self.assertEqual(service.transport.calls, [])
-
-    def test_expired_frontier_is_not_discovered(self):
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
-            control = LocalEvidenceStore(root / "control")
-            control_launch(
-                control,
-                "teacher_run",
-                1,
-                created=NOW - dt.timedelta(hours=2),
-                expires=NOW - dt.timedelta(hours=1),
-            )
-            evidence = LocalEvidenceStore(root / "evidence")
-            authorize(evidence)
-            release = publish_release(evidence, root / "release")
-            service = BasetenJobs(
-                store=evidence,
-                campaign_id=CAMPAIGN,
-                project_id=PROJECT,
-                transport=FakeTransport(
-                    lambda *_arguments: self.fail("expired launch reached provider")
-                ),
-                now=lambda: NOW,
-            )
-            summary = dispatch_outboxes(
-                service,
-                control_store=control,
-                scope_prefix=SCOPE_PREFIX,
-                settings=settings_from_arguments(
-                    provider_arguments(release["release_sha256"]),
-                    evidence,
-                ),
-            )
-            self.assertEqual(summary["verified"], 0)
-            self.assertEqual(summary["state"], "hold")
-            self.assertEqual(service.transport.calls, [])
 
     def test_jobs_has_no_gateway_process_or_capture_authority_surface(self):
         source = Path(jobs_module.__file__).read_text(encoding="utf-8")

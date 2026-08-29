@@ -64,9 +64,6 @@ accept the fixed `managed_eval_id` dispatch input, reject it unless it matches
 the workflow's active eval in every job, and use the same exact
 generation-completion job-name contract described below.
 
-Run the non-dispatching config/control smoke in
-[`examples/self-host`](../../examples/self-host) before installing the command.
-
 ## Admit one eval
 
 Read the stable eval ID from the exact reviewed document, then install it under

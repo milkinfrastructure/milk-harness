@@ -134,10 +134,6 @@ sh tools/exo/milk-managed.test.sh
 node --test tools/exo/index.test.mjs
 ```
 
-For a no-cloud introduction, use [`examples/self-host`](examples/self-host). It
-validates and materializes an eval and exercises the fixed host-command boundary.
-It cannot contact a provider or create paid work.
-
 Offline tests, public source, published images, and generated mechanics traffic
 do not prove production. Qualification requires a normal SDK capture, retained
 real-traffic teacher results, one trained student, the three admitted evaluation

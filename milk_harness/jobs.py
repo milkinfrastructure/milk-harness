@@ -7698,51 +7698,6 @@ def dispatch_baseten_outboxes(
     }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def dispatch_outboxes(
-    jobs,
-    *,
-    control_store,
-    scope_prefix,
-    settings,
-):
-    launches = discover_gpu_launches(control_store, scope_prefix, jobs.now())
-    prepared = []
-    for launch in launches:
-        workload, entries = _workload_and_entries(launch, settings)
-        jobs._definition(workload, entries)
-        prepared.append((workload, entries))
-    results = []
-    for workload, entries in prepared:
-        result = jobs.launch(workload, entries)
-        results.append(result)
-    return {
-        "schema_version": "milk.jobs-dispatch-summary.v2",
-        "provider": "baseten",
-        "scope_prefix": scope_prefix,
-        "frontier_scan_limit": GPU_LAUNCH_SCAN_LIMIT,
-        "verified": len(launches),
-        "dispatched": len(results),
-        "state": "hold" if not results else "complete",
-        "results": results,
-    }
-
-
 def _require_separate_control_store(evidence_store, control_store):
     if (
         evidence_store.bucket == control_store.bucket
@@ -7909,13 +7864,6 @@ def _provider_settings_from_arguments(arguments, image_settings):
     if len(secret_names) != len(set(secret_names)):
         raise ValueError("provider secret names must be pairwise distinct")
     return settings
-
-
-def settings_from_arguments(arguments, evidence_store):
-    return _provider_settings_from_arguments(
-        arguments,
-        _image_settings_from_arguments(arguments, evidence_store),
-    )
 
 
 def _baseten_teardown_values(records, settings):
