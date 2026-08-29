@@ -18,11 +18,28 @@ require_command() {
 }
 
 reuse_release_dir=
-if [ "$#" -eq 4 ] && [ "$1" = --reuse-release-dir ]; then
-  reuse_release_dir=$2
-  shift 2
-fi
-[ "$#" -eq 2 ] || fail 'usage: build-images.sh [--reuse-release-dir VERIFIED_RELEASE_DIR] GATEWAY_IMAGE NEW_EVIDENCE_DIR' 64
+cache_dir=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --reuse-release-dir)
+      [ "$#" -ge 2 ] && [ -z "$reuse_release_dir" ] || \
+        fail 'reused release directory is invalid' 64
+      reuse_release_dir=$2
+      shift 2
+      ;;
+    --cache-dir)
+      [ "$#" -ge 2 ] && [ -z "$cache_dir" ] || \
+        fail 'cache directory is invalid' 64
+      cache_dir=$2
+      shift 2
+      ;;
+    --) shift; break ;;
+    -*) fail 'unsupported build option' 64 ;;
+    *) break ;;
+  esac
+done
+[ "$#" -eq 2 ] || \
+  fail 'usage: build-images.sh [--reuse-release-dir VERIFIED_RELEASE_DIR] [--cache-dir ABSOLUTE_DIR] GATEWAY_IMAGE NEW_EVIDENCE_DIR' 64
 gateway_image=$1
 requested_evidence_dir=$2
 
@@ -107,6 +124,60 @@ case "$evidence_dir/" in
   "$repo"/*) fail 'evidence directory must be outside the release checkout' 64 ;;
 esac
 
+cache_method=disabled
+cache_imported=false
+cache_parent=
+if [ -n "$cache_dir" ]; then
+  case "$cache_dir" in
+    /*) ;;
+    *) fail 'cache directory must be absolute' 64 ;;
+  esac
+  cache_validation=$(
+    "$python" - "$cache_dir" "$repo" "$evidence_dir" 2>/dev/null <<'PY'
+import os
+import stat
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+repository = Path(sys.argv[2]).resolve(strict=True)
+evidence = Path(sys.argv[3])
+if path.name in {"", ".", ".."}:
+    raise SystemExit(1)
+parent = path.parent.resolve(strict=True)
+target = parent / path.name
+if target.is_symlink():
+    raise SystemExit(1)
+resolved = target.resolve(strict=False)
+if resolved == repository or repository in resolved.parents:
+    raise SystemExit(1)
+if resolved == evidence or evidence in resolved.parents or resolved in evidence.parents:
+    raise SystemExit(1)
+metadata = parent.stat()
+if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+    raise SystemExit(1)
+imported = False
+if target.exists():
+    metadata = target.stat()
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise SystemExit(1)
+    index = target / "index.json"
+    imported = index.is_file() and not index.is_symlink()
+print(resolved)
+print(parent)
+print("true" if imported else "false")
+PY
+  ) || fail 'cache directory must be owner-only and outside the checkout and evidence' 64
+  cache_dir=$(printf '%s\n' "$cache_validation" | sed -n '1p')
+  cache_parent=$(printf '%s\n' "$cache_validation" | sed -n '2p')
+  cache_imported=$(printf '%s\n' "$cache_validation" | sed -n '3p')
+  cache_method=buildkit-local
+fi
+
 release_inputs='Dockerfile.jobs'
 if [ -z "$reuse_release_dir" ]; then
   release_inputs='deploy/student-train/Dockerfile
@@ -153,6 +224,8 @@ builder_created=0
 scratch=
 docker_config=
 builder=
+cache_work=
+cache_available=$cache_imported
 
 cleanup() {
   status=$?
@@ -182,6 +255,11 @@ PY
   case "$scratch" in
     "${TMPDIR:-/tmp}"/milk-harness-release.*) rm -rf -- "$scratch" ;;
   esac
+  if [ -n "$cache_work" ] && [ -n "$cache_parent" ]; then
+    case "$cache_work" in
+      "$cache_parent"/.milk-harness-cache.*) rm -rf -- "$cache_work" ;;
+    esac
+  fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -191,6 +269,22 @@ trap 'exit 143' TERM
 
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/milk-harness-release.XXXXXX") || \
   fail 'cannot create release scratch directory' 73
+if [ "$cache_method" = buildkit-local ]; then
+  cache_work=$(mktemp -d "$cache_parent/.milk-harness-cache.XXXXXX") || \
+    fail 'cannot create local BuildKit cache export directory' 73
+fi
+"$python" - "$evidence_dir/cache.json" "$cache_method" "$cache_imported" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path, method, imported = sys.argv[1:]
+Path(path).write_text(json.dumps({
+    "schema_version": "milk.local-buildkit-cache.v1",
+    "method": method,
+    "imported": imported == "true",
+}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
 docker_config=$scratch/docker-config
 mkdir -m 0700 -- "$docker_config" || fail 'cannot create isolated Docker configuration' 73
 mkdir -m 0700 -- "$docker_config/cli-plugins" || fail 'cannot create isolated Docker plugin directory' 73
@@ -477,6 +571,18 @@ build_one() {
   if [ "$gateway_required" = yes ]; then
     set -- "$@" --build-arg "MILK_GATEWAY_IMAGE=$gateway_image"
   fi
+  cache_export=
+  if [ "$cache_method" = buildkit-local ]; then
+    cache_export=$cache_work/export
+    [ ! -e "$cache_export" ] && [ ! -L "$cache_export" ] || \
+      fail 'local BuildKit cache export target already exists' 73
+    mkdir -m 0700 -- "$cache_export" || \
+      fail 'cannot create local BuildKit cache export target' 73
+    if [ "$cache_available" = true ]; then
+      set -- "$@" --cache-from "type=local,src=$cache_dir"
+    fi
+    set -- "$@" --cache-to "type=local,dest=$cache_export,mode=max"
+  fi
   set -- "$@" "$build_context"
 
   failure_stage=build-$artifact
@@ -526,6 +632,12 @@ target.write_text(json.dumps({
 }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
   [ "$build_status" -eq 0 ] || fail "$artifact image build failed" 70
+  if [ "$cache_method" = buildkit-local ]; then
+    [ -d "$cache_export" ] && [ ! -L "$cache_export" ] && \
+      [ -f "$cache_export/index.json" ] && [ ! -L "$cache_export/index.json" ] || \
+      fail 'BuildKit cache export is incomplete' 70
+    chmod 0700 "$cache_export" || fail 'BuildKit cache export is not owner-only' 70
+  fi
 
   failure_stage=verify-$artifact
   set -- "$repo/deploy/verify-private-image.py" \
@@ -554,6 +666,23 @@ PY
   printf '%s\t%s\t%s\t%s\t%s\n' \
     "$artifact" "$immutable" "$admission_sha256" \
     "$ops_log_reference_sha256" "$commit" >>"$references"
+  if [ "$cache_method" = buildkit-local ]; then
+    prior_cache=$cache_work/prior
+    [ ! -e "$prior_cache" ] && [ ! -L "$prior_cache" ] || \
+      fail 'local BuildKit cache rotation target already exists' 73
+    if [ -e "$cache_dir" ]; then
+      [ -d "$cache_dir" ] && [ ! -L "$cache_dir" ] || \
+        fail 'local BuildKit cache changed during the build' 73
+      mv -- "$cache_dir" "$prior_cache" || \
+        fail 'cannot rotate the local BuildKit cache' 73
+    fi
+    if ! mv -- "$cache_export" "$cache_dir"; then
+      [ ! -e "$prior_cache" ] || mv -- "$prior_cache" "$cache_dir" || :
+      fail 'cannot publish the local BuildKit cache' 73
+    fi
+    [ ! -e "$prior_cache" ] || rm -rf -- "$prior_cache"
+    cache_available=true
+  fi
   printf '%s\n' "$immutable"
 }
 

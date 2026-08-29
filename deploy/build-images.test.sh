@@ -458,9 +458,16 @@ case "${1:-} ${2:-}" in
   'buildx build')
     metadata=
     tag=
+    cache_export=
     while [ "$#" -gt 0 ]; do
       if [ "$1" = --metadata-file ]; then metadata=$2; shift 2; continue; fi
       if [ "$1" = --tag ]; then tag=$2; shift 2; continue; fi
+      if [ "$1" = --cache-to ]; then
+        cache_export=${2#type=local,dest=}
+        cache_export=${cache_export%,mode=max}
+        shift 2
+        continue
+      fi
       shift
     done
     if [ "${TEST_FAIL_BUILD:-0}" -eq 1 ]; then
@@ -471,6 +478,10 @@ case "${1:-} ${2:-}" in
     [ -n "$tag" ]
     printf '{"containerimage.digest":"sha256:%s","image.name":"%s"}\n' \
       "$TEST_INDEX_DIGEST" "$tag" >"$metadata"
+    if [ -n "$cache_export" ]; then
+      mkdir -p "$cache_export"
+      printf '%s\n' '{"cache":"updated"}' >"$cache_export/index.json"
+    fi
     printf '%s\n' 'contentful fake build output'
     ;;
   'buildx imagetools')
@@ -545,6 +556,7 @@ run_builder "$gateway" "$output" >"$test_root/stdout"
 
 [ -s "$output/input.json" ]
 [ -s "$output/builder.json" ]
+[ -s "$output/cache.json" ]
 [ -s "$output/release.json" ]
 [ ! -e "$output/failure.json" ]
 for artifact in student-train student-branch teacher-gpt-oss jobs; do
@@ -633,6 +645,11 @@ expected_attestations = [
 input_receipt = json.loads(root.joinpath("input.json").read_bytes())
 assert input_receipt["source_context_method"] == "git-archive-tar-v1"
 assert input_receipt["source_context_sha256"] == context_sha256
+assert json.loads(root.joinpath("cache.json").read_bytes()) == {
+    "schema_version": "milk.local-buildkit-cache.v1",
+    "method": "disabled",
+    "imported": False,
+}
 release_by_artifact = {item["artifact"]: item for item in release["images"]}
 for artifact in ("student-train", "student-branch", "teacher-gpt-oss", "jobs"):
     receipt = json.loads(root.joinpath(artifact, "receipt.json").read_bytes())
@@ -735,6 +752,37 @@ for artifact in ("student-train", "student-branch", "teacher-gpt-oss", "jobs"):
     assert left == right
 PY
 
+rm -f -- "$test_root/commands.log"
+cache_parent=$test_root/cache-root
+mkdir -m 0700 "$cache_parent"
+cache=$cache_parent/buildkit
+mkdir -m 0700 "$cache"
+cache=$(CDPATH='' cd -- "$cache" && pwd -P)
+printf '%s\n' '{"secret":"cache-content"}' >"$cache/index.json"
+cached=$test_root/evidence-cached
+run_builder --cache-dir "$cache" "$gateway" "$cached" \
+  >"$test_root/cache-stdout" 2>"$test_root/cache-stderr"
+[ "$(grep -c '^docker|.*buildx|build|' "$test_root/commands.log")" -eq 4 ]
+[ "$(grep -o -- "--cache-from|type=local,src=$cache" "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
+[ "$(grep -o -- '--cache-to|type=local,dest=[^|]*,mode=max' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
+[ "$(grep -o -- '--platform|linux/amd64' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 4 ]
+[ "$(cat "$cache/index.json")" = '{"cache":"updated"}' ]
+python3 - "$cached/cache.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+assert json.loads(Path(sys.argv[1]).read_bytes()) == {
+    "schema_version": "milk.local-buildkit-cache.v1",
+    "method": "buildkit-local",
+    "imported": True,
+}
+PY
+assert_absent -R -Fq "$cache" \
+  "$cached" "$test_root/cache-stdout" "$test_root/cache-stderr"
+assert_absent -R -Fq 'cache-content' \
+  "$cached" "$test_root/cache-stdout" "$test_root/cache-stderr"
+
 seed=$test_root/verified-v5
 PYTHONPATH=$root python3 - "$seed" <<'PY'
 import hashlib
@@ -776,9 +824,12 @@ PY
 
 rm -f -- "$test_root/commands.log"
 selective=$test_root/evidence-selective
-run_builder --reuse-release-dir "$seed" "$gateway" "$selective" \
+run_builder --reuse-release-dir "$seed" --cache-dir "$cache" \
+  "$gateway" "$selective" \
   >"$test_root/selective-stdout"
 [ "$(grep -c '^docker|.*buildx|build|' "$test_root/commands.log")" -eq 1 ]
+[ "$(grep -o -- "--cache-from|type=local,src=$cache" "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 1 ]
+[ "$(grep -o -- '--cache-to|type=local,dest=[^|]*,mode=max' "$test_root/commands.log" | wc -l | tr -d ' ')" -eq 1 ]
 [ "$(grep -c '^docker|.*buildx|imagetools|inspect|--raw|' "$test_root/commands.log")" -eq 3 ]
 [ "$(grep -c '^verifier|' "$test_root/commands.log")" -eq 1 ]
 grep -Fq -- "--tag|ghcr.io/milkinfrastructure/milk-jobs:source-$revision" \
@@ -788,6 +839,7 @@ if grep '^docker|.*buildx|build|' "$test_root/commands.log" | \
   exit 1
 fi
 [ ! -e "$selective/planner" ]
+assert_absent -R -Fq "$cache" "$selective" "$test_root/selective-stdout"
 for artifact in student-train student-branch teacher-gpt-oss; do
   cmp "$seed/evidence/harness/$artifact/admission.json" \
     "$selective/$artifact/admission.json"
@@ -879,6 +931,14 @@ assert_rejected unpublished test_env "TEST_REMOTE_REVISION=$(printf '%040d' 9)" 
 mkdir "$test_root/existing"
 assert_rejected existing test_env \
   "$builder" "$gateway" "$test_root/existing"
+assert_rejected relative-cache test_env \
+  "$builder" --cache-dir relative-cache "$gateway" \
+  "$test_root/rejected-relative-cache"
+public_cache_parent=$test_root/public-cache-parent
+mkdir -m 0755 "$public_cache_parent"
+assert_rejected public-cache-parent test_env \
+  "$builder" --cache-dir "$public_cache_parent/cache" "$gateway" \
+  "$test_root/rejected-public-cache-parent"
 assert_rejected relative-token-file test_env MILK_GITHUB_TOKEN_FILE=relative-token \
   "$builder" "$gateway" "$test_root/rejected-relative-token-file"
 
