@@ -745,7 +745,10 @@ def private_image_release(
             "planner": "ghcr.io/milkinfrastructure/milk-planner",
             "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
         }
-    elif schema_version == "milk.private-harness-release.v4":
+    elif schema_version in {
+        "milk.private-harness-release.v4",
+        "milk.private-harness-release.v5",
+    }:
         repositories = {
             "student-train": "ghcr.io/milkinfrastructure/milk-student-train",
             "student-branch": "ghcr.io/milkinfrastructure/milk-student-branch",
@@ -777,6 +780,12 @@ def private_image_release(
     }
     images = []
     for artifact, repository in repositories.items():
+        source_commit = (
+            "a" * 40
+            if schema_version == "milk.private-harness-release.v5"
+            and artifact == "jobs"
+            else "8" * 40
+        )
         image = repository + "@sha256:" + digests[artifact]
         build_log_raw = canonical_json(
             {
@@ -805,7 +814,7 @@ def private_image_release(
             "repository": repository,
             "image_reference": image,
             "source_repository": "https://github.com/milkinfrastructure/milk-harness",
-            "source_commit": "8" * 40,
+            "source_commit": source_commit,
             "source_context_method": "git-archive-tar-v1",
             "source_context_sha256": "9" * 64,
             "gateway_image_reference": (
@@ -839,21 +848,26 @@ def private_image_release(
         path.write_bytes(raw)
         (path.parent / "build-log.json").write_bytes(build_log_raw)
         (path.parent / "ops-log-reference.json").write_bytes(ops_log_raw)
-        images.append(
-            {
-                "admission_sha256": hashlib.sha256(raw).hexdigest(),
-                "artifact": artifact,
-                "image_reference": image,
-                "ops_log_reference_sha256": hashlib.sha256(
-                    ops_log_raw
-                ).hexdigest(),
-            }
-        )
+        release_item = {
+            "admission_sha256": hashlib.sha256(raw).hexdigest(),
+            "artifact": artifact,
+            "image_reference": image,
+            "ops_log_reference_sha256": hashlib.sha256(
+                ops_log_raw
+            ).hexdigest(),
+        }
+        if schema_version == "milk.private-harness-release.v5":
+            release_item["source_commit"] = source_commit
+        images.append(release_item)
     (root / "release.json").write_bytes(
         canonical_json(
             {
                 "schema_version": schema_version,
-                "source_commit": "8" * 40,
+                "source_commit": (
+                    "a" * 40
+                    if schema_version == "milk.private-harness-release.v5"
+                    else "8" * 40
+                ),
                 "source_date_epoch": 1_777_777_777,
                 "source_repository": "https://github.com/milkinfrastructure/milk-harness",
                 "gateway_image_reference": gateway,

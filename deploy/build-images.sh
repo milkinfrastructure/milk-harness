@@ -17,7 +17,12 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "$1 is unavailable" 69
 }
 
-[ "$#" -eq 2 ] || fail 'usage: build-images.sh GATEWAY_IMAGE NEW_EVIDENCE_DIR' 64
+reuse_release_dir=
+if [ "$#" -eq 4 ] && [ "$1" = --reuse-release-dir ]; then
+  reuse_release_dir=$2
+  shift 2
+fi
+[ "$#" -eq 2 ] || fail 'usage: build-images.sh [--reuse-release-dir VERIFIED_RELEASE_DIR] GATEWAY_IMAGE NEW_EVIDENCE_DIR' 64
 gateway_image=$1
 requested_evidence_dir=$2
 
@@ -40,6 +45,15 @@ evidence_parent=$(dirname -- "$requested_evidence_dir")
 [ -d "$evidence_parent" ] || fail 'evidence directory parent does not exist' 64
 evidence_parent=$(CDPATH= cd -- "$evidence_parent" && pwd -P)
 evidence_dir=$evidence_parent/$(basename -- "$requested_evidence_dir")
+
+if [ -n "$reuse_release_dir" ]; then
+  case "$reuse_release_dir" in
+    /*) ;;
+    *) fail 'reused release directory must be absolute' 64 ;;
+  esac
+  [ -d "$reuse_release_dir" ] && [ ! -L "$reuse_release_dir" ] || \
+    fail 'reused release directory is invalid' 64
+fi
 
 for command_name in date docker env gh git grep ln python3 sed tar; do
   require_command "$command_name"
@@ -79,11 +93,14 @@ case "$evidence_dir/" in
   "$repo"/*) fail 'evidence directory must be outside the release checkout' 64 ;;
 esac
 
-for release_input in \
-  deploy/student-train/Dockerfile \
-  deploy/student-branch/Dockerfile \
-  deploy/teacher/gpt-oss-120b/Dockerfile \
-  Dockerfile.jobs; do
+release_inputs='Dockerfile.jobs'
+if [ -z "$reuse_release_dir" ]; then
+  release_inputs='deploy/student-train/Dockerfile
+deploy/student-branch/Dockerfile
+deploy/teacher/gpt-oss-120b/Dockerfile
+Dockerfile.jobs'
+fi
+for release_input in $release_inputs; do
   [ -f "$release_input" ] || fail "missing release input $release_input" 66
 done
 
@@ -212,6 +229,129 @@ Path(path).write_text(json.dumps({
 }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
 
+references=$scratch/references.tsv
+: >"$references"
+if [ -n "$reuse_release_dir" ]; then
+  failure_stage=verify-reused-release
+  "$python" - "$reuse_release_dir" "$evidence_dir" "$references" \
+    "$gateway_image" <<'PY' || fail 'reused private image release is invalid' 70
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import sys
+import tarfile
+
+from milk_harness.evidence import canonical_json
+from milk_harness.image_admission import load_local_private_image_release
+
+requested, destination, references, gateway = sys.argv[1:]
+requested = Path(requested)
+destination = Path(destination)
+references = Path(references)
+direct = requested / "release.json"
+native = requested / "evidence" / "harness" / "release.json"
+if direct.is_file() and not direct.is_symlink():
+    source = requested
+elif native.is_file() and not native.is_symlink():
+    archive = requested / "evidence.tar.gz"
+    archive_receipt = requested / "evidence-archive.json"
+    if any(path.is_symlink() or not path.is_file() for path in (archive, archive_receipt)):
+        raise ValueError("native evidence archive is invalid")
+    archive_size = archive.stat().st_size
+    if not 1 <= archive_size <= 512 * 1024 * 1024 or not 1 <= archive_receipt.stat().st_size <= 4096:
+        raise ValueError("native evidence archive is invalid")
+    receipt_raw = archive_receipt.read_bytes()
+    receipt = json.loads(receipt_raw)
+    if (
+        canonical_json(receipt) != receipt_raw
+        or receipt != {
+            "schema_version": "milk.native-builder-evidence-archive.v1",
+            "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+            "bytes": archive_size,
+        }
+    ):
+        raise ValueError("native evidence archive receipt is invalid")
+    result_path = requested / "evidence" / "native-builder-result.json"
+    if result_path.is_symlink() or not result_path.is_file():
+        raise ValueError("native builder result is invalid")
+    result_raw = result_path.read_bytes()
+    if not 1 <= len(result_raw) <= 16 * 1024:
+        raise ValueError("native builder result is invalid")
+    archived_paths = [
+        "evidence/native-builder-result.json",
+        "evidence/harness/release.json",
+        *(
+            f"evidence/harness/{artifact}/{name}"
+            for artifact in ("student-train", "student-branch", "teacher-gpt-oss")
+            for name in ("admission.json", "build-log.json", "ops-log-reference.json")
+        ),
+    ]
+    with tarfile.open(archive, "r:gz") as bundle:
+        members = bundle.getmembers()
+        for name in archived_paths:
+            matches = [member for member in members if member.name == name]
+            disk = requested / name
+            if len(matches) != 1 or disk.is_symlink() or not disk.is_file():
+                raise ValueError("native release evidence is absent from its archive")
+            archived = bundle.extractfile(matches[0])
+            disk_raw = disk.read_bytes()
+            if (
+                not matches[0].isfile()
+                or not 1 <= len(disk_raw) <= 1024 * 1024
+                or matches[0].size != len(disk_raw)
+                or archived is None
+                or archived.read() != disk_raw
+            ):
+                raise ValueError("native release evidence differs from its archive")
+    source = native.parent
+else:
+    raise ValueError("reused release directory has no harness release")
+
+loaded = load_local_private_image_release(str(source.resolve()))
+release = json.loads(loaded["release_raw"])
+if (
+    release["schema_version"] not in {
+        "milk.private-harness-release.v3",
+        "milk.private-harness-release.v4",
+    }
+    or release["gateway_image_reference"] != gateway
+):
+    raise ValueError("reused release authority is incompatible")
+if native.is_file():
+    result = json.loads(result_raw)
+    if (
+        canonical_json(result) != result_raw
+        or result.get("schema_version") != "milk.native-amd64-builder-result.v1"
+        or result.get("platform") != "linux/amd64"
+        or result.get("harness_release_sha256") != loaded["release_sha256"]
+        or result.get("harness_source_commit") != release["source_commit"]
+    ):
+        raise ValueError("native builder result does not bind the reused release")
+items = {item["artifact"]: item for item in release["images"]}
+artifacts = ("student-train", "student-branch", "teacher-gpt-oss")
+lines = []
+for artifact in artifacts:
+    admission = json.loads(loaded["images"][artifact]["raw"])
+    item = items[artifact]
+    target = destination / artifact
+    target.mkdir(mode=0o700)
+    for name in ("admission.json", "build-log.json", "ops-log-reference.json"):
+        path = source / artifact / name
+        copied = target / name
+        shutil.copyfile(path, copied)
+        copied.chmod(0o600)
+    lines.append("\t".join((
+        artifact,
+        item["image_reference"],
+        item["admission_sha256"],
+        item["ops_log_reference_sha256"],
+        admission["source_commit"],
+    )))
+references.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+fi
+
 failure_stage=registry-login
 if ! "$gh" auth token --hostname github.com | \
   "$docker" --config "$docker_config" login ghcr.io --username ShantanuJoshi --password-stdin >/dev/null; then
@@ -223,7 +363,7 @@ packages=$scratch/packages.tsv
 "$gh" api --hostname github.com --paginate \
   '/orgs/milkinfrastructure/packages?package_type=container&per_page=100' \
   --jq '.[] | [.name, .visibility] | @tsv' >"$packages" || fail 'cannot inspect Milk container packages' 77
-"$python" - "$packages" <<'PY' || fail 'gateway package is missing/private check failed, or an existing release target is not private' 77
+"$python" - "$packages" "$reuse_release_dir" <<'PY' || fail 'gateway package is missing/private check failed, or an existing release target is not private' 77
 import sys
 from pathlib import Path
 
@@ -247,6 +387,10 @@ if seen.get("milk-gateway") != "private":
 for name in targets & seen.keys():
     if seen[name] != "private":
         raise SystemExit(1)
+if sys.argv[2] and any(
+    seen.get(name) != "private" for name in targets - {"milk-jobs"}
+):
+    raise SystemExit(1)
 PY
 
 failure_stage=builder-create
@@ -289,9 +433,6 @@ Path(target).write_text(json.dumps({
 }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
 rm -f -- "$bootstrap_log"
-
-references=$scratch/references.tsv
-: >"$references"
 
 build_one() {
   artifact=$1
@@ -395,31 +536,34 @@ PY
   immutable=$1
   admission_sha256=$2
   ops_log_reference_sha256=$3
-  printf '%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\n' \
     "$artifact" "$immutable" "$admission_sha256" \
-    "$ops_log_reference_sha256" >>"$references"
+    "$ops_log_reference_sha256" "$commit" >>"$references"
   printf '%s\n' "$immutable"
 }
 
 build_one jobs Dockerfile.jobs \
   ghcr.io/milkinfrastructure/milk-jobs no
-build_one student-train deploy/student-train/Dockerfile \
-  ghcr.io/milkinfrastructure/milk-student-train yes
-build_one student-branch deploy/student-branch/Dockerfile \
-  ghcr.io/milkinfrastructure/milk-student-branch yes
-build_one teacher-gpt-oss deploy/teacher/gpt-oss-120b/Dockerfile \
-  ghcr.io/milkinfrastructure/milk-teacher-gpt-oss yes
+if [ -z "$reuse_release_dir" ]; then
+  build_one student-train deploy/student-train/Dockerfile \
+    ghcr.io/milkinfrastructure/milk-student-train yes
+  build_one student-branch deploy/student-branch/Dockerfile \
+    ghcr.io/milkinfrastructure/milk-student-branch yes
+  build_one teacher-gpt-oss deploy/teacher/gpt-oss-120b/Dockerfile \
+    ghcr.io/milkinfrastructure/milk-teacher-gpt-oss yes
+fi
 
 failure_stage=release-receipt
 completed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 "$python" - "$references" "$evidence_dir/release.json" "$commit" "$source_epoch" \
-  "$gateway_image" "$BUILDKIT_IMAGE" "$DOCKERFILE_FRONTEND" "$started_at" "$completed_at" <<'PY'
+  "$gateway_image" "$BUILDKIT_IMAGE" "$DOCKERFILE_FRONTEND" "$started_at" "$completed_at" \
+  "$reuse_release_dir" <<'PY'
 import json
 import re
 import sys
 from pathlib import Path
 
-references_path, receipt_path, commit, source_epoch, gateway, buildkit, frontend, started_at, completed_at = sys.argv[1:]
+references_path, receipt_path, commit, source_epoch, gateway, buildkit, frontend, started_at, completed_at, reused = sys.argv[1:]
 expected = {
     "student-train": "ghcr.io/milkinfrastructure/milk-student-train",
     "student-branch": "ghcr.io/milkinfrastructure/milk-student-branch",
@@ -431,23 +575,34 @@ sha256 = re.compile(r"[0-9a-f]{64}\Z")
 images = {}
 for line in Path(references_path).read_text(encoding="utf-8").splitlines():
     fields = line.split("\t")
-    if len(fields) != 4 or fields[0] not in expected or fields[0] in images:
+    if len(fields) != 5 or fields[0] not in expected or fields[0] in images:
         raise SystemExit(1)
     prefix = expected[fields[0]] + "@"
     if not fields[1].startswith(prefix) or digest.fullmatch(fields[1].removeprefix(prefix)) is None:
         raise SystemExit(1)
-    if sha256.fullmatch(fields[2]) is None or sha256.fullmatch(fields[3]) is None:
+    if (
+        sha256.fullmatch(fields[2]) is None
+        or sha256.fullmatch(fields[3]) is None
+        or re.fullmatch(r"[0-9a-f]{40}", fields[4]) is None
+    ):
         raise SystemExit(1)
-    images[fields[0]] = {
+    item = {
         "admission_sha256": fields[2],
         "artifact": fields[0],
         "image_reference": fields[1],
         "ops_log_reference_sha256": fields[3],
     }
+    if reused:
+        item["source_commit"] = fields[4]
+    images[fields[0]] = item
 if set(images) != set(expected):
     raise SystemExit(1)
 Path(receipt_path).write_text(json.dumps({
-    "schema_version": "milk.private-harness-release.v4",
+    "schema_version": (
+        "milk.private-harness-release.v5"
+        if reused
+        else "milk.private-harness-release.v4"
+    ),
     "source_commit": commit,
     "source_date_epoch": int(source_epoch),
     "source_repository": "https://github.com/milkinfrastructure/milk-harness",
@@ -461,5 +616,15 @@ Path(receipt_path).write_text(json.dumps({
     "completed_at": completed_at,
 }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
+if [ -n "$reuse_release_dir" ]; then
+  failure_stage=verify-complete-release
+  "$python" - "$evidence_dir" <<'PY' || fail 'selective release evidence is invalid' 70
+import sys
+
+from milk_harness.image_admission import load_local_private_image_release
+
+load_local_private_image_release(sys.argv[1])
+PY
+fi
 release_complete=1
 printf 'private harness image release verified at %s\n' "$evidence_dir"

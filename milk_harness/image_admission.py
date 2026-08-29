@@ -30,6 +30,7 @@ RELEASE_IMAGE_REPOSITORIES = {
         "jobs": "ghcr.io/milkinfrastructure/milk-jobs",
     },
     "milk.private-harness-release.v4": PRIVATE_IMAGE_REPOSITORIES,
+    "milk.private-harness-release.v5": PRIVATE_IMAGE_REPOSITORIES,
 }
 STUDENT_TRAIN_IMAGE_REPOSITORY = PRIVATE_IMAGE_REPOSITORIES["student-train"]
 STUDENT_BRANCH_IMAGE_REPOSITORY = PRIVATE_IMAGE_REPOSITORIES["student-branch"]
@@ -94,7 +95,8 @@ def _validate_release(
         raise ValueError("private image release SHA-256 differs from its authority key")
     release = _strict_object(release_raw)
     images = release.get("images")
-    repositories = RELEASE_IMAGE_REPOSITORIES.get(release.get("schema_version"))
+    schema_version = release.get("schema_version")
+    repositories = RELEASE_IMAGE_REPOSITORIES.get(schema_version)
     if (
         set(release)
         != {
@@ -134,20 +136,25 @@ def _validate_release(
     frontend = adapter.immutable_image(release.get("dockerfile_frontend_reference"))
     admissions = {}
     for expected_artifact, release_item in zip(repositories, images):
+        release_item_fields = {
+            "admission_sha256",
+            "artifact",
+            "image_reference",
+            "ops_log_reference_sha256",
+        }
+        if schema_version == "milk.private-harness-release.v5":
+            release_item_fields.add("source_commit")
         if (
             not isinstance(release_item, dict)
-            or set(release_item)
-            != {
-                "admission_sha256",
-                "artifact",
-                "image_reference",
-                "ops_log_reference_sha256",
-            }
+            or set(release_item) != release_item_fields
             or release_item.get("artifact") != expected_artifact
             or HEX64.fullmatch(release_item.get("admission_sha256", "")) is None
             or HEX64.fullmatch(
                 release_item.get("ops_log_reference_sha256", "")
             )
+            is None
+            or schema_version == "milk.private-harness-release.v5"
+            and re.fullmatch(r"[0-9a-f]{40}", release_item.get("source_commit", ""))
             is None
         ):
             raise ValueError("private image release item is invalid")
@@ -235,7 +242,12 @@ def _validate_release(
             or admission.get("artifact") != expected_artifact
             or admission.get("repository") != repository
             or admission.get("source_repository") != release["source_repository"]
-            or admission.get("source_commit") != release["source_commit"]
+            or admission.get("source_commit")
+            != (
+                release_item["source_commit"]
+                if schema_version == "milk.private-harness-release.v5"
+                else release["source_commit"]
+            )
             or admission.get("source_context_method") != "git-archive-tar-v1"
             or HEX64.fullmatch(admission.get("source_context_sha256", "")) is None
             or admission.get("index_sha256") != image_reference.rpartition("@sha256:")[2]
@@ -300,13 +312,25 @@ def _validate_release(
             )
         ):
             raise ValueError("private image attestations are invalid")
-        if admission.get("builder") != {
+        admitted_builder = admission.get("builder")
+        admitted_buildkit = buildkit
+        admitted_frontend = frontend
+        if schema_version == "milk.private-harness-release.v5" and isinstance(
+            admitted_builder, dict
+        ):
+            admitted_buildkit = adapter.immutable_image(
+                admitted_builder.get("buildkit_image_reference")
+            )
+            admitted_frontend = adapter.immutable_image(
+                admitted_builder.get("dockerfile_frontend_reference")
+            )
+        if admitted_builder != {
             "authority": "local-socket",
             "driver": "docker-container",
             "endpoint_kind": "local-socket",
-            "buildkit_image_reference": buildkit,
+            "buildkit_image_reference": admitted_buildkit,
             "buildkit_version": "v0.23.2",
-            "dockerfile_frontend_reference": frontend,
+            "dockerfile_frontend_reference": admitted_frontend,
             "provenance_mode": "max",
             "provenance_version": "v1",
             "sbom": True,

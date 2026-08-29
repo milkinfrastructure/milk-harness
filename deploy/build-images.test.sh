@@ -173,7 +173,7 @@ exit 0
 EOF
 chmod 0700 "$test_root/home/.docker/cli-plugins/docker-buildx"
 revision=1111111111111111111111111111111111111111
-gateway=ghcr.io/milkinfrastructure/milk-gateway@sha256:$(printf '%064d' 9)
+gateway=ghcr.io/milkinfrastructure/milk-gateway@sha256:$(python3 -c 'print("5" * 64)')
 source_context=$test_root/source-context.tar
 python3 - "$source_context" <<'PY'
 import io
@@ -287,17 +287,25 @@ for name, source in (
     ("attestation-manifest.json", os.environ["TEST_ATTESTATION"]),
 ):
     root.joinpath(name).write_bytes(Path(source).read_bytes())
-root.joinpath("config.json").write_text("{}", encoding="utf-8")
-root.joinpath("slsa-provenance.json").write_text("{}", encoding="utf-8")
-root.joinpath("spdx-sbom.json").write_text("{}", encoding="utf-8")
+config_raw = b"{}"
+statement_raw = b"{}"
+root.joinpath("config.json").write_bytes(config_raw)
+root.joinpath("slsa-provenance.json").write_bytes(statement_raw)
+root.joinpath("spdx-sbom.json").write_bytes(statement_raw)
 log = json.loads(root.joinpath("build-log.json").read_bytes())
 ops_log_raw = root.joinpath("ops-log-reference.json").read_bytes()
 ops_log_reference = json.loads(ops_log_raw)
 gateway = arguments.gateway_image_reference
 image_reference = repository + "@" + index_digest
 attestations = [
-    {"layer_sha256": "4" * 64, "predicate_type": "https://slsa.dev/provenance/v1"},
-    {"layer_sha256": "3" * 64, "predicate_type": "https://spdx.dev/Document"},
+    {
+        "layer_sha256": hashlib.sha256(statement_raw).hexdigest(),
+        "predicate_type": "https://slsa.dev/provenance/v1",
+    },
+    {
+        "layer_sha256": hashlib.sha256(statement_raw).hexdigest(),
+        "predicate_type": "https://spdx.dev/Document",
+    },
 ]
 receipt = {
     "schema_version": "milk.private-harness-image-build.v1",
@@ -311,7 +319,7 @@ receipt = {
     "amd64_manifest_sha256": os.environ["TEST_MANIFEST_DIGEST"],
     "attestation_manifest_sha256": os.environ["TEST_ATTESTATION_DIGEST"],
     "attestation_predicates": [item["predicate_type"] for item in attestations],
-    "config_sha256": "0" * 64,
+    "config_sha256": hashlib.sha256(config_raw).hexdigest(),
     "gateway_image_reference": gateway,
     "build_log": log,
     "ops_log_reference": ops_log_reference,
@@ -341,9 +349,11 @@ admission = {
     "gateway_image_reference": gateway,
     "index_sha256": os.environ["TEST_INDEX_DIGEST"],
     "amd64_manifest_sha256": os.environ["TEST_MANIFEST_DIGEST"],
-    "config_sha256": "0" * 64,
+    "config_sha256": hashlib.sha256(config_raw).hexdigest(),
     "attestation_manifest_sha256": os.environ["TEST_ATTESTATION_DIGEST"],
     "attestations": attestations,
+    "ops_log_reference": ops_log_reference,
+    "ops_log_reference_sha256": hashlib.sha256(ops_log_raw).hexdigest(),
     "platform": "linux/amd64",
     "visibility": "private",
     "builder": {
@@ -408,7 +418,14 @@ case "$*" in
   'auth token --hostname github.com') printf '%s\n' 'ephemeral-test-password' ;;
   *'/orgs/milkinfrastructure/packages?package_type=container&per_page=100'*)
     printf 'milk-gateway\tprivate\n'
-    [ "${TEST_PUBLIC_PACKAGE:-0}" -eq 0 ] || printf 'milk-student-train\tpublic\n'
+    if [ "${TEST_PUBLIC_PACKAGE:-0}" -eq 0 ]; then
+      printf 'milk-student-train\tprivate\n'
+    else
+      printf 'milk-student-train\tpublic\n'
+    fi
+    printf 'milk-student-branch\tprivate\n'
+    printf 'milk-teacher-gpt-oss\tprivate\n'
+    printf 'milk-jobs\tprivate\n'
     ;;
   *'/orgs/milkinfrastructure/packages/container/'*) printf '%s\n' 'private' ;;
   *) exit 91 ;;
@@ -457,7 +474,8 @@ case "${1:-} ${2:-}" in
     fi
     [ -n "$metadata" ]
     [ -n "$tag" ]
-    printf '{"containerimage.digest":"sha256:%s"}\n' "$TEST_INDEX_DIGEST" >"$metadata"
+    printf '{"containerimage.digest":"sha256:%s","image.name":"%s"}\n' \
+      "$TEST_INDEX_DIGEST" "$tag" >"$metadata"
     printf '%s\n' 'contentful fake build output'
     ;;
   'buildx imagetools')
@@ -587,11 +605,11 @@ expected_builder = {
 }
 expected_attestations = [
     {
-        "layer_sha256": "4" * 64,
+        "layer_sha256": hashlib.sha256(b"{}").hexdigest(),
         "predicate_type": "https://slsa.dev/provenance/v1",
     },
     {
-        "layer_sha256": "3" * 64,
+        "layer_sha256": hashlib.sha256(b"{}").hexdigest(),
         "predicate_type": "https://spdx.dev/Document",
     },
 ]
@@ -637,8 +655,8 @@ for artifact in ("student-train", "student-branch", "teacher-gpt-oss", "jobs"):
         "source_repository", "source_commit", "source_context_method",
         "source_context_sha256", "gateway_image_reference", "index_sha256",
         "amd64_manifest_sha256", "config_sha256",
-        "attestation_manifest_sha256", "attestations", "platform",
-        "visibility", "builder",
+        "attestation_manifest_sha256", "attestations", "ops_log_reference",
+        "ops_log_reference_sha256", "platform", "visibility", "builder",
     }
     assert admission["schema_version"] == "milk.private-image-admission.v1"
     assert admission["artifact"] == artifact
@@ -658,6 +676,10 @@ for artifact in ("student-train", "student-branch", "teacher-gpt-oss", "jobs"):
         root.joinpath(artifact, "attestation-manifest.json").read_bytes()
     ).hexdigest()
     assert admission["attestations"] == expected_attestations
+    assert admission["ops_log_reference"] == ops_log
+    assert admission["ops_log_reference_sha256"] == hashlib.sha256(
+        ops_log_raw
+    ).hexdigest()
     assert admission["platform"] == "linux/amd64"
     assert admission["visibility"] == "private"
     assert admission["builder"] == expected_builder
@@ -681,9 +703,134 @@ PY
 
 repeat=$test_root/evidence-repeat
 run_builder "$gateway" "$repeat" >/dev/null
-for artifact in student-train student-branch teacher-gpt-oss jobs; do
-  cmp "$output/$artifact/admission.json" "$repeat/$artifact/admission.json"
+python3 - "$output" "$repeat" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+first, second = map(Path, sys.argv[1:])
+for artifact in ("student-train", "student-branch", "teacher-gpt-oss", "jobs"):
+    left = json.loads(first.joinpath(artifact, "admission.json").read_bytes())
+    right = json.loads(second.joinpath(artifact, "admission.json").read_bytes())
+    for value in (left, right):
+        value.pop("ops_log_reference")
+        value.pop("ops_log_reference_sha256")
+    assert left == right
+PY
+
+seed=$test_root/verified-v3
+PYTHONPATH=$root python3 - "$seed" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+import tarfile
+
+from milk_harness.test_jobs import private_image_release
+
+seed = Path(sys.argv[1])
+harness = seed / "evidence" / "harness"
+private_image_release(harness, "milk.private-harness-release.v3")
+release_raw = (harness / "release.json").read_bytes()
+(seed / "evidence" / "native-builder-result.json").write_text(
+    json.dumps(
+        {
+            "schema_version": "milk.native-amd64-builder-result.v1",
+            "platform": "linux/amd64",
+            "harness_release_sha256": hashlib.sha256(release_raw).hexdigest(),
+            "harness_source_commit": "8" * 40,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ) + "\n",
+    encoding="utf-8",
+)
+archive = seed / "evidence.tar.gz"
+with tarfile.open(archive, "w:gz") as bundle:
+    bundle.add(seed / "evidence", arcname="evidence")
+(seed / "evidence-archive.json").write_bytes(
+    (json.dumps({
+        "schema_version": "milk.native-builder-evidence-archive.v1",
+        "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+        "bytes": archive.stat().st_size,
+    }, sort_keys=True, separators=(",", ":")) + "\n").encode()
+)
+PY
+
+rm -f -- "$test_root/commands.log"
+selective=$test_root/evidence-selective
+run_builder --reuse-release-dir "$seed" "$gateway" "$selective" \
+  >"$test_root/selective-stdout"
+[ "$(grep -c '^docker|.*buildx|build|' "$test_root/commands.log")" -eq 1 ]
+[ "$(grep -c '^docker|.*buildx|imagetools|inspect|--raw|' "$test_root/commands.log")" -eq 3 ]
+[ "$(grep -c '^verifier|' "$test_root/commands.log")" -eq 1 ]
+grep -Fq -- "--tag|ghcr.io/milkinfrastructure/milk-jobs:source-$revision" \
+  "$test_root/commands.log"
+! grep '^docker|.*buildx|build|' "$test_root/commands.log" | \
+  grep -Eq 'milk-(student-train|student-branch|teacher-gpt-oss)'
+[ ! -e "$selective/planner" ]
+for artifact in student-train student-branch teacher-gpt-oss; do
+  cmp "$seed/evidence/harness/$artifact/admission.json" \
+    "$selective/$artifact/admission.json"
 done
+python3 - "$selective" "$revision" "$gateway" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root, revision, gateway = sys.argv[1:]
+root = Path(root)
+release_raw = root.joinpath("release.json").read_bytes()
+release = json.loads(release_raw)
+assert release["schema_version"] == "milk.private-harness-release.v5"
+assert release["source_commit"] == revision
+assert release["gateway_image_reference"] == gateway
+assert [item["artifact"] for item in release["images"]] == [
+    "student-train", "student-branch", "teacher-gpt-oss", "jobs",
+]
+for item in release["images"]:
+    admission_raw = root.joinpath(item["artifact"], "admission.json").read_bytes()
+    admission = json.loads(admission_raw)
+    assert set(item) == {
+        "admission_sha256", "artifact", "image_reference",
+        "ops_log_reference_sha256", "source_commit",
+    }
+    assert item["source_commit"] == admission["source_commit"]
+    assert item["admission_sha256"] == hashlib.sha256(admission_raw).hexdigest()
+    if item["artifact"] == "jobs":
+        assert item["source_commit"] == revision
+    else:
+        assert item["source_commit"] == "8" * 40
+PY
+
+tampered_seed=$test_root/tampered-v3
+python3 - "$seed" "$tampered_seed" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+
+source, target = map(Path, sys.argv[1:])
+shutil.copytree(source, target)
+path = target / "evidence/harness/student-train/build-log.json"
+path.write_bytes(path.read_bytes() + b" ")
+PY
+rm -f -- "$test_root/commands.log"
+set +e
+run_builder --reuse-release-dir "$tampered_seed" "$gateway" \
+  "$test_root/tampered-evidence" >/dev/null 2>&1
+status=$?
+set -e
+[ "$status" -eq 70 ]
+[ "$(grep -c '^docker|.*buildx|build|' "$test_root/commands.log" || true)" -eq 0 ]
+python3 - "$test_root/tampered-evidence/failure.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+failure = json.loads(Path(sys.argv[1]).read_bytes())
+assert failure["stage"] == "verify-reused-release"
+PY
 
 assert_rejected() {
   name=$1

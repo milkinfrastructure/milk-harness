@@ -6806,6 +6806,14 @@ class BasetenJobs:
         )
         release = _strict_object(release_raw)
         admission = _strict_object(admission_raw)
+        release_item_fields = {
+            "admission_sha256",
+            "artifact",
+            "image_reference",
+            "ops_log_reference_sha256",
+        }
+        if release.get("schema_version") == "milk.private-harness-release.v5":
+            release_item_fields.add("source_commit")
         if (
             hashlib.sha256(release_raw).hexdigest()
             != workload["image_release_sha256"]
@@ -6821,17 +6829,16 @@ class BasetenJobs:
             or not isinstance(release.get("images"), list)
             or not any(
                 isinstance(item, dict)
-                and set(item)
-                == {
-                    "admission_sha256",
-                    "artifact",
-                    "image_reference",
-                    "ops_log_reference_sha256",
-                }
+                and set(item) == release_item_fields
                 and item["admission_sha256"]
                 == workload["image_admission_sha256"]
                 and item["artifact"] == artifact
                 and item["image_reference"] == admission.get("image_reference")
+                and (
+                    release.get("schema_version")
+                    != "milk.private-harness-release.v5"
+                    or item["source_commit"] == admission.get("source_commit")
+                )
                 and HEX64.fullmatch(item["ops_log_reference_sha256"] or "")
                 is not None
                 for item in release["images"]

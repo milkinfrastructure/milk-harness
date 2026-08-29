@@ -129,6 +129,48 @@ class ImageAdmissionTests(unittest.TestCase):
                 release,
             )
 
+    def test_v5_release_binds_each_admission_to_its_source_commit(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "release-v5"
+            release = load_local_private_image_release(
+                private_image_release(
+                    directory,
+                    schema_version="milk.private-harness-release.v5",
+                )
+            )
+            value = json.loads(release["release_raw"])
+            source_commits = {
+                item["artifact"]: item["source_commit"]
+                for item in value["images"]
+            }
+            self.assertEqual(source_commits["student-train"], "8" * 40)
+            self.assertEqual(source_commits["student-branch"], "8" * 40)
+            self.assertEqual(source_commits["teacher-gpt-oss"], "8" * 40)
+            self.assertEqual(source_commits["jobs"], "a" * 40)
+            store = LocalEvidenceStore(Path(root) / "evidence")
+            publish_private_image_release(store, release)
+            self.assertEqual(
+                load_published_private_image_release(
+                    store,
+                    release["release_sha256"],
+                ),
+                release,
+            )
+
+    def test_v5_release_rejects_a_cross_bound_source_commit(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "release-v5"
+            private_image_release(
+                directory,
+                schema_version="milk.private-harness-release.v5",
+            )
+            release_path = directory / "release.json"
+            value = json.loads(release_path.read_bytes())
+            value["images"][0]["source_commit"] = "f" * 40
+            release_path.write_bytes(canonical_json(value))
+            with self.assertRaisesRegex(ValueError, "admission is invalid"):
+                load_local_private_image_release(str(directory))
+
     def test_local_bundle_must_be_canonical(self):
         with tempfile.TemporaryDirectory() as root:
             directory, unused_release = self.fixture(root)
