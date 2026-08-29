@@ -82,8 +82,9 @@ been created.
    baseline smoke.
 7. After Baseten enables Training, run one explicitly confirmed mechanics proof
    inside the `$175` envelope.
-8. Verify terminal job evidence, candidate canary, baseline fallback, signed
-   zero, zero Baseten compute, and retained R2 evidence.
+8. Verify terminal job evidence, candidate canary, the OpenAI baseline under
+   candidate saturation, signed zero, zero Baseten compute, and retained R2
+   evidence.
 
 Generated mechanics traffic proves the cloud path only. Production qualification
 also requires retained complete real traffic before generated evals may affect a

@@ -102,9 +102,10 @@ known collection gaps. Prompts, model outputs, secret values, and raw provider
 logs do not enter that archive.
 
 The paid proof is complete only after the official-SDK baseline, admitted
-teacher/train/eval/winner results, authenticated canary, baseline fallback,
-active signed-zero route, candidate credential removal, winner termination, and
-zero Baseten compute all have matching immutable evidence.
+teacher/train/eval/winner results, authenticated canary, the OpenAI baseline
+under candidate saturation, active signed-zero route, candidate credential
+removal, winner termination, and zero Baseten compute all have matching
+immutable evidence.
 
 ## Credential inventory
 

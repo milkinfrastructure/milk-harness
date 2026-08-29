@@ -71,49 +71,31 @@ python3 -m milk_harness.publish_eval \
 
 The publisher validates the document against the checked-out harness source, creates its content-addressed object once, and succeeds only after exact body readback. Retain the printed outer-document SHA-256.
 
-Provision the three GitHub environments and distinct credentials in [`production-scheduler.md`](production-scheduler.md). Then set only the two repository variables:
+Provision the three GitHub environments and distinct credentials in
+[`production-scheduler.md`](production-scheduler.md). In GitHub, open
+**Settings -> Secrets and variables -> Actions -> Variables** and set only:
 
-```sh
-cd /absolute/path/to/milk-harness
-gh variable set MILK_EVAL_ID --body '<stable-eval-id>'
-gh variable set MILK_EVAL_CONFIG_JSON </absolute/eval.json
-```
+- `MILK_EVAL_ID` to the stable eval ID;
+- `MILK_EVAL_CONFIG_JSON` to the exact canonical contents of `eval.json`.
 
 The eval must bind the exact gateway deployment receipt, release receipts, image digests, provider resources, credential identities, and fixed proof contract.
 
 ## 4. Start reconciliation
 
-```sh
-gh workflow enable production-loop.yml
-gh workflow run production-loop.yml --ref main \
-  -f authorize_provider_creates=false \
-  -f authorize_mechanics_traffic=false \
-  -f managed_eval_id='<stable-eval-id>'
-```
+In GitHub, open **Actions -> Production loop**, enable the workflow if needed,
+then choose **Run workflow** on `main` with provider creates and mechanics
+traffic both disabled. Set `managed_eval_id` to the stable eval ID and leave the
+confirmation hash empty.
 
 The five-minute schedule reloads the exact repository config, observes completed R2 traffic, reconciles existing work, and exits. It cannot authorize a provider create.
 
 ## 5. Run the bounded mechanics proof
 
-After explicit action-time confirmation, write the exact eval digest into both one-use dispatches. Generate traffic once:
-
-```sh
-gh workflow run production-loop.yml --ref main \
-  -f authorize_provider_creates=false \
-  -f authorize_mechanics_traffic=true \
-  -f confirmed_run_config_sha256='<canonical-eval-sha256>' \
-  -f managed_eval_id='<stable-eval-id>'
-```
-
-Then authorize one provider pass at a time:
-
-```sh
-gh workflow run production-loop.yml --ref main \
-  -f authorize_provider_creates=true \
-  -f authorize_mechanics_traffic=false \
-  -f confirmed_run_config_sha256='<canonical-eval-sha256>' \
-  -f managed_eval_id='<stable-eval-id>'
-```
+After explicit action-time confirmation, use **Run workflow** twice with the
+same stable eval ID and canonical eval SHA-256. First enable mechanics traffic
+only. After its immutable receipt is present, run again with provider creates
+only. Never enable both booleans in one dispatch and never reuse either one-use
+authority.
 
 The fixed proof is at most 324 official-SDK calls and a `$175` all-in envelope: `$160` GPU authorization with a calculated `$142.50` maximum workload, plus `$15` external reserve. Scheduled runs never extend that authority.
 
@@ -125,6 +107,7 @@ Do not call the release qualified until immutable receipts agree on the exact ev
 2. admitted Baseten teacher result;
 3. train/merge and three ordered eval branches;
 4. deterministic winner, authenticated canary, and observed fallback;
-5. active signed-zero route, removed candidate credential, terminated winner, and both providers observed at zero compute.
+5. active signed-zero route, removed candidate credential, terminated winner,
+   and Baseten observed at zero compute.
 
 Record the exact receipts and remaining gaps in [`production-status.md`](production-status.md). Generated mechanics proves the cloud machinery only; real captured traffic remains the production-qualification gate.

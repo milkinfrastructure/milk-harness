@@ -31,7 +31,7 @@ jobs:
           python3 -m compileall -q milk_harness deploy
           python3 -m unittest discover -s milk_harness -p 'test_*.py'
           python3 -m unittest discover -s deploy/baseten -p 'test_*.py'
-          python3 -m unittest discover -s deploy/modal -p 'test_*.py'
+          python3 deploy/test_winner_admission.py
           python3 deploy/h100-fp8-runtime/test_runtime.py
           python3 deploy/student/test_runtime.py
           python3 deploy/teacher/gpt-oss-120b/test_runtime.py

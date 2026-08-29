@@ -14,7 +14,8 @@ The implementation has exactly two code repositories:
 - [`milkinfrastructure/milk-gateway`](https://github.com/milkinfrastructure/milk-gateway) owns the blue data plane plus immutable claims, results, routes, and GPU launch outbox.
 - [`milkinfrastructure/milk-harness`](https://github.com/milkinfrastructure/milk-harness) owns the black harness and jobs extension, including purple/teal worker implementations.
 
-R2 buckets, private OCI packages, Cloudflare, Baseten, and Modal are infrastructure or artifacts, not additional repositories.
+R2 buckets, private OCI packages, Cloudflare, and Baseten are infrastructure or
+artifacts, not additional repositories.
 
 The existing Exo agent loop is the whiteboard's manager harness. Milk extends it with one typed tool backed by a fixed host command; the command can inspect state, run reconciliation, or consume a one-use host approval before dispatching paid work. This adds no resident service or model-controlled shell surface.
 

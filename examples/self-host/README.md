@@ -1,6 +1,6 @@
 # Self-host control smoke
 
-This smoke validates and materializes a canonical `milk.eval.v1` document, then exercises the local Exo host-command boundary. It is a config/control smoke, not provider execution or production qualification. It does not contact GitHub, Cloudflare, Baseten, or Modal, cannot create paid work, and uses no GPU.
+This smoke validates and materializes a canonical `milk.eval.v1` document, then exercises the local Exo host-command boundary. It is a config/control smoke, not provider execution or production qualification. It does not contact GitHub, Cloudflare, or Baseten, cannot create paid work, and uses no GPU.
 
 Run it from the repository root with Python 3:
 
