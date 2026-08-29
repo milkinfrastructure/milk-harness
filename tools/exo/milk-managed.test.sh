@@ -204,7 +204,7 @@ rm -f "$approval" "$dispatch_log"
   "$(expected true "$eval_id" waiting_for_confirmation succeeded false true)" ]
 [ ! -e "$dispatch_log" ]
 
-printf '%s\n' "$eval_id" >"$approval"
+printf '%s\n' "$eval_confirmation_sha256" >"$approval"
 chmod 0600 "$approval"
 [ "$(TEST_GH_OBSERVATION=completed:success TEST_GH_DATABASE_ID=202 run run_confirmed "$eval_id")" = \
   "$(expected true "$eval_id" running running true false)" ]
@@ -217,21 +217,38 @@ grep -Fxq "confirmed_run_config_sha256=$eval_confirmation_sha256" "$dispatch_log
 grep -Fxq "managed_request_id=$request_id" "$dispatch_log"
 
 rm -f "$dispatch_log"
-printf '%s\n' "$second_eval_id" >"$approval"
+printf '%s\n' "$second_eval_confirmation_sha256" >"$approval"
 chmod 0600 "$approval"
 [ "$(TEST_GH_OBSERVATION=completed:success run run_confirmed "$eval_id")" = \
   "$(expected false "$eval_id" blocked succeeded true true)" ]
 [ ! -e "$approval" ]
 [ ! -e "$dispatch_log" ]
 
-printf '%s\n' "$eval_id" >"$approval"
+printf '%s\n' "$eval_confirmation_sha256" >"$approval"
+chmod 0600 "$approval"
+chmod 0640 "$test_root/evals/$eval_id.json"
+printf '{"schema_version":"milk.eval.test.v1","manifest":{"campaign_id":"%s"},"gateway_config":{"eval_id":"%s"},"name":"changed-after-approval"}\n' \
+  "$eval_id" "$eval_id" >"$test_root/evals/$eval_id.json"
+chmod 0440 "$test_root/evals/$eval_id.json"
+[ "$(TEST_GH_OBSERVATION=completed:success run run_confirmed "$eval_id")" = \
+  "$(expected false "$eval_id" blocked succeeded true true)" ]
+[ ! -e "$approval" ]
+[ ! -e "$dispatch_log" ]
+
+chmod 0640 "$test_root/evals/$eval_id.json"
+printf '{"schema_version":"milk.eval.test.v1","manifest":{"campaign_id":"%s"},"gateway_config":{"eval_id":"%s"},"name":"primary"}\n' \
+  "$eval_id" "$eval_id" >"$test_root/evals/$eval_id.json"
+chmod 0440 "$test_root/evals/$eval_id.json"
+[ "$(sha256_file "$test_root/evals/$eval_id.json")" = "$eval_confirmation_sha256" ]
+
+printf '%s\n' "$eval_confirmation_sha256" >"$approval"
 chmod 0600 "$approval"
 [ "$(TEST_GH_OBSERVATION=completed:success TEST_GH_WORKFLOW_FAIL=1 TEST_GH_LIST_FAIL=1 run run_confirmed "$eval_id")" = \
   "$(expected false "$eval_id" blocked unknown true false)" ]
 [ ! -e "$approval" ]
 [ "$(sed -n '4p' "$state")" = pending ]
 
-printf '%s\n' "$eval_id" >"$approval"
+printf '%s\n' "$eval_confirmation_sha256" >"$approval"
 chmod 0600 "$approval"
 rm -f "$dispatch_log"
 [ "$(TEST_GH_LIST_FAIL=1 run run_confirmed "$eval_id")" = \

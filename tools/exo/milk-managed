@@ -441,11 +441,12 @@ valid=true
 [ "$(mode_of "$consumed_file" || true)" = 600 ] || valid=false
 approval_size=$(size_of "$consumed_file" || true)
 [ "$approval_size" = 65 ] || valid=false
-approved_eval_id=
+approved_confirmation_sha256=
 if [ "$valid" = true ]; then
-  IFS= read -r approved_eval_id <"$consumed_file" || valid=false
+  IFS= read -r approved_confirmation_sha256 <"$consumed_file" || valid=false
 fi
-[ "$approved_eval_id" = "$eval_id" ] || valid=false
+valid_hex "$approved_confirmation_sha256" 64 || valid=false
+[ "$approved_confirmation_sha256" = "$eval_confirmation_sha256" ] || valid=false
 if [ "$valid" != true ]; then
   result false blocked "$prior_dispatch_state" true true
   exit 0

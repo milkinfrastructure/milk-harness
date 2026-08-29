@@ -93,21 +93,24 @@ GitHub run correlation is also eval-specific.
 ## Confirm one paid pass
 
 `run_confirmed` never creates approval. After calling `status` once for the
-eval, an operator may install one service-owned approval containing the exact
-eval ID and one newline:
+eval, an operator may install one service-owned approval containing the
+SHA-256 of the exact admitted document bytes and one newline:
 
 ```sh
 approval_source=$(mktemp)
 chmod 0600 "$approval_source"
-printf '%s\n' "$EVAL_ID" >"$approval_source"
+EVAL_CONFIRMATION_SHA256=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$EVAL_DOCUMENT")
+printf '%s\n' "$EVAL_CONFIRMATION_SHA256" >"$approval_source"
 sudo install -o "$EXO_SERVICE_USER" -g "$(id -gn "$EXO_SERVICE_USER")" -m 0600 \
   "$approval_source" \
   "/var/lib/milk/evals/$EVAL_ID/run-confirmed.approval"
 rm -f -- "$approval_source"
 ```
 
-The command atomically consumes that file before it validates or dispatches
-paid work. Approval remains one-use; there is no persistent activation.
+The command atomically consumes that file and requires it to match the admitted
+document bytes validated for that call before it dispatches paid work. Changing
+the document after approval blocks dispatch. Approval remains one-use; there is
+no persistent activation.
 
 Before any dispatch, the command writes a `pending` record, then resolves and
 persists exactly one GitHub Actions database ID for `main` and
@@ -130,9 +133,13 @@ or `failed`. `dispatch_state` is `idle`, `pending`, `running`, `succeeded`,
 
 A successful GitHub workflow pass reports `state=ready`,
 `dispatch_state=succeeded`, and `generation_done=false`. It never reports
-generation complete because the host command does not yet read authoritative
-generation counts. The manager can therefore continue another bounded pass
-instead of stopping on dispatch success.
+generation complete because the workflow does not yet publish a typed,
+content-free completion receipt bound to the GitHub run ID, eval ID, and exact
+document SHA-256. That receipt must carry the gateway's authoritative
+`max_decisions`, `claimed_decisions`, and `remaining_decisions`; only a validated
+zero `remaining_decisions` may set `generation_done=true`. Workflow success and
+free-form logs are not completion authority, so the command fails closed until
+that receipt exists.
 
 Unknown fields, malformed output, stderr, and process errors are never returned
 to the model.
