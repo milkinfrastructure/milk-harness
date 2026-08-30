@@ -3540,8 +3540,8 @@ def _readiness(
     }
 
 
-EVAL_INSTRUCTIONS = """Return only JSON as {"pairs":[[input,expected],...]}. Input case_plan rows are [suite,source_trace_sha256,oracle,operation,selection_reason]. Input trace rows are [trace_sha256,endpoint,request_text_prefix,response_text_prefix,flags,modality_bits,request_bytes], where endpoint is c or r, flags bits are request_truncated=1,response_truncated=2,error=4,tool_use=8, and modality bits are audio=1,file=2,image=4,text=8,unknown=16. Return exactly one pair for every case_plan row in the same order. The case plan is authoritative and contains all representative rows first, then all tail rows; do not return or alter its metadata. Each input must be a newly generated task grounded in its source trace, not a copy of the source request or response. Expected must be a concise canonical reference answer that is sufficient to answer the input and suitable for strict normalized comparison; never use a generic acknowledgement. Formally, casefold(expected) must not be a substring of casefold(input). Before returning, self-check every pair; while casefold(expected) is a substring of casefold(input), rewrite input to remove the expected answer without changing the task. Make every [input,expected] pair distinct. Do not include trace IDs, reasoning, configuration, routes, budgets, or prose."""
-EVAL_ANSWER_LEAK_REPAIR = "milk.eval-answer-leak-repair.v1"
+EVAL_INSTRUCTIONS = """Return only JSON as {"pairs":[[input,expected],...]}. Input case_plan rows are [suite,source_trace_sha256,oracle,operation,selection_reason]. Input trace rows are [trace_sha256,endpoint,request_text_prefix,response_text_prefix,flags,modality_bits,request_bytes], where endpoint is c or r, flags bits are request_truncated=1,response_truncated=2,error=4,tool_use=8, and modality bits are audio=1,file=2,image=4,text=8,unknown=16. Return exactly one pair for every case_plan row in the same order. The case plan is authoritative and contains all representative rows first, then all tail rows; do not return or alter its metadata. Each input must be a newly generated task grounded in its source trace, not a copy of the source request or response. Expected must be a concise canonical reference answer that is sufficient to answer the input and suitable for strict normalized comparison; never use a generic acknowledgement. Formally, casefold(expected) must not be a substring of casefold(input), except that an atomic numeric expected answer may also appear as an operand in the task. Before returning, self-check every pair; while a non-numeric casefold(expected) is a substring of casefold(input), rewrite input to remove the expected answer without changing the task. Make every [input,expected] pair distinct. Do not include trace IDs, reasoning, configuration, routes, budgets, or prose."""
+EVAL_ANSWER_LEAK_REPAIR = "milk.eval-answer-leak-repair.v2"
 
 
 def _eval_operation_quotas(labels, representative_count):
@@ -3729,13 +3729,18 @@ def _eval_case_plan(
     return plan
 
 
-def _repair_eval_input_answer_leak(input_text, expected):
+def _eval_answer_leaks(input_text, expected):
     if not isinstance(input_text, str) or not isinstance(expected, str):
+        return False
+    if re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", expected.strip()):
+        return False
+    return bool(expected) and expected.casefold() in input_text.casefold()
+
+
+def _repair_eval_input_answer_leak(input_text, expected):
+    if not _eval_answer_leaks(input_text, expected):
         return input_text
     folded_expected = expected.casefold()
-    folded_input = input_text.casefold()
-    if not folded_expected or folded_expected not in folded_input:
-        return input_text
     marker = next(
         character
         for codepoint in range(33, 0x110000)
@@ -3749,7 +3754,7 @@ def _repair_eval_input_answer_leak(input_text, expected):
         re.escape(expected), marker, input_text, flags=re.IGNORECASE
     )
     if folded_expected in repaired.casefold():
-        repaired = folded_input.replace(folded_expected, marker)
+        repaired = input_text.casefold().replace(folded_expected, marker)
     return repaired
 
 
@@ -3844,7 +3849,7 @@ def _validate_eval_output(
         total_text_bytes += len(input_text.encode()) + len(expected.encode())
         if total_text_bytes > MAX_EVAL_TEXT_BYTES:
             raise ValueError("eval output text exceeds the aggregate byte cap")
-        if expected.casefold() in input_text.casefold():
+        if _eval_answer_leaks(input_text, expected):
             raise ValueError("eval input leaks its expected answer")
         if input_text.casefold() in source_text_prefixes[case["source_trace_sha256"]]:
             raise ValueError("eval input copies its source trace")
@@ -4009,8 +4014,7 @@ def _local_eval_rejection(case, trace, context_bytes):
     ):
         return "unsupported"
     input_text = case["input"].casefold()
-    expected = case["expected"].casefold()
-    if expected in input_text:
+    if _eval_answer_leaks(case["input"], case["expected"]):
         return "leaked"
     if not _normalized_text(case["input"]):
         return "vacuous"
