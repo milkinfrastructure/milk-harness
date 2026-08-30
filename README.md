@@ -33,12 +33,25 @@ For each new closed window, the harness:
 4. computes readiness from fixed gates: 100 independent sessions for the
    mechanics profile or 750 for production, plus capture and parse quality;
 5. when ready, asks the teacher for representative and tail eval cases and
-   writes an unsigned candidate route proposal.
+   limits production evals to text-only cases with a reference answer;
+6. runs a separate teacher validation job that rejects unsupported, copied,
+   leaked, unanswerable, or vacuous cases;
+7. scores a deterministic held-out subset against the incumbent and candidate
+   under configured error, latency, and reference-similarity thresholds; and
+8. writes an unsigned candidate route proposal only after both gates pass.
 
 Claims, results, summaries, eval versions, and proposals are content-addressed
 or create-only. Small `current.json` objects are compare-and-swap pointers. A
 replay with the same source objects makes no teacher call and produces the same
-identities.
+identities. A non-ready, validation-failed, or score-failed pass retains its
+pending source and advances the current proposal pointer to an explicit blocked
+record, so an older proposal cannot remain current.
+
+The checked-in two-call teacher limit intentionally splits a ready source across
+two invocations: classification plus generation, then cached reconciliation plus
+validation. Candidate scoring has its own exact call and token limits. The
+reported `statistically_qualified` field covers traffic sufficiency only; it is
+not route qualification.
 
 The bridge never receives a route-signing key and cannot activate traffic.
 An operator reviews the proposal, signs a gateway route manifest, and publishes
@@ -56,8 +69,15 @@ before changing the deployed config.
 Production fixes `source.max_traces` at 3,000, providing four retained traces
 per required independent session while keeping one bounded source manifest. It
 also fixes both classification sample fields at 750, and readiness requires 750
-classified independent sessions.
+classified independent sessions. `source.eval_trace_bytes` bounds the request
+and response context supplied for each generated eval.
 Set `candidate_basis_points` to `0` when the desired proposal is baseline-only.
+
+Candidate reference scoring uses deterministic normalized token F1 with an
+explicit negation mismatch guard. It is a conservative reference-similarity
+proxy, not a general semantic judge or sufficient evidence by itself for a
+production route. Independent teacher validation and operator review remain
+required.
 
 The fixed reconciliation function uses these environment values:
 
@@ -68,14 +88,16 @@ MILK_CONTROL_R2_ACCESS_KEY_ID
 MILK_CONTROL_R2_SECRET_ACCESS_KEY
 MILK_CONTROL_R2_SESSION_TOKEN    # optional
 BASETEN_API_KEY
+MILK_GATEWAY_API_KEY
+MILK_HARNESS_REVISION            # exact 40-character deployed Git revision
 ```
 
 The R2 identity needs read/write access only to the configured scope prefix.
 The teacher must expose the configured HTTPS Chat Completions endpoint and
 return usage counts plus JSON output. The checked-in example reserves at most
-two calls per pass, stops new calls at $20 cumulative accounted spend, and has
-an absolute $25 ceiling. Token rates must be set to current conservative rates
-for those limits to be meaningful.
+two teacher calls and sixteen scoring calls per pass, stops new calls at $20
+cumulative accounted spend, and has an absolute $25 ceiling. Token rates must
+be set to current conservative rates for those limits to be meaningful.
 
 ## Invocation boundary
 
@@ -106,5 +128,6 @@ python -m unittest discover -s milk_harness -p 'test_*.py'
 
 The `mechanics` profile and generated traffic prove object-store mechanics.
 Production qualification requires real gateway traffic, 750 independent
-sessions, a successful hosted teacher pass, eval generation, an operator-signed
-route, and a live routing/fallback check.
+sessions, hosted generation and validation, a passing incumbent/candidate score,
+an operator-signed route, and a live routing/fallback check. Offline token-F1
+mechanics do not establish semantic production quality.

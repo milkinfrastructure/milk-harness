@@ -20,20 +20,24 @@ from milk_harness.evidence import LocalEvidenceStore, canonical_json
 from milk_harness.run_once import (
     CAPABILITY_VALUES,
     CLASSIFIER_INSTRUCTIONS,
+    DirectScoreClient,
     DOMAIN_VALUES,
     EVAL_INSTRUCTIONS,
     MAX_DECODED_TRACE_BYTES,
     OPERATION_VALUES,
     ORACLE_VALUES,
     RunConfig,
+    ScoreResponse,
     TeacherResponse,
     _RunMeter,
     _advance_pointer,
     _conservative_token_bound,
     _decompress_trace,
+    _eligible_eval_inputs,
     _eval_case_plan,
     _eval_cases_from_pairs,
     _eval_operation_quotas,
+    _harness_revision,
     _load_optional_json,
     _parse_trace,
     _request_text_prefix,
@@ -72,6 +76,12 @@ class FakeTeacher:
                     for index in range(len(payload["case_plan"]))
                 ]
             }
+        elif task == "validate_eval":
+            value = {
+                "verdicts": [
+                    [True, "accepted"] for unused_case in payload["cases"]
+                ]
+            }
         else:
             raise AssertionError(task)
         return TeacherResponse(
@@ -80,6 +90,70 @@ class FakeTeacher:
             max(1, _conservative_token_bound(canonical_json(payload))),
             16,
         )
+
+    def invoke(self, *, target_name, target, case, job_id):
+        del target
+        self.calls.append(("score_" + target_name, job_id))
+        return ScoreResponse(
+            case["expected"],
+            f"fake-{target_name}-{case['case_id']}",
+            8,
+            4,
+            10 if target_name == "incumbent" else 9,
+        )
+
+
+class VagueEvalTeacher(FakeTeacher):
+    def complete(self, **kwargs):
+        response = super().complete(**kwargs)
+        if kwargs["task"] == "generate_eval":
+            for pair in response.value["pairs"]:
+                pair[1] = "OK"
+        return response
+
+
+class BadScoreClient:
+    def __init__(self):
+        self.calls = []
+
+    def invoke(self, *, target_name, target, case, job_id):
+        del target
+        self.calls.append((target_name, case["case_id"], job_id))
+        output = case["expected"] if target_name == "incumbent" else "unrelated"
+        return ScoreResponse(
+            output,
+            f"bad-score-{target_name}-{case['case_id']}",
+            8,
+            4,
+            12,
+        )
+
+
+class FakeHttpResponse:
+    def __init__(self, value, request_id="score-request-1"):
+        self.raw = canonical_json(value)
+        self.headers = {"x-request-id": request_id}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, unused_type, unused_value, unused_traceback):
+        return False
+
+    def read(self, limit):
+        return self.raw[:limit]
+
+
+class RecordingOpener:
+    def __init__(self, response):
+        self.response = response
+        self.request = None
+        self.timeout = None
+
+    def open(self, request, timeout):
+        self.request = request
+        self.timeout = timeout
+        return self.response
 
 
 def config(root, profile="mechanics"):
@@ -97,6 +171,7 @@ def config(root, profile="mechanics"):
                 "max_trace_object_bytes": 4 * 1024 * 1024,
                 "max_total_trace_bytes": 64 * 1024 * 1024,
                 "teacher_trace_bytes": 64,
+                "eval_trace_bytes": 1024,
                 "classifier_sample_sessions": 750 if profile == "production" else 100,
             },
             "teacher": {
@@ -129,6 +204,33 @@ def config(root, profile="mechanics"):
                 "api_base_url": "https://candidate.example.test/v1/",
                 "model": "glm-test",
                 "candidate_basis_points": 100,
+            },
+            "candidate_score": {
+                "incumbent": {
+                    "api_url": "https://incumbent.example.test/v1/chat/completions",
+                    "model": "glm-test",
+                    "api_key_env": "MILK_TEST_INCUMBENT_API_KEY",
+                    "input_rate_microusd_per_million": 1000,
+                    "output_rate_microusd_per_million": 2000,
+                },
+                "candidate": {
+                    "api_url": "https://candidate.example.test/v1/chat/completions",
+                    "model": "glm-test",
+                    "api_key_env": "MILK_TEST_CANDIDATE_API_KEY",
+                    "input_rate_microusd_per_million": 1000,
+                    "output_rate_microusd_per_million": 2000,
+                },
+                "held_out_cases": 3,
+                "timeout_seconds": 30,
+                "max_calls_per_run": 6,
+                "max_input_tokens_per_call": 128,
+                "max_output_tokens_per_call": 16,
+                "max_total_tokens_per_run": 864,
+                "case_reference_similarity_basis_points": 9500,
+                "minimum_candidate_reference_pass_basis_points": 9000,
+                "minimum_reference_pass_delta_basis_points": 0,
+                "maximum_candidate_error_basis_points": 0,
+                "maximum_candidate_p95_latency_ms": 1000,
             },
         }
     )
@@ -566,6 +668,17 @@ def add_responses_zstd_trace(root):
 
 
 class RunOnceTests(unittest.TestCase):
+    def test_harness_revision_is_exact_and_fail_closed(self):
+        with mock.patch.dict(
+            os.environ, {"MILK_HARNESS_REVISION": "a" * 40}, clear=False
+        ):
+            self.assertEqual(_harness_revision(), "a" * 40)
+        with mock.patch.dict(
+            os.environ, {"MILK_HARNESS_REVISION": "A" * 40}, clear=False
+        ):
+            with self.assertRaisesRegex(ValueError, "lowercase Git commit"):
+                _harness_revision()
+
     def test_real_rust_nanosecond_trace_timestamp_is_accepted(self):
         with tempfile.TemporaryDirectory() as root:
             store = LocalEvidenceStore(root)
@@ -717,7 +830,9 @@ class RunOnceTests(unittest.TestCase):
             self.assertEqual(first["provider_calls"], 2)
             self.assertGreater(first["accounted_incremental_spend_microusd"], 0)
             self.assertIsNotNone(first["eval_sha256"])
-            self.assertIsNotNone(first["route_proposal_sha256"])
+            self.assertIsNone(first["eval_validation_sha256"])
+            self.assertIsNone(first["candidate_score_sha256"])
+            self.assertIsNone(first["route_proposal_sha256"])
             self.assertFalse(first["route_activation_attempted"])
             self.assertEqual([call[0] for call in teacher.calls], ["classify", "generate_eval"])
             claim_key = next(
@@ -753,19 +868,56 @@ class RunOnceTests(unittest.TestCase):
 
             second = run_once(config(root), store=store, teacher=teacher, now=NOW + dt.timedelta(days=1))
 
-            self.assertEqual(len(teacher.calls), 2)
+            self.assertEqual(second["provider_calls"], 7)
             self.assertFalse(second["classifier_provider_called"])
             self.assertFalse(second["eval_provider_called"])
-            self.assertEqual(second["accounted_incremental_spend_microusd"], 0)
             self.assertEqual(second["summary_sha256"], first["summary_sha256"])
             self.assertEqual(second["readiness_sha256"], first["readiness_sha256"])
             self.assertEqual(second["eval_sha256"], first["eval_sha256"])
-            self.assertEqual(second["route_proposal_sha256"], first["route_proposal_sha256"])
+            self.assertIsNotNone(second["eval_validation_sha256"])
+            self.assertIsNotNone(second["candidate_score_sha256"])
+            self.assertIsNotNone(second["route_proposal_sha256"])
+            self.assertEqual(second["pending_source"], "advanced")
+
+            third = run_once(
+                config(root),
+                store=store,
+                teacher=teacher,
+                now=NOW + dt.timedelta(days=2),
+            )
+            self.assertEqual(third["provider_calls"], 0)
+            self.assertFalse(third["eval_validation_provider_called"])
+            self.assertFalse(third["candidate_score_provider_called"])
+            self.assertEqual(
+                third["eval_validation_sha256"],
+                second["eval_validation_sha256"],
+            )
+            self.assertEqual(
+                third["candidate_score_sha256"],
+                second["candidate_score_sha256"],
+            )
+            self.assertEqual(
+                third["route_proposal_sha256"],
+                second["route_proposal_sha256"],
+            )
 
             route_pointer = json.loads(
                 store.get(f"{config(root).prefix}/route-proposals/current.json")
             )
             proposal = json.loads(store.get(route_pointer["version_key"]))
+            self.assertEqual(
+                proposal["schema_version"], "milk.unsigned-route-proposal.v2"
+            )
+            self.assertEqual(
+                proposal["eval_validation_sha256"],
+                second["eval_validation_sha256"],
+            )
+            self.assertEqual(
+                proposal["candidate_score_sha256"],
+                second["candidate_score_sha256"],
+            )
+            self.assertEqual(len(proposal["provenance"]["harness_revision"]), 40)
+            self.assertEqual(len(proposal["provenance"]["config_sha256"]), 64)
             self.assertNotIn("activation_authorized", proposal)
             self.assertNotIn("signature", proposal)
             self.assertFalse(store.list(f"{config(root).prefix}/routes"))
@@ -786,6 +938,156 @@ class RunOnceTests(unittest.TestCase):
                 if key.endswith("/result.json.zst")
             ]
             self.assertEqual(len(result_keys), 1)
+
+    def test_vacuous_eval_is_rejected_content_addressed_and_replay_safe(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = seed(root)
+            bounded = config(root)
+            teacher = VagueEvalTeacher()
+
+            generated = run_once(
+                bounded, store=store, teacher=teacher, now=NOW
+            )
+            rejected = run_once(
+                bounded, store=store, teacher=teacher, now=NOW
+            )
+            replay = run_once(
+                bounded, store=store, teacher=teacher, now=NOW
+            )
+
+            self.assertIsNotNone(generated["eval_sha256"])
+            self.assertIsNone(generated["route_proposal_sha256"])
+            self.assertIsNotNone(rejected["eval_validation_sha256"])
+            self.assertIsNone(rejected["candidate_score_sha256"])
+            self.assertIsNone(rejected["route_proposal_sha256"])
+            self.assertEqual(rejected["pending_source"], "existing")
+            self.assertFalse(rejected["route_activation_attempted"])
+            self.assertEqual(replay["provider_calls"], 0)
+            self.assertEqual(
+                replay["eval_validation_sha256"],
+                rejected["eval_validation_sha256"],
+            )
+            pointer = json.loads(
+                store.get(
+                    bounded.prefix
+                    + "/eval-validations/mechanics-v1/current.json"
+                )
+            )
+            revision = json.loads(store.get(pointer["version_key"]))
+            self.assertFalse(revision["accepted"])
+            self.assertEqual(
+                {item["reason"] for item in revision["output"]["rejections"]},
+                {"vacuous"},
+            )
+            route_pointer = json.loads(
+                store.get(bounded.prefix + "/route-proposals/current.json")
+            )
+            blocked = json.loads(store.get(route_pointer["version_key"]))
+            self.assertEqual(
+                blocked["schema_version"], "milk.route-proposal-blocked.v1"
+            )
+            self.assertEqual(blocked["reason"], "eval_validation_rejected")
+
+    def test_failed_candidate_score_replaces_prior_proposal_and_retains_source(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = seed(root)
+            bounded = config(root)
+            teacher = FakeTeacher()
+            run_once(bounded, store=store, teacher=teacher, now=NOW)
+            accepted = run_once(
+                bounded, store=store, teacher=teacher, now=NOW
+            )
+            self.assertIsNotNone(accepted["route_proposal_sha256"])
+
+            second_hour = HOUR + dt.timedelta(hours=1)
+            seed(
+                root,
+                count=100,
+                hour=second_hour,
+                index_offset=200,
+            )
+            run_once(
+                bounded,
+                store=store,
+                teacher=teacher,
+                now=NOW + dt.timedelta(hours=2),
+            )
+            scorer = BadScoreClient()
+            rejected = run_once(
+                bounded,
+                store=store,
+                teacher=teacher,
+                scorer=scorer,
+                now=NOW + dt.timedelta(hours=2),
+            )
+
+            self.assertIsNotNone(rejected["eval_validation_sha256"])
+            self.assertIsNotNone(rejected["candidate_score_sha256"])
+            self.assertIsNone(rejected["route_proposal_sha256"])
+            self.assertEqual(rejected["pending_source"], "existing")
+            self.assertEqual(len(scorer.calls), 6)
+            route_pointer = json.loads(
+                store.get(bounded.prefix + "/route-proposals/current.json")
+            )
+            blocked = json.loads(store.get(route_pointer["version_key"]))
+            self.assertEqual(blocked["reason"], "candidate_score_rejected")
+            self.assertNotEqual(
+                route_pointer["version_sha256"],
+                accepted["route_proposal_sha256"],
+            )
+
+    def test_direct_score_client_is_bounded_and_uses_exact_target(self):
+        bounded = config("/tmp")
+        response = FakeHttpResponse(
+            {
+                "choices": [
+                    {"message": {"content": "expected result"}}
+                ],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 3},
+            }
+        )
+        opener = RecordingOpener(response)
+        clock = iter((1.0, 1.012))
+        client = DirectScoreClient(
+            bounded.candidate_score,
+            opener=opener,
+            monotonic=lambda: next(clock),
+        )
+        target = bounded.candidate_score.candidate
+        case = {
+            "case_id": "a" * 64,
+            "input": "answer this bounded request",
+            "expected": "expected result",
+        }
+
+        with mock.patch.dict(
+            os.environ,
+            {"MILK_TEST_CANDIDATE_API_KEY": "secret-test-key"},
+            clear=False,
+        ):
+            result = client.invoke(
+                target_name="candidate",
+                target=target,
+                case=case,
+                job_id="b" * 64,
+            )
+
+        self.assertEqual(result.output, "expected result")
+        self.assertEqual(result.input_tokens, 7)
+        self.assertEqual(result.output_tokens, 3)
+        self.assertEqual(result.latency_ms, 12)
+        self.assertEqual(opener.request.full_url, target.api_url)
+        self.assertEqual(opener.timeout, bounded.candidate_score.timeout_seconds)
+        request = json.loads(opener.request.data)
+        self.assertEqual(request["model"], target.model)
+        self.assertEqual(request["temperature"], 0)
+        self.assertEqual(
+            request["max_tokens"],
+            bounded.candidate_score.max_output_tokens_per_call,
+        )
+        headers = dict(opener.request.header_items())
+        self.assertEqual(headers["Authorization"], "Bearer secret-test-key")
+        self.assertIn("candidate", headers["Idempotency-key"])
 
     def test_invalid_provider_output_is_terminal_and_never_retried(self):
         with tempfile.TemporaryDirectory() as root:
@@ -925,6 +1227,12 @@ class RunOnceTests(unittest.TestCase):
                     teacher=retry_teacher,
                     now=NOW,
                 )
+                completed = run_once(
+                    retry_config,
+                    store=store,
+                    teacher=retry_teacher,
+                    now=NOW,
+                )
 
                 self.assertEqual(
                     [call[0] for call in failed_teacher.calls], failed_tasks
@@ -936,7 +1244,7 @@ class RunOnceTests(unittest.TestCase):
                 )
                 self.assertEqual(same_identity_teacher.calls, [])
                 self.assertEqual(
-                    [call[0] for call in retry_teacher.calls],
+                    [call[0] for call in retry_teacher.calls[:2]],
                     ["classify", "generate_eval"],
                 )
                 self.assertEqual(
@@ -944,7 +1252,10 @@ class RunOnceTests(unittest.TestCase):
                     failed["source_manifest_sha256"],
                 )
                 self.assertIsNotNone(retried["eval_sha256"])
-                self.assertEqual(retried["pending_source"], "advanced")
+                self.assertEqual(retried["pending_source"], "existing")
+                self.assertIsNotNone(completed["eval_validation_sha256"])
+                self.assertIsNotNone(completed["candidate_score_sha256"])
+                self.assertEqual(completed["pending_source"], "advanced")
 
     def test_explicit_http_error_is_terminal_not_transport_ambiguous(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1112,16 +1423,26 @@ class RunOnceTests(unittest.TestCase):
                 teacher=teacher,
                 now=NOW + dt.timedelta(hours=3),
             )
+            fifth = run_once(
+                config(root),
+                store=store,
+                teacher=teacher,
+                now=NOW + dt.timedelta(hours=4),
+            )
 
             self.assertNotEqual(first["source_manifest_sha256"], second["source_manifest_sha256"])
             self.assertEqual(first["trace_count"], 30)
             self.assertEqual(second["trace_count"], 60)
             self.assertEqual(third["trace_count"], 100)
-            self.assertEqual(fourth["trace_count"], 0)
+            self.assertEqual(fourth["trace_count"], 100)
+            self.assertEqual(fifth["trace_count"], 0)
             self.assertEqual(first["watermark"], "created")
             self.assertEqual(second["watermark"], "advanced")
             self.assertEqual(third["watermark"], "advanced")
-            self.assertEqual([call[0] for call in teacher.calls], ["classify", "generate_eval"])
+            self.assertEqual(
+                [call[0] for call in teacher.calls[:3]],
+                ["classify", "generate_eval", "validate_eval"],
+            )
 
     def test_pending_source_crosses_max_windows_without_deadlock(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1389,6 +1710,64 @@ class RunOnceTests(unittest.TestCase):
                         8,
                         bounded.source.teacher_trace_bytes,
                     )
+
+    def test_production_eval_filter_reports_unsupported_categories(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = seed(root, count=1)
+            bounded = config(root)
+            source = _parse_trace(
+                store,
+                bounded,
+                store.list(bounded.prefix + "/traffic")[0],
+            )
+            tool_trace = replace(
+                source,
+                object_sha256="b" * 64,
+                request={
+                    "messages": [{"role": "user", "content": "use a tool"}],
+                    "tools": [{"type": "function", "name": "lookup"}],
+                },
+            )
+            non_reference = replace(source, object_sha256="c" * 64)
+            abstained = replace(source, object_sha256="d" * 64)
+            labels = [
+                {
+                    "trace_sha256": trace_value.object_sha256,
+                    "operation": "answer",
+                    "domain": "general",
+                    "capabilities": ["knowledge"],
+                    "expected_oracle": oracle,
+                    "language": "en",
+                    "abstain": is_abstained,
+                }
+                for trace_value, oracle, is_abstained in (
+                    (source, "reference", False),
+                    (tool_trace, "reference", False),
+                    (non_reference, "human", False),
+                    (abstained, "reference", True),
+                )
+            ]
+
+            eligible_traces, eligible_labels, unsupported = (
+                _eligible_eval_inputs(
+                    replace(bounded, profile="production"),
+                    [source, tool_trace, non_reference, abstained],
+                    labels,
+                )
+            )
+
+            self.assertEqual(
+                [item.object_sha256 for item in eligible_traces],
+                [source.object_sha256],
+            )
+            self.assertEqual(
+                [item["trace_sha256"] for item in eligible_labels],
+                [source.object_sha256],
+            )
+            self.assertEqual(
+                unsupported,
+                {"abstained": 1, "non_reference_oracle": 1, "tool_use": 1},
+            )
 
     def test_representative_quotas_use_deterministic_largest_remainders(self):
         labels = [
@@ -1659,6 +2038,9 @@ class RunOnceTests(unittest.TestCase):
             report = run_once(
                 bounded, store=store, teacher=FakeTeacher(), now=NOW
             )
+            report = run_once(
+                bounded, store=store, teacher=FakeTeacher(), now=NOW
+            )
 
             self.assertIsNotNone(report["route_proposal_sha256"])
             pointer = json.loads(
@@ -1737,6 +2119,7 @@ def _config_dict(root):
             "max_trace_object_bytes": 4 * 1024 * 1024,
             "max_total_trace_bytes": 64 * 1024 * 1024,
             "teacher_trace_bytes": 64,
+            "eval_trace_bytes": 1024,
             "classifier_sample_sessions": 100,
         },
         "teacher": {
@@ -1769,6 +2152,33 @@ def _config_dict(root):
             "api_base_url": "https://candidate.example.test/v1/",
             "model": "glm-test",
             "candidate_basis_points": 100,
+        },
+        "candidate_score": {
+            "incumbent": {
+                "api_url": "https://incumbent.example.test/v1/chat/completions",
+                "model": "glm-test",
+                "api_key_env": "MILK_TEST_INCUMBENT_API_KEY",
+                "input_rate_microusd_per_million": 1000,
+                "output_rate_microusd_per_million": 2000,
+            },
+            "candidate": {
+                "api_url": "https://candidate.example.test/v1/chat/completions",
+                "model": "glm-test",
+                "api_key_env": "MILK_TEST_CANDIDATE_API_KEY",
+                "input_rate_microusd_per_million": 1000,
+                "output_rate_microusd_per_million": 2000,
+            },
+            "held_out_cases": 3,
+            "timeout_seconds": 30,
+            "max_calls_per_run": 6,
+            "max_input_tokens_per_call": 128,
+            "max_output_tokens_per_call": 16,
+            "max_total_tokens_per_run": 864,
+            "case_reference_similarity_basis_points": 9500,
+            "minimum_candidate_reference_pass_basis_points": 9000,
+            "minimum_reference_pass_delta_basis_points": 0,
+            "maximum_candidate_error_basis_points": 0,
+            "maximum_candidate_p95_latency_ms": 1000,
         },
     }
     return value
