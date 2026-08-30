@@ -3347,26 +3347,18 @@ def _run_once_locked(config, store, teacher, now, lease):
                     proposal_key,
                     proposal_parent,
                 )
-    classification_terminal = classification is not None and classification.get("outcome") not in {
-        "not_started_budget_or_call_cap",
-        "not_started_input_token_cap",
-        "not_started_input_size_cap",
-        "in_progress_or_ambiguous",
-    }
-    eval_terminal = (
+    classification_succeeded = (
+        classification is not None
+        and classification.get("outcome") == "succeeded"
+    )
+    eval_succeeded_or_not_needed = (
         not readiness["ready"]
         or (
             eval_result is not None
-            and eval_result.get("outcome")
-            not in {
-                "not_started_budget_or_call_cap",
-                "not_started_input_token_cap",
-                "not_started_input_size_cap",
-                "in_progress_or_ambiguous",
-            }
+            and eval_result.get("outcome") == "succeeded"
         )
     )
-    if classification_terminal and eval_terminal:
+    if classification_succeeded and eval_succeeded_or_not_needed:
         unused_empty_sha256, pending_status = _publish_pending_source(
             store,
             config,

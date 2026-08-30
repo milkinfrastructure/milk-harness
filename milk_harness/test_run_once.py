@@ -791,6 +791,64 @@ class RunOnceTests(unittest.TestCase):
             )
             self.assertFalse(second["eval_provider_called"])
 
+    def test_failed_teacher_source_retries_after_teacher_change(self):
+        failures = (
+            (HttpErrorTeacher, ["classify"]),
+            (UnsupportedTailTeacher, ["classify", "generate_eval"]),
+        )
+        for teacher_type, failed_tasks in failures:
+            with self.subTest(
+                teacher=teacher_type.__name__
+            ), tempfile.TemporaryDirectory() as root:
+                store = seed(root)
+                failed_teacher = teacher_type()
+                failed = run_once(
+                    config(root), store=store, teacher=failed_teacher, now=NOW
+                )
+                pointer = json.loads(
+                    store.get(config(root).prefix + "/pending-source/current.json")
+                )
+                pending = json.loads(store.get(pointer["version_key"]))
+
+                same_identity_teacher = FakeTeacher()
+                replay = run_once(
+                    config(root),
+                    store=store,
+                    teacher=same_identity_teacher,
+                    now=NOW,
+                )
+
+                changed = _config_dict(root)
+                changed["teacher"]["model"] = "glm-test-retry"
+                retry_config = RunConfig.parse(changed)
+                retry_teacher = FakeTeacher()
+                retried = run_once(
+                    retry_config,
+                    store=store,
+                    teacher=retry_teacher,
+                    now=NOW,
+                )
+
+                self.assertEqual(
+                    [call[0] for call in failed_teacher.calls], failed_tasks
+                )
+                self.assertEqual(len(pending["traces"]), 100)
+                self.assertEqual(
+                    replay["source_manifest_sha256"],
+                    failed["source_manifest_sha256"],
+                )
+                self.assertEqual(same_identity_teacher.calls, [])
+                self.assertEqual(
+                    [call[0] for call in retry_teacher.calls],
+                    ["classify", "generate_eval"],
+                )
+                self.assertEqual(
+                    retried["source_manifest_sha256"],
+                    failed["source_manifest_sha256"],
+                )
+                self.assertIsNotNone(retried["eval_sha256"])
+                self.assertEqual(retried["pending_source"], "advanced")
+
     def test_explicit_http_error_is_terminal_not_transport_ambiguous(self):
         with tempfile.TemporaryDirectory() as root:
             store = seed(root)
