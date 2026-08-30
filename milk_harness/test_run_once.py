@@ -2831,7 +2831,7 @@ class RunOnceTests(unittest.TestCase):
             self.assertIsNotNone(report["eval_sha256"])
             self.assertEqual(
                 teacher.eval_payload["schema_version"],
-                "milk.eval-generation-input.v5",
+                "milk.eval-generation-input.v6",
             )
             self.assertEqual(
                 teacher.eval_payload["answer_leak_repair"],
