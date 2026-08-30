@@ -34,6 +34,7 @@ from milk_harness.run_once import (
     _request_text_prefix,
     _stream_response,
     _teacher_request_body,
+    _utc,
     run_once,
 )
 
@@ -576,6 +577,28 @@ def add_responses_zstd_trace(root):
 
 
 class RunOnceTests(unittest.TestCase):
+    def test_real_rust_nanosecond_trace_timestamp_is_accepted(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = LocalEvidenceStore(root)
+            identifier, value = trace(0)
+            value["catalog"]["occurred_at"] = "2026-08-29T10:00:00.240391261Z"
+            key = (
+                f"milk/v1/scopes/{SCOPE_ID}/traffic/2026/08/29/10/"
+                f"{identifier}.json"
+            )
+            store.create(key, canonical_json(value), "application/json")
+
+            parsed = _parse_trace(store, config(root), key)
+
+            self.assertEqual(
+                parsed.occurred_at,
+                HOUR + dt.timedelta(microseconds=240391),
+            )
+
+    def test_utc_rejects_more_than_rust_nanosecond_precision(self):
+        with self.assertRaisesRegex(ValueError, "must be a UTC timestamp"):
+            _utc("2026-08-29T10:00:00.2403912610Z", "occurred_at")
+
     def test_subthreshold_free_run_does_not_require_teacher_key(self):
         with tempfile.TemporaryDirectory() as root:
             store = seed(root, count=30)

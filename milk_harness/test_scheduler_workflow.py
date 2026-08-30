@@ -90,6 +90,7 @@ class ProductionWorkflowTest(unittest.TestCase):
         config = RunConfig.parse(json.loads(raw))
         production = RunConfig.parse(json.loads(CONFIG.read_bytes()))
         self.assertEqual(config.profile, "mechanics")
+        self.assertEqual(config.scope_id, "f7f88ff0-5947-440c-a661-e4e35f1d04e0")
         self.assertNotEqual(config.scope_id, production.scope_id)
         self.assertEqual(config.source.classifier_sample_sessions, 100)
         self.assertEqual(config.teacher.reasoning_effort, "low")

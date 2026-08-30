@@ -1,6 +1,6 @@
 {
   "schema_version": "milk.harness-run-config.v1",
-  "scope_id": "8111652a-9640-495f-b53f-351c21abc799",
+  "scope_id": "f7f88ff0-5947-440c-a661-e4e35f1d04e0",
   "profile": "mechanics",
   "store": {
     "kind": "r2",
