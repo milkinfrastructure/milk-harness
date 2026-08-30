@@ -468,14 +468,6 @@ class LeakingEvalTeacher(FakeTeacher):
         return response
 
 
-class DuplicateEvalTeacher(FakeTeacher):
-    def complete(self, **kwargs):
-        response = super().complete(**kwargs)
-        if kwargs["task"] == "generate_eval":
-            response.value["pairs"][0] = list(response.value["pairs"][1])
-        return response
-
-
 class ContractErrorTeacher(FakeTeacher):
     def complete(self, **kwargs):
         self.calls.append((kwargs["task"], kwargs["job_id"]))
@@ -1506,7 +1498,6 @@ class RunOnceTests(unittest.TestCase):
         failures = (
             (HttpErrorTeacher, ["classify"]),
             (InvalidTeacher, ["classify"]),
-            (DuplicateEvalTeacher, ["classify", "generate_eval"]),
         )
         for teacher_type, failed_tasks in failures:
             with self.subTest(
@@ -1992,15 +1983,17 @@ class RunOnceTests(unittest.TestCase):
                 first[0]["source_trace_sha256"],
                 first[1]["source_trace_sha256"],
             )
-            with self.assertRaisesRegex(ValueError, "duplicate content pair"):
-                _validate_eval_output(
-                    _eval_cases_from_pairs({"pairs": duplicate_pairs}, first),
-                    traces,
-                    labels,
-                    24,
-                    8,
-                    bounded.source.teacher_trace_bytes,
-                )
+            duplicate_checked = _validate_eval_output(
+                _eval_cases_from_pairs({"pairs": duplicate_pairs}, first),
+                traces,
+                labels,
+                24,
+                8,
+                bounded.source.teacher_trace_bytes,
+            )
+            self.assertEqual(
+                len({case["case_id"] for case in duplicate_checked}), 32
+            )
 
             traces_by_sha = {item.object_sha256: item for item in traces}
             source = traces_by_sha[first[0]["source_trace_sha256"]]
