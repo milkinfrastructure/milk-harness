@@ -2093,10 +2093,11 @@ class RunOnceTests(unittest.TestCase):
                 ).hexdigest(),
             )
             semantic_keys = ranked[:32]
-            tool_keys = semantic_keys[:2] + ranked[32:34]
+            tool_keys = ranked[32:34]
             rare_keys = semantic_keys[2:6]
+            long_keys = semantic_keys[6:10]
 
-            for index, key in enumerate(tool_keys + rare_keys):
+            for index, key in enumerate(tool_keys + rare_keys + long_keys):
                 raw, etag = store.get_versioned(key)
                 retained = json.loads(raw)
                 request_value = {
@@ -2107,7 +2108,11 @@ class RunOnceTests(unittest.TestCase):
                             "content": (
                                 f"rare operation {index}"
                                 if key in rare_keys
-                                else f"tool operation {index}"
+                                else (
+                                    f"long operation {index} " + "x" * 1000
+                                    if key in long_keys
+                                    else f"tool operation {index}"
+                                )
                             ),
                         }
                     ],
@@ -2129,6 +2134,9 @@ class RunOnceTests(unittest.TestCase):
                 self.assertTrue(
                     store.replace(key, canonical_json(retained), etag)
                 )
+            tool_sha256s = {
+                _parse_trace(store, bounded, key).object_sha256 for key in tool_keys
+            }
 
             teacher = TailSupplementTeacher()
             report = run_once(
@@ -2148,17 +2156,28 @@ class RunOnceTests(unittest.TestCase):
                 teacher.payloads["classify"]["semantic_row_count"], 32
             )
             self.assertEqual(len(teacher.payloads["classify"]["rows"]), 34)
+            self.assertEqual(
+                sum(bool(row[2] & 4) for row in teacher.payloads["classify"]["rows"]),
+                2,
+            )
             self.assertEqual(summary["semantic"]["classified"], 32)
             self.assertEqual(summary["semantic"]["operation"]["answer"], 28)
             self.assertEqual([row[0] for row in plan].count("representative"), 24)
             self.assertEqual([row[0] for row in plan].count("tail"), 8)
             self.assertEqual(
                 sorted(row[4] for row in plan if row[0] == "tail"),
-                ["rare"] * 4 + ["tool_use"] * 4,
+                ["long_context"] * 4 + ["rare"] * 4,
             )
             self.assertEqual(len({row[1] for row in plan}), 32)
+            self.assertTrue(tool_sha256s.isdisjoint(row[1] for row in plan))
             self.assertEqual(
                 len(teacher.payloads["generate_eval"]["traces"]), 32
+            )
+            self.assertTrue(
+                all(
+                    not row[4] & 8
+                    for row in teacher.payloads["generate_eval"]["traces"]
+                )
             )
 
     def test_production_classifier_allows_eight_tail_supplements(self):
@@ -2361,7 +2380,7 @@ class RunOnceTests(unittest.TestCase):
                     label = {
                         "trace_sha256": sha256,
                         "operation": operation,
-                        "expected_oracle": "reference",
+                        "expected_oracle": "schema",
                         "abstain": False,
                     }
                     labels.append(label)
@@ -2383,6 +2402,7 @@ class RunOnceTests(unittest.TestCase):
             self.assertEqual(representative_operations.count("answer"), 18)
             self.assertEqual(representative_operations.count("classify"), 6)
             self.assertEqual(len(plan), 32)
+            self.assertEqual({item["oracle"] for item in plan}, {"reference"})
             self.assertEqual(
                 len({item["source_trace_sha256"] for item in plan}), 32
             )
@@ -2443,6 +2463,26 @@ class RunOnceTests(unittest.TestCase):
             self.assertEqual(
                 unsupported,
                 {"abstained": 1, "non_reference_oracle": 1, "tool_use": 1},
+            )
+
+            mechanics_traces, mechanics_labels, mechanics_unsupported = (
+                _eligible_eval_inputs(
+                    bounded,
+                    [source, tool_trace, non_reference, abstained],
+                    labels,
+                )
+            )
+            self.assertEqual(
+                [item.object_sha256 for item in mechanics_traces],
+                [source.object_sha256, non_reference.object_sha256],
+            )
+            self.assertEqual(
+                [item["trace_sha256"] for item in mechanics_labels],
+                [source.object_sha256, non_reference.object_sha256],
+            )
+            self.assertEqual(
+                mechanics_unsupported,
+                {"abstained": 1, "tool_use": 1},
             )
 
     def test_representative_quotas_are_deterministic_and_capacity_capped(self):
@@ -2753,11 +2793,15 @@ class RunOnceTests(unittest.TestCase):
             self.assertIsNotNone(report["eval_sha256"])
             self.assertEqual(
                 teacher.eval_payload["schema_version"],
-                "milk.eval-generation-input.v4",
+                "milk.eval-generation-input.v5",
             )
             self.assertEqual(
                 teacher.eval_payload["answer_leak_repair"],
                 "milk.eval-answer-leak-repair.v1",
+            )
+            self.assertEqual(
+                teacher.eval_payload["eval_oracle_policy"],
+                "generated-reference-from-text-source-v1",
             )
             self.assertTrue(
                 all(item[3] == "answer" for item in teacher.eval_payload["case_plan"])
