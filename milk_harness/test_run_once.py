@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 import datetime as dt
 import hashlib
 import json
@@ -30,12 +31,17 @@ from milk_harness.run_once import (
     _advance_pointer,
     _conservative_token_bound,
     _decompress_trace,
+    _eval_case_plan,
+    _eval_cases_from_pairs,
+    _eval_operation_quotas,
     _load_optional_json,
     _parse_trace,
     _request_text_prefix,
+    _response_text_prefix,
     _stream_response,
     _teacher_request_body,
     _utc,
+    _validate_eval_output,
     run_once,
 )
 
@@ -60,34 +66,12 @@ class FakeTeacher:
                 ]
             }
         elif task == "generate_eval":
-            traces = payload["traces"]
-            operations = {label[0]: label[1] for label in payload["labels"]}
-            longest = max(traces, key=lambda value: value[6])
-            cases = []
-            for suite, count in (
-                ("representative", payload["representative_cases"]),
-                ("tail", payload["tail_cases"]),
-            ):
-                for index in range(count):
-                    source = (
-                        traces[index % len(traces)]
-                        if suite == "representative"
-                        else longest
-                    )
-                    cases.append(
-                        {
-                            "suite": suite,
-                            "source_trace_sha256": source[0],
-                            "input": f"{suite} input {index}",
-                            "expected": f"{suite} expected {index}",
-                            "oracle": "reference",
-                            "operation": operations[source[0]],
-                            "selection_reason": "representative_mix"
-                            if suite == "representative"
-                            else "long_context",
-                        }
-                    )
-            value = {"cases": cases}
+            value = {
+                "pairs": [
+                    [f"new task {index}", f"expected result {index}"]
+                    for index in range(len(payload["case_plan"]))
+                ]
+            }
         else:
             raise AssertionError(task)
         return TeacherResponse(
@@ -339,14 +323,18 @@ class InvalidTeacher(FakeTeacher):
         )
 
 
-class UnsupportedTailTeacher(FakeTeacher):
+class LeakingEvalTeacher(FakeTeacher):
     def complete(self, **kwargs):
         response = super().complete(**kwargs)
         if kwargs["task"] == "generate_eval":
-            for case in response.value["cases"]:
-                if case["suite"] == "tail":
-                    case["selection_reason"] = "tool_use"
+            response.value["pairs"][0] = ["same", "same"]
         return response
+
+
+class ContractErrorTeacher(FakeTeacher):
+    def complete(self, **kwargs):
+        self.calls.append((kwargs["task"], kwargs["job_id"]))
+        raise ValueError("teacher response content must be a JSON string")
 
 
 class HttpErrorTeacher(FakeTeacher):
@@ -727,6 +715,7 @@ class RunOnceTests(unittest.TestCase):
             self.assertFalse(first["statistically_qualified"])
             self.assertEqual(first["trace_count"], 100)
             self.assertEqual(first["provider_calls"], 2)
+            self.assertGreater(first["accounted_incremental_spend_microusd"], 0)
             self.assertIsNotNone(first["eval_sha256"])
             self.assertIsNotNone(first["route_proposal_sha256"])
             self.assertFalse(first["route_activation_attempted"])
@@ -767,6 +756,7 @@ class RunOnceTests(unittest.TestCase):
             self.assertEqual(len(teacher.calls), 2)
             self.assertFalse(second["classifier_provider_called"])
             self.assertFalse(second["eval_provider_called"])
+            self.assertEqual(second["accounted_incremental_spend_microusd"], 0)
             self.assertEqual(second["summary_sha256"], first["summary_sha256"])
             self.assertEqual(second["readiness_sha256"], first["readiness_sha256"])
             self.assertEqual(second["eval_sha256"], first["eval_sha256"])
@@ -807,11 +797,72 @@ class RunOnceTests(unittest.TestCase):
             self.assertFalse(first["ready"])
             self.assertFalse(second["classifier_provider_called"])
             self.assertEqual(len(teacher.calls), 1)
+            self.assertEqual(first["provider_tokens"], 20)
+            self.assertEqual(first["accounted_incremental_spend_microusd"], 2)
+            self.assertEqual(second["accounted_incremental_spend_microusd"], 0)
+            result_key = next(
+                key
+                for key in store.list(config(root).prefix + "/jobs/classify")
+                if key.endswith("/result.json.zst")
+            )
+            result = _load_optional_json(store, result_key, compressed=True)
+            self.assertEqual(result["failure_stage"], "validation")
+            self.assertEqual(result["provider_request_id"], "invalid-response")
+            self.assertEqual(result["input_tokens"], 10)
+            self.assertEqual(result["output_tokens"], 10)
+            self.assertEqual(result["calculated_cost_microusd"], 2)
+            self.assertEqual(result["accounted_cost_microusd"], 2)
+            self.assertEqual(
+                result["failure_message_sha256"],
+                hashlib.sha256(
+                    b"classification output must contain one label per trace"
+                ).hexdigest(),
+            )
+            self.assertNotIn("output", result)
 
-    def test_eval_tail_requires_source_evidence(self):
+    def test_provider_contract_failure_uses_conservative_accounting(self):
         with tempfile.TemporaryDirectory() as root:
             store = seed(root)
-            teacher = UnsupportedTailTeacher()
+            bounded = config(root)
+            teacher = ContractErrorTeacher()
+
+            report = run_once(bounded, store=store, teacher=teacher, now=NOW)
+
+            result_key = next(
+                key
+                for key in store.list(bounded.prefix + "/jobs/classify")
+                if key.endswith("/result.json.zst")
+            )
+            result = _load_optional_json(store, result_key, compressed=True)
+            self.assertEqual(result["failure_stage"], "provider_contract")
+            self.assertIsNone(result["provider_request_id"])
+            self.assertEqual(
+                result["input_tokens"], bounded.teacher.max_input_tokens_per_call
+            )
+            self.assertEqual(
+                result["output_tokens"], bounded.teacher.max_output_tokens_per_call
+            )
+            self.assertIsNone(result["calculated_cost_microusd"])
+            self.assertEqual(
+                result["accounted_cost_microusd"],
+                bounded.teacher.reserved_cost(),
+            )
+            self.assertEqual(
+                report["accounted_incremental_spend_microusd"],
+                bounded.teacher.reserved_cost(),
+            )
+            self.assertEqual(
+                result["failure_message_sha256"],
+                hashlib.sha256(
+                    b"teacher response content must be a JSON string"
+                ).hexdigest(),
+            )
+            self.assertNotIn("output", result)
+
+    def test_eval_local_validation_failure_records_actual_usage(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = seed(root)
+            teacher = LeakingEvalTeacher()
             first = run_once(config(root), store=store, teacher=teacher, now=NOW)
             second = run_once(config(root), store=store, teacher=teacher, now=NOW)
 
@@ -821,12 +872,26 @@ class RunOnceTests(unittest.TestCase):
                 [call[0] for call in teacher.calls], ["classify", "generate_eval"]
             )
             self.assertFalse(second["eval_provider_called"])
+            result_key = next(
+                key
+                for key in store.list(config(root).prefix + "/jobs/generate-eval")
+                if key.endswith("/result.json.zst")
+            )
+            result = _load_optional_json(store, result_key, compressed=True)
+            self.assertEqual(result["failure_stage"], "validation")
+            self.assertTrue(result["provider_request_id"].startswith("fake-"))
+            self.assertEqual(result["calculated_cost_microusd"], result["accounted_cost_microusd"])
+            self.assertEqual(
+                result["failure_message_sha256"],
+                hashlib.sha256(b"eval input leaks its expected answer").hexdigest(),
+            )
+            self.assertNotIn("output", result)
 
     def test_failed_teacher_source_retries_after_teacher_change(self):
         failures = (
             (HttpErrorTeacher, ["classify"]),
             (InvalidTeacher, ["classify"]),
-            (UnsupportedTailTeacher, ["classify", "generate_eval"]),
+            (LeakingEvalTeacher, ["classify", "generate_eval"]),
         )
         for teacher_type, failed_tasks in failures:
             with self.subTest(
@@ -1184,8 +1249,16 @@ class RunOnceTests(unittest.TestCase):
 
     def test_eval_request_uses_strict_exact_case_schema(self):
         payload = {
-            "representative_cases": 24,
-            "tail_cases": 8,
+            "case_plan": [
+                [
+                    "representative" if index < 24 else "tail",
+                    f"{index:064x}",
+                    "reference",
+                    "answer",
+                    "representative_mix" if index < 24 else "long_context",
+                ]
+                for index in range(32)
+            ],
         }
         request = _teacher_request_body(
             config("/tmp").teacher,
@@ -1197,33 +1270,159 @@ class RunOnceTests(unittest.TestCase):
         self.assertEqual(response_format["type"], "json_schema")
         self.assertTrue(response_format["json_schema"]["strict"])
         schema = response_format["json_schema"]["schema"]
-        cases = schema["properties"]["cases"]
-        self.assertEqual(cases["minItems"], 32)
-        self.assertEqual(cases["maxItems"], 32)
-        item = cases["items"]
+        pairs = schema["properties"]["pairs"]
+        self.assertEqual(pairs["minItems"], 32)
+        self.assertEqual(pairs["maxItems"], 32)
+        item = pairs["items"]
+        self.assertEqual(item["minItems"], 2)
+        self.assertEqual(item["maxItems"], 2)
         self.assertEqual(
-            item["required"],
-            [
-                "suite",
-                "source_trace_sha256",
-                "input",
-                "expected",
-                "oracle",
-                "operation",
-                "selection_reason",
-            ],
+            [field["type"] for field in item["prefixItems"]],
+            ["string", "string"],
         )
-        self.assertFalse(item["additionalProperties"])
-        self.assertEqual(
-            item["properties"]["suite"]["enum"],
-            ["representative", "tail"],
+        self.assertEqual(schema["required"], ["pairs"])
+        self.assertFalse(schema["additionalProperties"])
+        self.assertIn("same order", EVAL_INSTRUCTIONS)
+        self.assertIn("casefold(expected)", EVAL_INSTRUCTIONS)
+        self.assertIn("not a copy of the source request or response", EVAL_INSTRUCTIONS)
+        self.assertNotIn("24 in the deployed configuration", EVAL_INSTRUCTIONS)
+        self.assertNotIn("8 in the deployed configuration", EVAL_INSTRUCTIONS)
+
+    def test_all_answer_plain_text_eval_plan_is_deterministic(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = seed(root)
+            bounded = config(root)
+            traces = [
+                replace(
+                    _parse_trace(store, bounded, key),
+                    request_raw=b"x" * 182,
+                )
+                for key in store.list(bounded.prefix + "/traffic")
+            ]
+            labels = [
+                {
+                    "trace_sha256": item.object_sha256,
+                    "operation": "answer",
+                    "domain": "general",
+                    "capabilities": ["knowledge"],
+                    "expected_oracle": "reference",
+                    "language": "en",
+                    "abstain": False,
+                }
+                for item in traces
+            ]
+
+            first = _eval_case_plan(traces, labels, 24, 8)
+            second = _eval_case_plan(list(reversed(traces)), labels, 24, 8)
+
+            self.assertEqual(first, second)
+            self.assertEqual(len(first), 32)
+            self.assertEqual(
+                [item["suite"] for item in first],
+                ["representative"] * 24 + ["tail"] * 8,
+            )
+            self.assertTrue(all(item["operation"] == "answer" for item in first))
+            self.assertTrue(all(item["oracle"] == "reference" for item in first))
+            self.assertTrue(
+                all(
+                    item["selection_reason"] == "long_context"
+                    for item in first[24:]
+                )
+            )
+            self.assertEqual(
+                len({item["source_trace_sha256"] for item in first[24:]}),
+                8,
+            )
+
+            pairs = [
+                [f"new task {index}", f"expected result {index}"]
+                for index in range(32)
+            ]
+            checked = _validate_eval_output(
+                _eval_cases_from_pairs({"pairs": pairs}, first),
+                traces,
+                labels,
+                24,
+                8,
+                bounded.source.teacher_trace_bytes,
+            )
+            self.assertEqual(len(checked), 32)
+
+            duplicate_pairs = [list(pair) for pair in pairs]
+            duplicate_pairs[1] = list(duplicate_pairs[0])
+            self.assertNotEqual(
+                first[0]["source_trace_sha256"],
+                first[1]["source_trace_sha256"],
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate content pair"):
+                _validate_eval_output(
+                    _eval_cases_from_pairs({"pairs": duplicate_pairs}, first),
+                    traces,
+                    labels,
+                    24,
+                    8,
+                    bounded.source.teacher_trace_bytes,
+                )
+
+            traces_by_sha = {item.object_sha256: item for item in traces}
+            source = traces_by_sha[first[0]["source_trace_sha256"]]
+            for copied_input in (
+                _request_text_prefix(
+                    source.request,
+                    source.endpoint,
+                    bounded.source.teacher_trace_bytes,
+                ),
+                _response_text_prefix(
+                    source.response,
+                    source.endpoint,
+                    bounded.source.teacher_trace_bytes,
+                ),
+            ):
+                copied_pairs = [list(pair) for pair in pairs]
+                copied_pairs[0][0] = copied_input.swapcase()
+                with self.assertRaisesRegex(ValueError, "copies its source trace"):
+                    _validate_eval_output(
+                        _eval_cases_from_pairs({"pairs": copied_pairs}, first),
+                        traces,
+                        labels,
+                        24,
+                        8,
+                        bounded.source.teacher_trace_bytes,
+                    )
+
+    def test_representative_quotas_use_deterministic_largest_remainders(self):
+        labels = [
+            {"operation": operation, "abstain": False}
+            for operation, count in (("answer", 6), ("summarize", 3), ("code", 1))
+            for unused_index in range(count)
+        ]
+
+        quotas = _eval_operation_quotas(labels, 8)[2]
+
+        self.assertEqual(quotas, {"answer": 4, "code": 2, "summarize": 2})
+
+    def test_eval_pairs_must_match_plan_count_exactly(self):
+        plan = [
+            {
+                "suite": "representative",
+                "source_trace_sha256": f"{index:064x}",
+                "oracle": "reference",
+                "operation": "answer",
+                "selection_reason": "representative_mix",
+            }
+            for index in range(32)
+        ]
+        with self.assertRaisesRegex(ValueError, "pair count"):
+            _eval_cases_from_pairs(
+                {"pairs": [[f"task {index}", f"result {index}"] for index in range(31)]},
+                plan,
+            )
+        cases = _eval_cases_from_pairs(
+            {"pairs": [[f"task {index}", f"result {index}"] for index in range(32)]},
+            plan,
         )
-        self.assertEqual(
-            item["properties"]["oracle"]["enum"], list(ORACLE_VALUES)
-        )
-        self.assertEqual(
-            item["properties"]["operation"]["enum"], list(OPERATION_VALUES)
-        )
+        self.assertEqual(len(cases["cases"]), 32)
+        self.assertEqual(cases["cases"][0]["source_trace_sha256"], "0" * 64)
 
     def test_sampling_skips_unparseable_sessions_before_applying_its_cap(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1291,7 +1490,7 @@ class RunOnceTests(unittest.TestCase):
             replay = run_once(config(root), store=store, teacher=teacher, now=NOW)
             self.assertFalse(replay["ready"])
             self.assertEqual(teacher.calls, [])
-            self.assertGreater(replay["accounted_incremental_spend_microusd"], 0)
+            self.assertEqual(replay["accounted_incremental_spend_microusd"], 0)
             reconciled = run_once(
                 config(root),
                 store=store,
@@ -1411,6 +1610,7 @@ class RunOnceTests(unittest.TestCase):
                 meter = _RunMeter(store, bounded)
 
             self.assertEqual(meter.accounted_spend, 1001)
+            self.assertEqual(meter.incremental_spend, 0)
 
     def test_accounting_history_fails_closed_at_its_lifetime_bound(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1439,10 +1639,15 @@ class RunOnceTests(unittest.TestCase):
 
             self.assertTrue(report["ready"])
             self.assertIsNotNone(report["eval_sha256"])
-            self.assertEqual(teacher.eval_payload["operation_counts"], {"answer": 90})
-            self.assertTrue(
-                all(label[1] == "answer" for label in teacher.eval_payload["labels"])
+            self.assertEqual(
+                teacher.eval_payload["schema_version"],
+                "milk.eval-generation-input.v2",
             )
+            self.assertTrue(
+                all(item[3] == "answer" for item in teacher.eval_payload["case_plan"])
+            )
+            self.assertNotIn("labels", teacher.eval_payload)
+            self.assertNotIn("operation_counts", teacher.eval_payload)
 
     def test_zero_basis_points_emits_baseline_only_proposal(self):
         with tempfile.TemporaryDirectory() as root:
