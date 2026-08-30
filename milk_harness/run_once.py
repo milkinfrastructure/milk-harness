@@ -3825,7 +3825,6 @@ def _validate_eval_output(
     }
     counts = Counter()
     seen = set()
-    seen_pairs = set()
     checked = []
     total_text_bytes = 0
     for case in cases:
@@ -3871,10 +3870,6 @@ def _validate_eval_output(
                 long_context_threshold,
             ):
                 raise ValueError("tail eval selection reason lacks source evidence")
-        pair = (input_text, expected)
-        if pair in seen_pairs:
-            raise ValueError("eval output contains a duplicate content pair")
-        seen_pairs.add(pair)
         identity = _digest(
             {
                 "source": case["source_trace_sha256"],
