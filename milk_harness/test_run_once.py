@@ -1453,14 +1453,14 @@ class RunOnceTests(unittest.TestCase):
             )
             self.assertNotIn("output", result)
 
-    def test_eval_answer_leak_is_repaired_before_strict_validation(self):
+    def test_eval_answer_leak_is_rejected_without_mutating_input(self):
         with tempfile.TemporaryDirectory() as root:
             store = seed(root)
             teacher = LeakingEvalTeacher()
             first = run_once(config(root), store=store, teacher=teacher, now=NOW)
 
             self.assertTrue(first["ready"])
-            self.assertIsNotNone(first["eval_sha256"])
+            self.assertIsNone(first["eval_sha256"])
             self.assertEqual(
                 [call[0] for call in teacher.calls], ["classify", "generate_eval"]
             )
@@ -1470,12 +1470,28 @@ class RunOnceTests(unittest.TestCase):
                 if key.endswith("/result.json.zst")
             )
             result = _load_optional_json(store, result_key, compressed=True)
-            self.assertEqual(result["outcome"], "succeeded")
-            self.assertEqual(len(result["output"]), 5)
-            repaired = next(
-                case for case in result["output"] if case["expected"] == "four"
+            self.assertEqual(result["outcome"], "invalid_provider_response")
+            self.assertEqual(result["failure_stage"], "validation")
+            self.assertEqual(
+                result["failure_message_sha256"],
+                hashlib.sha256(b"eval input leaks its expected answer").hexdigest(),
             )
-            self.assertNotIn("four", repaired["input"].casefold())
+            self.assertNotIn("output", result)
+
+            plan = [
+                {
+                    "suite": "representative",
+                    "source_trace_sha256": "a" * 64,
+                    "oracle": "reference",
+                    "operation": "answer",
+                    "selection_reason": "representative_mix",
+                }
+            ]
+            leaking_input = "Compute two plus two without copying four."
+            value = _eval_cases_from_pairs(
+                {"pairs": [[leaking_input, "four"]]}, plan
+            )
+            self.assertEqual(value["cases"][0]["input"], leaking_input)
 
     def test_numeric_operand_is_not_rewritten_as_answer_leak(self):
         plan = [
@@ -1910,9 +1926,14 @@ class RunOnceTests(unittest.TestCase):
         self.assertIn("same order", EVAL_INSTRUCTIONS)
         self.assertIn("casefold(expected)", EVAL_INSTRUCTIONS)
         self.assertIn(
-            "while a non-numeric casefold(expected) is a substring of casefold(input)",
+            "self-contained, substantive, and uniquely answerable",
             EVAL_INSTRUCTIONS,
         )
+        self.assertIn("never reuse an input across rows", EVAL_INSTRUCTIONS)
+        self.assertIn(
+            "solve every emitted input from the input alone", EVAL_INSTRUCTIONS
+        )
+        self.assertIn("never delete, replace, mask, or corrupt", EVAL_INSTRUCTIONS)
         self.assertIn("not a copy of the source request or response", EVAL_INSTRUCTIONS)
         self.assertNotIn("24 in the deployed configuration", EVAL_INSTRUCTIONS)
         self.assertNotIn("8 in the deployed configuration", EVAL_INSTRUCTIONS)
@@ -1978,22 +1999,20 @@ class RunOnceTests(unittest.TestCase):
             self.assertEqual(len(checked), 32)
 
             duplicate_pairs = [list(pair) for pair in pairs]
-            duplicate_pairs[1] = list(duplicate_pairs[0])
+            duplicate_pairs[1][0] = "  NEW   TASK 0!!!  "
             self.assertNotEqual(
                 first[0]["source_trace_sha256"],
                 first[1]["source_trace_sha256"],
             )
-            duplicate_checked = _validate_eval_output(
-                _eval_cases_from_pairs({"pairs": duplicate_pairs}, first),
-                traces,
-                labels,
-                24,
-                8,
-                bounded.source.teacher_trace_bytes,
-            )
-            self.assertEqual(
-                len({case["case_id"] for case in duplicate_checked}), 32
-            )
+            with self.assertRaisesRegex(ValueError, "duplicate normalized input"):
+                _validate_eval_output(
+                    _eval_cases_from_pairs({"pairs": duplicate_pairs}, first),
+                    traces,
+                    labels,
+                    24,
+                    8,
+                    bounded.source.teacher_trace_bytes,
+                )
 
             traces_by_sha = {item.object_sha256: item for item in traces}
             source = traces_by_sha[first[0]["source_trace_sha256"]]
@@ -2582,7 +2601,7 @@ class RunOnceTests(unittest.TestCase):
         self.assertEqual(len(cases["cases"]), 32)
         self.assertEqual(cases["cases"][0]["source_trace_sha256"], "0" * 64)
 
-    def test_eval_pair_leak_repair_preserves_count_and_plan_bindings(self):
+    def test_eval_pairs_preserve_inputs_and_plan_bindings(self):
         plan = [
             {
                 "suite": "representative",
@@ -2608,11 +2627,7 @@ class RunOnceTests(unittest.TestCase):
         self.assertEqual(
             [case["expected"] for case in cases], [pair[1] for pair in pairs]
         )
-        for case in cases[:3]:
-            self.assertNotIn(
-                case["expected"].casefold(), case["input"].casefold()
-            )
-        self.assertEqual(cases[3]["input"], pairs[3][0])
+        self.assertEqual([case["input"] for case in cases], [pair[0] for pair in pairs])
 
     def test_sampling_skips_unparseable_sessions_before_applying_its_cap(self):
         with tempfile.TemporaryDirectory() as root:
@@ -2831,11 +2846,11 @@ class RunOnceTests(unittest.TestCase):
             self.assertIsNotNone(report["eval_sha256"])
             self.assertEqual(
                 teacher.eval_payload["schema_version"],
-                "milk.eval-generation-input.v6",
+                "milk.eval-generation-input.v7",
             )
             self.assertEqual(
-                teacher.eval_payload["answer_leak_repair"],
-                "milk.eval-answer-leak-repair.v2",
+                teacher.eval_payload["answer_leak_policy"],
+                "milk.eval-answer-leak-reject.v1",
             )
             self.assertEqual(
                 teacher.eval_payload["eval_oracle_policy"],

@@ -3540,8 +3540,8 @@ def _readiness(
     }
 
 
-EVAL_INSTRUCTIONS = """Return only JSON as {"pairs":[[input,expected],...]}. Input case_plan rows are [suite,source_trace_sha256,oracle,operation,selection_reason]. Input trace rows are [trace_sha256,endpoint,request_text_prefix,response_text_prefix,flags,modality_bits,request_bytes], where endpoint is c or r, flags bits are request_truncated=1,response_truncated=2,error=4,tool_use=8, and modality bits are audio=1,file=2,image=4,text=8,unknown=16. Return exactly one pair for every case_plan row in the same order. The case plan is authoritative and contains all representative rows first, then all tail rows; do not return or alter its metadata. Each input must be a newly generated task grounded in its source trace, not a copy of the source request or response. Expected must be a concise canonical reference answer that is sufficient to answer the input and suitable for strict normalized comparison; never use a generic acknowledgement. Formally, casefold(expected) must not be a substring of casefold(input), except that an atomic numeric expected answer may also appear as an operand in the task. Before returning, self-check every pair; while a non-numeric casefold(expected) is a substring of casefold(input), rewrite input to remove the expected answer without changing the task. Make every [input,expected] pair distinct. Do not include trace IDs, reasoning, configuration, routes, budgets, or prose."""
-EVAL_ANSWER_LEAK_REPAIR = "milk.eval-answer-leak-repair.v2"
+EVAL_INSTRUCTIONS = """Return only JSON as {"pairs":[[input,expected],...]}. Input case_plan rows are [suite,source_trace_sha256,oracle,operation,selection_reason]. Input trace rows are [trace_sha256,endpoint,request_text_prefix,response_text_prefix,flags,modality_bits,request_bytes], where endpoint is c or r, flags bits are request_truncated=1,response_truncated=2,error=4,tool_use=8, and modality bits are audio=1,file=2,image=4,text=8,unknown=16. Return exactly one pair for every case_plan row in the same order. The case plan is authoritative and contains all representative rows first, then all tail rows; do not return or alter its metadata. Each input must be a newly generated task grounded in its source trace, not a copy of the source request or response. Each input must be self-contained, substantive, and uniquely answerable using only information included in that input; include all text, data, or code needed to solve it, never emit a bare instruction or template, and never reuse an input across rows. Expected must be a concise canonical reference answer that is sufficient to answer the input and suitable for strict normalized comparison; never use a generic acknowledgement. Formally, casefold(expected) must not be a substring of casefold(input), except that an atomic numeric expected answer may also appear as an operand in the task. Before returning, solve every emitted input from the input alone and verify its expected answer. If a non-numeric expected answer leaks into its input, regenerate the pair; never delete, replace, mask, or corrupt required input data. Do not include trace IDs, reasoning, configuration, routes, budgets, or prose."""
+EVAL_ANSWER_LEAK_POLICY = "milk.eval-answer-leak-reject.v1"
 
 
 def _eval_operation_quotas(labels, representative_count):
@@ -3737,27 +3737,6 @@ def _eval_answer_leaks(input_text, expected):
     return bool(expected) and expected.casefold() in input_text.casefold()
 
 
-def _repair_eval_input_answer_leak(input_text, expected):
-    if not _eval_answer_leaks(input_text, expected):
-        return input_text
-    folded_expected = expected.casefold()
-    marker = next(
-        character
-        for codepoint in range(33, 0x110000)
-        if not 0xD800 <= codepoint <= 0xDFFF
-        for character in (chr(codepoint),)
-        if character.isprintable()
-        and len(character.casefold()) == 1
-        and character.casefold() not in folded_expected
-    )
-    repaired = re.sub(
-        re.escape(expected), marker, input_text, flags=re.IGNORECASE
-    )
-    if folded_expected in repaired.casefold():
-        repaired = input_text.casefold().replace(folded_expected, marker)
-    return repaired
-
-
 def _eval_cases_from_pairs(value, plan):
     value = _object(value, "eval output", required={"pairs"})
     pairs = value["pairs"]
@@ -3770,7 +3749,7 @@ def _eval_cases_from_pairs(value, plan):
         cases.append(
             {
                 **metadata,
-                "input": _repair_eval_input_answer_leak(pair[0], pair[1]),
+                "input": pair[0],
                 "expected": pair[1],
             }
         )
@@ -3825,6 +3804,7 @@ def _validate_eval_output(
     }
     counts = Counter()
     seen = set()
+    seen_inputs = set()
     checked = []
     total_text_bytes = 0
     for case in cases:
@@ -3870,6 +3850,10 @@ def _validate_eval_output(
                 long_context_threshold,
             ):
                 raise ValueError("tail eval selection reason lacks source evidence")
+        normalized_input = _normalized_text(input_text)
+        if normalized_input in seen_inputs:
+            raise ValueError("eval output contains a duplicate normalized input")
+        seen_inputs.add(normalized_input)
         identity = _digest(
             {
                 "source": case["source_trace_sha256"],
@@ -3943,8 +3927,8 @@ def _eval_generation(
     if len(selected) > config.eval.max_source_traces:
         raise ValueError("eval plan exceeds eval.max_source_traces")
     payload = {
-        "schema_version": "milk.eval-generation-input.v6",
-        "answer_leak_repair": EVAL_ANSWER_LEAK_REPAIR,
+        "schema_version": "milk.eval-generation-input.v7",
+        "answer_leak_policy": EVAL_ANSWER_LEAK_POLICY,
         "eval_oracle_policy": "generated-reference-from-text-source-v1",
         "summary_sha256": summary_sha256,
         "readiness_sha256": readiness_sha256,
