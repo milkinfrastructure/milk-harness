@@ -3441,19 +3441,32 @@ def _eligible_eval_inputs(config, traces, labels):
     )
 
 
-def _readiness(config, summary, labels, traces, meter, eval_result_exists):
+def _readiness(
+    config,
+    summary,
+    semantic_labels,
+    semantic_traces,
+    eval_labels,
+    eval_traces,
+    meter,
+    eval_result_exists,
+):
     quality = summary["structural"]["quality"]
     minimum = config.source.classifier_sample_sessions
-    successful = [trace for trace in traces if _analysis_eligible(trace)]
+    successful = [
+        trace for trace in semantic_traces if _analysis_eligible(trace)
+    ]
     unused_duplicate, duplicate_basis_points = _duplicate_metrics(successful)
     successful_independent_sessions = {
         trace.session_hmac
         for trace in successful
         if trace.independent
     }
-    trace_sessions = {trace.object_sha256: trace.session_hmac for trace in traces}
+    trace_sessions = {
+        trace.object_sha256: trace.session_hmac for trace in semantic_traces
+    }
     per_session = {}
-    for label in labels:
+    for label in semantic_labels:
         session = trace_sessions.get(label["trace_sha256"])
         if session is not None:
             per_session.setdefault(session, []).append(label)
@@ -3476,7 +3489,7 @@ def _readiness(config, summary, labels, traces, meter, eval_result_exists):
         session_other_or_abstain += operation == "other"
     operation_counts = Counter(session_operations)
     eligible_traces, eligible_labels, unsupported = _eligible_eval_inputs(
-        config, traces, labels
+        config, eval_traces, eval_labels
     )
     minimum_class_sessions = 30 if config.profile == "production" else 1
     represented = []
@@ -4742,6 +4755,8 @@ def _run_once_locked(
         summary,
         labels,
         sample,
+        classified_labels,
+        eval_sample,
         meter,
         eval_result_exists,
     )
@@ -4837,7 +4852,7 @@ def _run_once_locked(
                 teacher,
                 lease,
                 now,
-                sample,
+                eval_sample,
                 eval_sha256,
                 cases,
             )
