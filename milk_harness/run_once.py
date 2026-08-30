@@ -519,7 +519,7 @@ class DirectTeacher:
         api_key = os.environ.get(self.config.api_key_env)
         if not api_key:
             raise ValueError(f"{self.config.api_key_env} is required")
-        body = _teacher_request_body(self.config, instructions, payload)
+        body = _teacher_request_body(self.config, instructions, payload, task)
         if _conservative_token_bound(body) > self.config.max_input_tokens_per_call:
             raise ValueError(f"{task} teacher request exceeds the input-token cap")
         request = urllib.request.Request(
@@ -642,7 +642,144 @@ def _conservative_token_bound(raw):
     return len(raw)
 
 
-def _teacher_request_body(config, instructions, payload):
+def _teacher_response_format(task, payload):
+    if task == "classify":
+        rows = payload.get("rows") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError("classification input rows must be an array")
+        expected = _integer(
+            len(rows), "classification input row count", 1, 750
+        )
+        name = "milk_classification_output"
+        property_name = "labels"
+        item_schema = {
+            "type": "array",
+            "minItems": 6,
+            "maxItems": 6,
+            "prefixItems": [
+                {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": len(OPERATION_VALUES) - 1,
+                },
+                {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": len(DOMAIN_VALUES) - 1,
+                },
+                {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": (1 << len(CAPABILITY_VALUES)) - 1,
+                },
+                {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": len(ORACLE_VALUES) - 1,
+                },
+                {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32,
+                },
+                {"type": "boolean"},
+            ],
+        }
+    elif task == "generate_eval":
+        if not isinstance(payload, dict):
+            raise ValueError("eval generation input must be an object")
+        representative = _integer(
+            payload.get("representative_cases"),
+            "eval generation representative case count",
+            1,
+            100,
+        )
+        tail = _integer(
+            payload.get("tail_cases"),
+            "eval generation tail case count",
+            1,
+            100,
+        )
+        expected = representative + tail
+        name = "milk_eval_generation_output"
+        property_name = "cases"
+        item_schema = {
+            "type": "object",
+            "properties": {
+                "suite": {
+                    "type": "string",
+                    "enum": ["representative", "tail"],
+                },
+                "source_trace_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+                "input": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32_768,
+                },
+                "expected": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32_768,
+                },
+                "oracle": {
+                    "type": "string",
+                    "enum": list(ORACLE_VALUES),
+                },
+                "operation": {
+                    "type": "string",
+                    "enum": list(OPERATION_VALUES),
+                },
+                "selection_reason": {
+                    "type": "string",
+                    "enum": [
+                        "representative_mix",
+                        "rare",
+                        "long_context",
+                        "error",
+                        "multimodal",
+                        "tool_use",
+                    ],
+                },
+            },
+            "required": [
+                "suite",
+                "source_trace_sha256",
+                "input",
+                "expected",
+                "oracle",
+                "operation",
+                "selection_reason",
+            ],
+            "additionalProperties": False,
+        }
+    else:
+        raise ValueError("teacher task is invalid")
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": name,
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    property_name: {
+                        "type": "array",
+                        "minItems": expected,
+                        "maxItems": expected,
+                        "items": item_schema,
+                    }
+                },
+                "required": [property_name],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _teacher_request_body(config, instructions, payload, task):
     return canonical_json(
         {
             "model": config.model,
@@ -661,7 +798,7 @@ def _teacher_request_body(config, instructions, payload):
             ],
             "temperature": 0,
             "max_tokens": config.max_output_tokens_per_call,
-            "response_format": {"type": "json_object"},
+            "response_format": _teacher_response_format(task, payload),
         }
     )
 
@@ -2358,13 +2495,15 @@ def _provider_job(
 ):
     instructions = CLASSIFIER_INSTRUCTIONS if task == "classify" else EVAL_INSTRUCTIONS
     prompt_sha256 = hashlib.sha256(instructions.encode()).hexdigest()
+    response_format = _teacher_response_format(task, input_value)
     identity = {
-        "schema_version": "milk.teacher-job-identity.v1",
+        "schema_version": "milk.teacher-job-identity.v2",
         "scope_id": config.scope_id,
         "profile": config.profile,
         "job_type": job_type,
         "teacher": config.teacher.public_binding(),
         "prompt_sha256": prompt_sha256,
+        "response_format_sha256": _digest(response_format),
         "input_sha256": _digest(input_value),
         "code_version": CODE_VERSION,
     }
@@ -2390,7 +2529,7 @@ def _provider_job(
         ), job_id, False
     try:
         preflight = _teacher_request_body(
-            config.teacher, instructions, input_value
+            config.teacher, instructions, input_value, task
         )
     except ValueError:
         return {

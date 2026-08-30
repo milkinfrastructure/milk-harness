@@ -20,6 +20,7 @@ from milk_harness.run_once import (
     CAPABILITY_VALUES,
     CLASSIFIER_INSTRUCTIONS,
     DOMAIN_VALUES,
+    EVAL_INSTRUCTIONS,
     MAX_DECODED_TRACE_BYTES,
     OPERATION_VALUES,
     ORACLE_VALUES,
@@ -730,6 +731,36 @@ class RunOnceTests(unittest.TestCase):
             self.assertIsNotNone(first["route_proposal_sha256"])
             self.assertFalse(first["route_activation_attempted"])
             self.assertEqual([call[0] for call in teacher.calls], ["classify", "generate_eval"])
+            claim_key = next(
+                key
+                for key in store.list(config(root).prefix + "/jobs/classify")
+                if key.endswith("/claim.json")
+            )
+            identity = json.loads(store.get(claim_key))["identity"]
+            self.assertEqual(
+                identity["schema_version"], "milk.teacher-job-identity.v2"
+            )
+            self.assertEqual(len(identity["response_format_sha256"]), 64)
+            eval_claim_key = next(
+                key
+                for key in store.list(config(root).prefix + "/jobs/generate-eval")
+                if key.endswith("/claim.json")
+            )
+            eval_identity = json.loads(store.get(eval_claim_key))["identity"]
+            self.assertEqual(
+                eval_identity["schema_version"], "milk.teacher-job-identity.v2"
+            )
+            self.assertNotEqual(
+                identity["response_format_sha256"],
+                eval_identity["response_format_sha256"],
+            )
+            legacy_identity = dict(identity)
+            legacy_identity["schema_version"] = "milk.teacher-job-identity.v1"
+            del legacy_identity["response_format_sha256"]
+            legacy_job_id = hashlib.sha256(
+                canonical_json(legacy_identity)
+            ).hexdigest()
+            self.assertNotEqual(first["classifier_job_id"], legacy_job_id)
 
             second = run_once(config(root), store=store, teacher=teacher, now=NOW + dt.timedelta(days=1))
 
@@ -794,6 +825,7 @@ class RunOnceTests(unittest.TestCase):
     def test_failed_teacher_source_retries_after_teacher_change(self):
         failures = (
             (HttpErrorTeacher, ["classify"]),
+            (InvalidTeacher, ["classify"]),
             (UnsupportedTailTeacher, ["classify", "generate_eval"]),
         )
         for teacher_type, failed_tasks in failures:
@@ -1105,14 +1137,87 @@ class RunOnceTests(unittest.TestCase):
                 list(ORACLE_VALUES),
             ],
             "source_manifest_sha256": "f" * 64,
-            "rows": [["c", prefix, 7, 15] for _ in range(750)],
+            "rows": [],
+        }
+        for expected in (100, 750):
+            with self.subTest(expected=expected):
+                payload["rows"] = [
+                    ["c", prefix, 7, 15] for _ in range(expected)
+                ]
+                request = _teacher_request_body(
+                    bounded.teacher, CLASSIFIER_INSTRUCTIONS, payload, "classify"
+                )
+                response_format = json.loads(request)["response_format"]
+                self.assertEqual(response_format["type"], "json_schema")
+                self.assertTrue(response_format["json_schema"]["strict"])
+                schema = response_format["json_schema"]["schema"]
+                labels = schema["properties"]["labels"]
+                self.assertEqual(labels["minItems"], expected)
+                self.assertEqual(labels["maxItems"], expected)
+                self.assertEqual(labels["items"]["minItems"], 6)
+                self.assertEqual(labels["items"]["maxItems"], 6)
+                self.assertEqual(
+                    [
+                        item["type"]
+                        for item in labels["items"]["prefixItems"]
+                    ],
+                    [
+                        "integer",
+                        "integer",
+                        "integer",
+                        "integer",
+                        "string",
+                        "boolean",
+                    ],
+                )
+                self.assertEqual(schema["required"], ["labels"])
+                self.assertFalse(schema["additionalProperties"])
+                self.assertLessEqual(
+                    _conservative_token_bound(request),
+                    bounded.teacher.max_input_tokens_per_call,
+                )
+
+    def test_eval_request_uses_strict_exact_case_schema(self):
+        payload = {
+            "representative_cases": 24,
+            "tail_cases": 8,
         }
         request = _teacher_request_body(
-            bounded.teacher, CLASSIFIER_INSTRUCTIONS, payload
+            config("/tmp").teacher,
+            EVAL_INSTRUCTIONS,
+            payload,
+            "generate_eval",
         )
-        self.assertLessEqual(
-            _conservative_token_bound(request),
-            bounded.teacher.max_input_tokens_per_call,
+        response_format = json.loads(request)["response_format"]
+        self.assertEqual(response_format["type"], "json_schema")
+        self.assertTrue(response_format["json_schema"]["strict"])
+        schema = response_format["json_schema"]["schema"]
+        cases = schema["properties"]["cases"]
+        self.assertEqual(cases["minItems"], 32)
+        self.assertEqual(cases["maxItems"], 32)
+        item = cases["items"]
+        self.assertEqual(
+            item["required"],
+            [
+                "suite",
+                "source_trace_sha256",
+                "input",
+                "expected",
+                "oracle",
+                "operation",
+                "selection_reason",
+            ],
+        )
+        self.assertFalse(item["additionalProperties"])
+        self.assertEqual(
+            item["properties"]["suite"]["enum"],
+            ["representative", "tail"],
+        )
+        self.assertEqual(
+            item["properties"]["oracle"]["enum"], list(ORACLE_VALUES)
+        )
+        self.assertEqual(
+            item["properties"]["operation"]["enum"], list(OPERATION_VALUES)
         )
 
     def test_sampling_skips_unparseable_sessions_before_applying_its_cap(self):
