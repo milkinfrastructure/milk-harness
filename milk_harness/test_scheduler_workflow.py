@@ -94,6 +94,8 @@ class ProductionWorkflowTest(unittest.TestCase):
         self.assertNotEqual(config.scope_id, production.scope_id)
         self.assertEqual(config.source.classifier_sample_sessions, 100)
         self.assertEqual(config.teacher.reasoning_effort, "low")
+        self.assertEqual(config.teacher.max_output_tokens_per_call, 16_384)
+        self.assertEqual(config.teacher.max_total_tokens_per_run, 232_768)
         self.assertEqual(config.route_proposal.candidate_basis_points, 500)
         self.assertLessEqual(
             config.teacher.reserved_cost() * config.teacher.max_calls_per_run,
