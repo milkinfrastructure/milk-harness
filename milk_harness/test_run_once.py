@@ -1485,6 +1485,23 @@ class RunOnceTests(unittest.TestCase):
             )
             self.assertNotIn("four", repaired["input"].casefold())
 
+    def test_numeric_operand_is_not_rewritten_as_answer_leak(self):
+        plan = [
+            {
+                "suite": "representative",
+                "source_trace_sha256": "a" * 64,
+                "oracle": "reference",
+                "operation": "answer",
+                "selection_reason": "representative_mix",
+            }
+        ]
+
+        value = _eval_cases_from_pairs(
+            {"pairs": [["What is 0 plus 1?", "1"]]}, plan
+        )
+
+        self.assertEqual(value["cases"][0]["input"], "What is 0 plus 1?")
+
     def test_failed_teacher_source_retries_after_teacher_change(self):
         failures = (
             (HttpErrorTeacher, ["classify"]),
@@ -1902,7 +1919,7 @@ class RunOnceTests(unittest.TestCase):
         self.assertIn("same order", EVAL_INSTRUCTIONS)
         self.assertIn("casefold(expected)", EVAL_INSTRUCTIONS)
         self.assertIn(
-            "Before returning, self-check every pair; while casefold(expected) is a substring of casefold(input), rewrite input to remove the expected answer without changing the task.",
+            "while a non-numeric casefold(expected) is a substring of casefold(input)",
             EVAL_INSTRUCTIONS,
         )
         self.assertIn("not a copy of the source request or response", EVAL_INSTRUCTIONS)
@@ -2825,7 +2842,7 @@ class RunOnceTests(unittest.TestCase):
             )
             self.assertEqual(
                 teacher.eval_payload["answer_leak_repair"],
-                "milk.eval-answer-leak-repair.v1",
+                "milk.eval-answer-leak-repair.v2",
             )
             self.assertEqual(
                 teacher.eval_payload["eval_oracle_policy"],
