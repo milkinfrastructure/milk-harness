@@ -2084,15 +2084,20 @@ def _peak_concurrency(traces):
     return peak
 
 
-def _structural_summary(source, stats, traces):
-    selected = _counter(stats, "selected")
-    captured = _counter(stats, "captured")
-    observed = _counter(stats, "observed")
-    request_parsed = _counter(stats, "request_parse_success")
-    paired = min(captured, selected)
-    analytically_parsed = sum(trace.parse_success for trace in traces)
-    unknown = sum(trace.unknown_items for trace in traces)
-    items = sum(trace.total_items for trace in traces)
+def _provider_succeeded(trace):
+    status = trace.catalog.get("provider_status")
+    return (
+        trace.catalog.get("error_class") is None
+        and isinstance(status, int)
+        and 200 <= status < 300
+    )
+
+
+def _analysis_eligible(trace):
+    return trace.parse_success and _provider_succeeded(trace)
+
+
+def _duplicate_metrics(traces):
     content_hashes = [
         hashlib.sha256(
             b"milk.trace-content.v1\0"
@@ -2104,6 +2109,19 @@ def _structural_summary(source, stats, traces):
         for trace in traces
     ]
     duplicate = len(content_hashes) - len(set(content_hashes))
+    return duplicate, _rate_basis_points(duplicate, len(content_hashes))
+
+
+def _structural_summary(source, stats, traces):
+    selected = _counter(stats, "selected")
+    captured = _counter(stats, "captured")
+    observed = _counter(stats, "observed")
+    request_parsed = _counter(stats, "request_parse_success")
+    paired = min(captured, selected)
+    analytically_parsed = sum(trace.parse_success for trace in traces)
+    unknown = sum(trace.unknown_items for trace in traces)
+    items = sum(trace.total_items for trace in traces)
+    duplicate, duplicate_basis_points = _duplicate_metrics(traces)
     independent = {trace.session_hmac for trace in traces if trace.independent}
     all_sessions = {trace.session_hmac for trace in traces}
     failed = sum(
@@ -2161,7 +2179,7 @@ def _structural_summary(source, stats, traces):
             "total_items": items,
             "unknown_item_basis_points": _rate_basis_points(unknown, items),
             "duplicate_traces": duplicate,
-            "duplicate_basis_points": _rate_basis_points(duplicate, len(traces)),
+            "duplicate_basis_points": duplicate_basis_points,
             "missing_usage": sum(trace.input_tokens is None or trace.output_tokens is None for trace in traces),
             "independence_verified": bool(traces)
             and all(trace.independent for trace in traces),
@@ -2449,15 +2467,6 @@ def _existing_report(store, config, meter, harness_revision):
     }
 
 
-def _provider_succeeded(trace):
-    status = trace.catalog.get("provider_status")
-    return (
-        trace.catalog.get("error_class") is None
-        and isinstance(status, int)
-        and 200 <= status < 300
-    )
-
-
 def _sample_traces(traces, config):
     sessions = {}
     for trace in traces:
@@ -2468,7 +2477,7 @@ def _sample_traces(traces, config):
             (
                 trace
                 for trace in session_traces
-                if trace.parse_success and _provider_succeeded(trace)
+                if _analysis_eligible(trace)
             ),
             key=lambda trace: (trace.occurred_at, trace.request_id),
         )
@@ -3153,12 +3162,12 @@ def _semantic_summary(labels):
 
 def _structural_can_classify(config, structural, traces):
     quality = structural["quality"]
+    successful = [trace for trace in traces if _analysis_eligible(trace)]
+    unused_duplicate, duplicate_basis_points = _duplicate_metrics(successful)
     successful_sessions = {
         trace.session_hmac
-        for trace in traces
+        for trace in successful
         if trace.independent
-        and trace.parse_success
-        and _provider_succeeded(trace)
     }
     return (
         len(successful_sessions) >= config.source.classifier_sample_sessions
@@ -3166,7 +3175,7 @@ def _structural_can_classify(config, structural, traces):
         and quality["pairing_basis_points"] >= 9900
         and quality["parse_basis_points"] >= 9950
         and quality["unknown_item_basis_points"] <= 100
-        and quality["duplicate_basis_points"] <= 10
+        and duplicate_basis_points <= 10
         and not quality["capture_gap"]
     )
 
@@ -3229,7 +3238,7 @@ def _eligible_eval_inputs(config, traces, labels):
             unsupported["abstained"] += 1
         elif trace is None:
             unsupported["missing_source"] += 1
-        elif not _provider_succeeded(trace):
+        elif not _analysis_eligible(trace):
             unsupported["failed_request"] += 1
         elif config.profile != "production":
             eligible_labels.append(label)
@@ -3254,12 +3263,12 @@ def _eligible_eval_inputs(config, traces, labels):
 def _readiness(config, summary, labels, traces, meter, eval_result_exists):
     quality = summary["structural"]["quality"]
     minimum = config.source.classifier_sample_sessions
+    successful = [trace for trace in traces if _analysis_eligible(trace)]
+    unused_duplicate, duplicate_basis_points = _duplicate_metrics(successful)
     successful_independent_sessions = {
         trace.session_hmac
-        for trace in traces
+        for trace in successful
         if trace.independent
-        and trace.parse_success
-        and _provider_succeeded(trace)
     }
     trace_sessions = {trace.object_sha256: trace.session_hmac for trace in traces}
     per_session = {}
@@ -3304,7 +3313,7 @@ def _readiness(config, summary, labels, traces, meter, eval_result_exists):
         "pairing_at_least_99_percent": quality["pairing_basis_points"] >= 9900,
         "parse_at_least_99_5_percent": quality["parse_basis_points"] >= 9950,
         "unknown_items_at_most_1_percent": quality["unknown_item_basis_points"] <= 100,
-        "duplicates_at_most_0_1_percent": quality["duplicate_basis_points"] <= 10,
+        "duplicates_at_most_0_1_percent": duplicate_basis_points <= 10,
         "other_plus_abstain_at_most_15_percent": _rate_basis_points(
             session_other_or_abstain, len(per_session)
         )

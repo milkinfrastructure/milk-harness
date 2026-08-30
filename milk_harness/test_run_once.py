@@ -828,9 +828,9 @@ class RunOnceTests(unittest.TestCase):
             self.assertTrue(parsed.parse_success)
             self.assertEqual(parsed.response["error"]["type"], "rate_limit_error")
 
-    def test_mechanics_eval_uses_32_distinct_successful_traces(self):
+    def test_repeated_provider_failures_do_not_block_32_successful_eval_sources(self):
         with tempfile.TemporaryDirectory() as root:
-            store = seed(root, count=33)
+            store = seed(root, count=49)
             value = _config_dict(root)
             value["source"]["classifier_sample_sessions"] = 32
             value["eval"]["representative_cases"] = 24
@@ -859,7 +859,7 @@ class RunOnceTests(unittest.TestCase):
                 self.assertTrue(
                     store.replace(key, canonical_json(retained), etag)
                 )
-            failed_key = min(
+            failed_keys = sorted(
                 traffic_keys,
                 key=lambda key: hashlib.sha256(
                     (
@@ -869,17 +869,40 @@ class RunOnceTests(unittest.TestCase):
                         ]
                     ).encode()
                 ).hexdigest(),
+            )[:17]
+            failure_request_raw, failure_request = body(
+                {
+                    "model": "baseline-model",
+                    "messages": [
+                        {"role": "user", "content": "repeated failure"}
+                    ],
+                    "stream": False,
+                }
             )
-            raw, etag = store.get_versioned(failed_key)
-            failed = json.loads(raw)
-            failed["catalog"]["provider_status"] = 429
-            failed["catalog"]["error_class"] = "upstream_status"
-            self.assertTrue(
-                store.replace(failed_key, canonical_json(failed), etag)
+            failure_response_raw, failure_response = body(
+                {
+                    "error": {
+                        "type": "rate_limit_error",
+                        "message": "bounded",
+                    }
+                }
             )
-            failed_sha256 = _parse_trace(
-                store, bounded, failed_key
-            ).object_sha256
+            failed_sha256s = set()
+            for failed_key in failed_keys:
+                raw, etag = store.get_versioned(failed_key)
+                failed = json.loads(raw)
+                failed["request"] = failure_request
+                failed["response"] = failure_response
+                failed["catalog"]["request_bytes"] = len(failure_request_raw)
+                failed["catalog"]["response_bytes"] = len(failure_response_raw)
+                failed["catalog"]["provider_status"] = 429
+                failed["catalog"]["error_class"] = "upstream_status"
+                self.assertTrue(
+                    store.replace(failed_key, canonical_json(failed), etag)
+                )
+                failed_sha256s.add(
+                    _parse_trace(store, bounded, failed_key).object_sha256
+                )
             teacher = PayloadTeacher()
 
             report = run_once(
@@ -900,14 +923,21 @@ class RunOnceTests(unittest.TestCase):
             source_sha256s = [row[1] for row in plan]
 
             self.assertTrue(report["ready"])
-            self.assertEqual(summary["structural"]["counts"]["failed"], 1)
+            self.assertEqual(summary["structural"]["counts"]["failed"], 17)
+            self.assertEqual(
+                summary["structural"]["quality"]["duplicate_traces"], 16
+            )
+            self.assertGreater(
+                summary["structural"]["quality"]["duplicate_basis_points"],
+                10,
+            )
             self.assertEqual(summary["semantic"]["classified"], 32)
             self.assertEqual(readiness["minimum_independent_sessions"], 32)
             self.assertEqual(readiness["eval_eligible_cases"], 32)
             self.assertEqual([row[0] for row in plan].count("representative"), 24)
             self.assertEqual([row[0] for row in plan].count("tail"), 8)
             self.assertEqual(len(source_sha256s), len(set(source_sha256s)))
-            self.assertNotIn(failed_sha256, source_sha256s)
+            self.assertTrue(failed_sha256s.isdisjoint(source_sha256s))
 
     def test_mechanics_pipeline_is_content_addressed_and_replay_calls_nothing(self):
         with tempfile.TemporaryDirectory() as root:
