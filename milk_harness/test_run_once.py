@@ -103,6 +103,16 @@ class FakeTeacher:
         )
 
 
+class PayloadTeacher(FakeTeacher):
+    def __init__(self):
+        super().__init__()
+        self.payloads = {}
+
+    def complete(self, **kwargs):
+        self.payloads[kwargs["task"]] = kwargs["payload"]
+        return super().complete(**kwargs)
+
+
 class VagueEvalTeacher(FakeTeacher):
     def complete(self, **kwargs):
         response = super().complete(**kwargs)
@@ -817,6 +827,87 @@ class RunOnceTests(unittest.TestCase):
             parsed = _parse_trace(store, config(root), key)
             self.assertTrue(parsed.parse_success)
             self.assertEqual(parsed.response["error"]["type"], "rate_limit_error")
+
+    def test_mechanics_eval_uses_32_distinct_successful_traces(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = seed(root, count=33)
+            value = _config_dict(root)
+            value["source"]["classifier_sample_sessions"] = 32
+            value["eval"]["representative_cases"] = 24
+            value["eval"]["tail_cases"] = 8
+            value["eval"]["max_source_traces"] = 32
+            bounded = RunConfig.parse(value)
+            traffic_keys = store.list(bounded.prefix + "/traffic")
+            for index, key in enumerate(traffic_keys):
+                raw, etag = store.get_versioned(key)
+                retained = json.loads(raw)
+                request_raw, request = body(
+                    {
+                        "model": "baseline-model",
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": f"question {index:03d}",
+                            }
+                        ],
+                        "stream": False,
+                        "future_optional_field": {"retained": True},
+                    }
+                )
+                retained["request"] = request
+                retained["catalog"]["request_bytes"] = len(request_raw)
+                self.assertTrue(
+                    store.replace(key, canonical_json(retained), etag)
+                )
+            failed_key = min(
+                traffic_keys,
+                key=lambda key: hashlib.sha256(
+                    (
+                        "milk.semantic-sample.v1\0"
+                        + json.loads(store.get(key))["catalog"][
+                            "sampling_unit_hmac_sha256"
+                        ]
+                    ).encode()
+                ).hexdigest(),
+            )
+            raw, etag = store.get_versioned(failed_key)
+            failed = json.loads(raw)
+            failed["catalog"]["provider_status"] = 429
+            failed["catalog"]["error_class"] = "upstream_status"
+            self.assertTrue(
+                store.replace(failed_key, canonical_json(failed), etag)
+            )
+            failed_sha256 = _parse_trace(
+                store, bounded, failed_key
+            ).object_sha256
+            teacher = PayloadTeacher()
+
+            report = run_once(
+                bounded, store=store, teacher=teacher, now=NOW
+            )
+
+            summary_pointer = json.loads(
+                store.get(bounded.prefix + "/summaries/current.json")
+            )
+            summary = json.loads(store.get(summary_pointer["version_key"]))
+            readiness_pointer = json.loads(
+                store.get(bounded.prefix + "/readiness/current.json")
+            )
+            readiness = json.loads(
+                store.get(readiness_pointer["version_key"])
+            )
+            plan = teacher.payloads["generate_eval"]["case_plan"]
+            source_sha256s = [row[1] for row in plan]
+
+            self.assertTrue(report["ready"])
+            self.assertEqual(summary["structural"]["counts"]["failed"], 1)
+            self.assertEqual(summary["semantic"]["classified"], 32)
+            self.assertEqual(readiness["minimum_independent_sessions"], 32)
+            self.assertEqual(readiness["eval_eligible_cases"], 32)
+            self.assertEqual([row[0] for row in plan].count("representative"), 24)
+            self.assertEqual([row[0] for row in plan].count("tail"), 8)
+            self.assertEqual(len(source_sha256s), len(set(source_sha256s)))
+            self.assertNotIn(failed_sha256, source_sha256s)
 
     def test_mechanics_pipeline_is_content_addressed_and_replay_calls_nothing(self):
         with tempfile.TemporaryDirectory() as root:

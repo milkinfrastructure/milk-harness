@@ -30,8 +30,8 @@ For each new closed window, the harness:
    endpoint and workload mix, quality, latency, token, tool-use, structured
    output, refusal, and failure distributions;
 3. asks the configured GLM teacher to classify a deterministic trace sample;
-4. computes readiness from fixed gates: 100 independent sessions for the
-   mechanics profile or 750 for production, plus capture and parse quality;
+4. computes readiness from fixed gates: 32 successful independent sessions for
+   the mechanics profile or 750 for production, plus capture and parse quality;
 5. when ready, asks the teacher for representative and tail eval cases and
    limits production evals to text-only cases with a reference answer;
 6. runs a separate teacher validation job that rejects unsupported, copied,
@@ -113,9 +113,9 @@ propose a later config, but changing the active config remains an operator
 action.
 
 Manual dispatch may select the checked-in `mechanics` profile. It uses a
-different scope UUID, requires 100 independent sessions, and may emit a 5%
-unsigned candidate proposal. It cannot contribute to production readiness or
-activate that proposal. Production remains the default manual profile.
+different scope UUID, requires 32 successful independent sessions, and may emit
+a 5% unsigned candidate proposal. It cannot contribute to production readiness
+or activate that proposal. Production remains the default manual profile.
 
 ## Development
 
