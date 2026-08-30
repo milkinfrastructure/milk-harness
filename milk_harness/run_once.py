@@ -3452,19 +3452,33 @@ def _eval_operation_quotas(labels, representative_count):
     remaining = representative_count - len(required_operations)
     required_total = sum(label_counts[operation] for operation in required_operations)
     quotas = {
-        operation: 1 + remaining * label_counts[operation] // required_total
+        operation: min(
+            label_counts[operation],
+            1 + remaining * label_counts[operation] // required_total,
+        )
         for operation in required_operations
     }
     deficit = representative_count - sum(quotas.values())
-    by_remainder = sorted(
-        required_operations,
-        key=lambda operation: (
-            -(remaining * label_counts[operation] % required_total),
-            operation,
-        ),
-    )
-    for operation in by_remainder[:deficit]:
+    while deficit:
+        available = [
+            operation
+            for operation in required_operations
+            if quotas[operation] < label_counts[operation]
+        ]
+        if not available:
+            raise ValueError(
+                "representative eval capacity exceeds measured operation traces"
+            )
+        operation = min(
+            available,
+            key=lambda item: (
+                (quotas[item] - 1) * required_total
+                - remaining * label_counts[item],
+                item,
+            ),
+        )
         quotas[operation] += 1
+        deficit -= 1
     return label_counts, required_operations, quotas
 
 
@@ -3510,36 +3524,6 @@ def _eval_case_plan(traces, labels, representative_count, tail_count):
         labels, representative_count
     )
     del unused_required
-    traces_by_operation = {
-        operation: [
-            trace
-            for trace in eligible_traces
-            if labels_by_sha[trace.object_sha256]["operation"] == operation
-        ]
-        for operation in quotas
-    }
-    plan = []
-    used_sources = set()
-    for operation in sorted(quotas):
-        candidates = [
-            trace
-            for trace in traces_by_operation[operation]
-            if trace.object_sha256 not in used_sources
-        ]
-        if len(candidates) < quotas[operation]:
-            raise ValueError("eval source selection lacks distinct representative traces")
-        for trace in candidates[: quotas[operation]]:
-            label = labels_by_sha[trace.object_sha256]
-            used_sources.add(trace.object_sha256)
-            plan.append(
-                {
-                    "suite": "representative",
-                    "source_trace_sha256": trace.object_sha256,
-                    "oracle": label["expected_oracle"],
-                    "operation": operation,
-                    "selection_reason": "representative_mix",
-                }
-            )
     request_lengths = sorted(len(trace.request_raw) for trace in eligible_traces)
     long_context_threshold = request_lengths[
         ((len(request_lengths) - 1) * 9 + 9) // 10
@@ -3565,6 +3549,40 @@ def _eval_case_plan(traces, labels, representative_count, tail_count):
             tail_candidates.append((trace, label, reason))
     if not tail_candidates:
         raise ValueError("eval source selection found no evidence-backed tail")
+    tail_sha256s = {candidate[0].object_sha256 for candidate in tail_candidates}
+    traces_by_operation = {
+        operation: [
+            trace
+            for trace in eligible_traces
+            if labels_by_sha[trace.object_sha256]["operation"] == operation
+        ]
+        for operation in quotas
+    }
+    plan = []
+    used_sources = set()
+    for operation in sorted(quotas):
+        candidates = sorted(
+            (
+                trace
+                for trace in traces_by_operation[operation]
+                if trace.object_sha256 not in used_sources
+            ),
+            key=lambda trace: trace.object_sha256 in tail_sha256s,
+        )
+        if len(candidates) < quotas[operation]:
+            raise ValueError("eval source selection lacks distinct representative traces")
+        for trace in candidates[: quotas[operation]]:
+            label = labels_by_sha[trace.object_sha256]
+            used_sources.add(trace.object_sha256)
+            plan.append(
+                {
+                    "suite": "representative",
+                    "source_trace_sha256": trace.object_sha256,
+                    "oracle": label["expected_oracle"],
+                    "operation": operation,
+                    "selection_reason": "representative_mix",
+                }
+            )
     tail_candidates = [
         candidate
         for candidate in tail_candidates

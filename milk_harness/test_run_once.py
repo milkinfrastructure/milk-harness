@@ -1938,6 +1938,66 @@ class RunOnceTests(unittest.TestCase):
                         bounded.source.teacher_trace_bytes,
                     )
 
+    def test_eval_plan_reserves_live_tail_evidence(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = seed(root, count=32)
+            bounded = config(root)
+            traces = sorted(
+                (
+                    _parse_trace(store, bounded, key)
+                    for key in store.list(bounded.prefix + "/traffic")
+                ),
+                key=lambda trace: (
+                    hashlib.sha256(
+                        ("milk.eval-source.v1\0" + trace.object_sha256).encode()
+                    ).hexdigest(),
+                    trace.object_sha256,
+                ),
+            )
+            traces = [
+                replace(trace, request_raw=b"x" * (1000 if index < 4 else 10))
+                for index, trace in enumerate(traces)
+            ]
+            operations = (
+                ["answer"] * 26
+                + ["classify"] * 2
+                + ["code", "extract", "generate", "summarize"]
+            )
+            labels = [
+                {
+                    "trace_sha256": trace.object_sha256,
+                    "operation": operation,
+                    "expected_oracle": "reference",
+                    "abstain": False,
+                }
+                for trace, operation in zip(traces, operations)
+            ]
+
+            plan = _eval_case_plan(traces, labels, 24, 8)
+            representative = plan[:24]
+            tail = plan[24:]
+
+            self.assertEqual(
+                [item["operation"] for item in representative].count("answer"),
+                22,
+            )
+            self.assertEqual(
+                [item["operation"] for item in representative].count("classify"),
+                2,
+            )
+            self.assertEqual(
+                [item["source_trace_sha256"] for item in tail],
+                [trace.object_sha256 for trace in traces[:4] + traces[28:]],
+            )
+            self.assertEqual(
+                [item["operation"] for item in tail[:4]],
+                ["answer"] * 4,
+            )
+            self.assertEqual(
+                [item["selection_reason"] for item in tail],
+                ["long_context"] * 4 + ["rare"] * 4,
+            )
+
     def test_production_eval_filter_reports_unsupported_categories(self):
         with tempfile.TemporaryDirectory() as root:
             store = seed(root, count=1)
@@ -1996,7 +2056,7 @@ class RunOnceTests(unittest.TestCase):
                 {"abstained": 1, "non_reference_oracle": 1, "tool_use": 1},
             )
 
-    def test_representative_quotas_use_deterministic_largest_remainders(self):
+    def test_representative_quotas_are_deterministic_and_capacity_capped(self):
         labels = [
             {"operation": operation, "abstain": False}
             for operation, count in (("answer", 6), ("summarize", 3), ("code", 1))
@@ -2005,7 +2065,32 @@ class RunOnceTests(unittest.TestCase):
 
         quotas = _eval_operation_quotas(labels, 8)[2]
 
-        self.assertEqual(quotas, {"answer": 4, "code": 2, "summarize": 2})
+        self.assertEqual(quotas, {"answer": 4, "code": 1, "summarize": 3})
+
+    def test_representative_quotas_redistribute_live_capacity_shortfall(self):
+        labels = [
+            {"operation": operation, "abstain": False}
+            for operation, count in (
+                ("answer", 26),
+                ("classify", 2),
+                ("code", 1),
+                ("extract", 1),
+                ("generate", 1),
+                ("summarize", 1),
+            )
+            for unused_index in range(count)
+        ]
+
+        label_counts, required_operations, quotas = _eval_operation_quotas(
+            labels, 24
+        )
+
+        self.assertEqual(required_operations, {"answer", "classify"})
+        self.assertEqual(quotas, {"answer": 22, "classify": 2})
+        self.assertEqual(sum(quotas.values()), 24)
+        self.assertTrue(
+            all(quota <= label_counts[operation] for operation, quota in quotas.items())
+        )
 
     def test_eval_pairs_must_match_plan_count_exactly(self):
         plan = [
