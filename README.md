@@ -47,6 +47,9 @@ identities. A non-ready, validation-failed, or score-failed pass retains its
 pending source and advances the current proposal pointer to an explicit blocked
 record, so an older proposal cannot remain current.
 
+`milk.run-once-report.v2.artifact_refs` derives source, pointer/version, and job
+roots from admitted IDs. Callers never supply keys; job child names are fixed.
+
 The checked-in two-call teacher limit intentionally splits a ready source across
 two invocations: classification plus generation, then cached reconciliation plus
 validation. Candidate scoring has its own exact call and token limits. The

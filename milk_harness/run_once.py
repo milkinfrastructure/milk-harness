@@ -26,6 +26,7 @@ from milk_harness.evidence import LocalEvidenceStore, R2EvidenceStore, canonical
 
 
 CONFIG_SCHEMA = "milk.harness-run-config.v1"
+REPORT_SCHEMA = "milk.run-once-report.v2"
 CODE_VERSION = "milk.harness-run-once.v2"
 TAXONOMY_VERSION = "milk.semantic-taxonomy.v1"
 MAX_INCREMENTAL_SPEND_MICROUSD = 25_000_000
@@ -526,6 +527,7 @@ class CandidateScoreConfig:
     candidate: ScoreTargetConfig
     held_out_cases: int
     timeout_seconds: int
+    minimum_request_interval_ms: int
     max_calls_per_run: int
     max_input_tokens_per_call: int
     max_output_tokens_per_call: int
@@ -546,6 +548,7 @@ class CandidateScoreConfig:
                 "candidate",
                 "held_out_cases",
                 "timeout_seconds",
+                "minimum_request_interval_ms",
                 "max_calls_per_run",
                 "max_input_tokens_per_call",
                 "max_output_tokens_per_call",
@@ -591,6 +594,12 @@ class CandidateScoreConfig:
             ScoreTargetConfig.parse(value["candidate"], "candidate_score.candidate"),
             held_out,
             _integer(value["timeout_seconds"], "candidate_score.timeout_seconds", 1, 120),
+            _integer(
+                value["minimum_request_interval_ms"],
+                "candidate_score.minimum_request_interval_ms",
+                0,
+                60_000,
+            ),
             max_calls,
             max_input,
             max_output,
@@ -618,6 +627,7 @@ class CandidateScoreConfig:
             "candidate": self.candidate.public_binding(),
             "held_out_cases": self.held_out_cases,
             "timeout_seconds": self.timeout_seconds,
+            "minimum_request_interval_ms": self.minimum_request_interval_ms,
             "max_calls_per_run": self.max_calls_per_run,
             "max_input_tokens_per_call": self.max_input_tokens_per_call,
             "max_output_tokens_per_call": self.max_output_tokens_per_call,
@@ -790,10 +800,27 @@ class DirectTeacher:
 
 
 class DirectScoreClient:
-    def __init__(self, config, opener=None, monotonic=None):
+    def __init__(self, config, opener=None, monotonic=None, sleeper=None):
         self.config = config
         self.opener = opener or urllib.request.build_opener(_NoRedirect)
         self.monotonic = monotonic or time.monotonic
+        self.sleeper = sleeper or time.sleep
+        self.last_request_started = None
+
+    def _paced_start(self):
+        started = self.monotonic()
+        previous = self.last_request_started
+        minimum_interval = self.config.minimum_request_interval_ms / 1000
+        while previous is not None and started - previous < minimum_interval:
+            if started < previous:
+                raise ValueError("candidate score clock moved backwards")
+            self.sleeper(minimum_interval - (started - previous))
+            advanced = self.monotonic()
+            if advanced <= started:
+                raise RuntimeError("candidate score pacing clock did not advance")
+            started = advanced
+        self.last_request_started = started
+        return started
 
     def invoke(self, *, target_name, target, case, job_id):
         api_key = os.environ.get(target.api_key_env)
@@ -820,7 +847,7 @@ class DirectScoreClient:
                 "User-Agent": "milk-harness-candidate-score/1",
             },
         )
-        started = self.monotonic()
+        started = self._paced_start()
         with self.opener.open(request, timeout=self.config.timeout_seconds) as response:
             raw = response.read(1024 * 1024 + 1)
             if len(raw) > 1024 * 1024:
@@ -2333,6 +2360,54 @@ def _current_version(store, key):
     return version_sha256, value
 
 
+def _persisted_job_id(result, job_id):
+    outcome = result.get("outcome") if isinstance(result, dict) else None
+    persisted = isinstance(outcome, str) and not outcome.startswith("not_started_")
+    return job_id if persisted and outcome != "in_progress_or_ambiguous" else None
+
+
+def _artifact_refs(config, report):
+    series_id = config.eval.series_id
+    nodes = (
+        ("summary", "summaries", "summary_sha256"),
+        ("readiness", "readiness", "readiness_sha256"),
+        ("eval", f"evals/{series_id}", "eval_sha256"),
+        ("validation", f"eval-validations/{series_id}", "eval_validation_sha256"),
+        ("score", f"candidate-scores/{series_id}", "candidate_score_sha256"),
+        ("proposal", "route-proposals", "route_proposal_sha256"),
+    )
+    jobs = (
+        ("classifier", "classify", "classifier_job_id"),
+        ("eval_generation", "generate-eval", "eval_job_id"),
+        ("eval_validation", "validate-eval", "eval_validation_job_id"),
+        ("candidate_score", "score-candidate", "candidate_score_job_id"),
+    )
+    source_sha256 = report["source_manifest_sha256"]
+    return {
+        "scope_prefix": config.prefix,
+        "source_manifest_key": (
+            f"{config.prefix}/pending-source/versions/{source_sha256}.json"
+            if source_sha256 is not None
+            else None
+        ),
+        "nodes": {
+            name: None if report[field] is None else {
+                "pointer_key": f"{config.prefix}/{root}/current.json",
+                "version_key": f"{config.prefix}/{root}/versions/{report[field]}.json",
+            }
+            for name, root, field in nodes
+        },
+        "provider_jobs": {
+            name: (
+                f"{config.prefix}/jobs/{job_type}/{report[field]}"
+                if report[field] is not None
+                else None
+            )
+            for name, job_type, field in jobs
+        },
+    }
+
+
 def _load_watermark(store, config):
     key = f"{config.prefix}/watermarks/closed.json"
     try:
@@ -2431,13 +2506,16 @@ def _existing_report(store, config, meter, harness_revision):
         and proposal.get("candidate_score_sha256") == candidate_score_sha256
     ):
         proposal_sha256 = None
-    return {
-        "schema_version": "milk.run-once-report.v1",
+    report = {
+        "schema_version": REPORT_SCHEMA,
         "scope_id": config.scope_id,
         "profile": config.profile,
         "harness_revision": harness_revision,
         "config_sha256": config.config_sha256,
-        "source_manifest_sha256": None,
+        "source_manifest_sha256": (
+            summary.get("structural", {}).get("source_manifest_sha256")
+            if summary else None
+        ),
         "closed_windows": [],
         "trace_count": 0,
         "summary_sha256": summary_sha256,
@@ -2455,8 +2533,14 @@ def _existing_report(store, config, meter, harness_revision):
         "eval_pointer": "existing" if eval_value else "absent",
         "eval_validation_provider_called": False,
         "eval_validation_sha256": eval_validation_sha256,
+        "eval_validation_job_id": (
+            eval_validation.get("validation_job_id") if eval_validation else None
+        ),
         "candidate_score_provider_called": False,
         "candidate_score_sha256": candidate_score_sha256,
+        "candidate_score_job_id": (
+            candidate_score.get("score_job_id") if candidate_score else None
+        ),
         "route_proposal_sha256": proposal_sha256,
         "provider_calls": 0,
         "provider_tokens": 0,
@@ -2465,6 +2549,8 @@ def _existing_report(store, config, meter, harness_revision):
         "watermark": "existing",
         "pending_source": "existing",
     }
+    report["artifact_refs"] = _artifact_refs(config, report)
+    return report
 
 
 def _sample_traces(traces, config):
@@ -4482,7 +4568,7 @@ def _run_once_locked(
         "scope_id": config.scope_id,
         "profile": config.profile,
         "structural": structural,
-        "classifier_job_id": classifier_job_id,
+        "classifier_job_id": _persisted_job_id(classification, classifier_job_id),
         "classifier_result_sha256": _digest(classification) if classification else None,
         "semantic": _semantic_summary(labels),
         "code_version": CODE_VERSION,
@@ -4532,8 +4618,10 @@ def _run_once_locked(
     eval_result = None
     eval_validation_sha256 = None
     eval_validation_result = None
+    eval_validation_job_id = None
     candidate_score_sha256 = None
     candidate_score_result = None
+    candidate_score_job_id = None
     validation_called = False
     score_called = False
     route_proposal_sha256 = None
@@ -4859,8 +4947,8 @@ def _run_once_locked(
             pending_sha256,
         )
         del unused_empty_sha256
-    return {
-        "schema_version": "milk.run-once-report.v1",
+    report = {
+        "schema_version": REPORT_SCHEMA,
         "scope_id": config.scope_id,
         "profile": config.profile,
         "harness_revision": harness_revision,
@@ -4875,14 +4963,20 @@ def _run_once_locked(
         "readiness_sha256": readiness_sha256,
         "ready": readiness["ready"],
         "statistically_qualified": readiness["statistically_qualified"],
-        "eval_job_id": eval_job_id,
+        "eval_job_id": _persisted_job_id(eval_result, eval_job_id),
         "eval_provider_called": eval_called,
         "eval_sha256": eval_sha256,
         "eval_pointer": eval_status,
         "eval_validation_provider_called": validation_called,
         "eval_validation_sha256": eval_validation_sha256,
+        "eval_validation_job_id": _persisted_job_id(
+            eval_validation_result, eval_validation_job_id
+        ),
         "candidate_score_provider_called": score_called,
         "candidate_score_sha256": candidate_score_sha256,
+        "candidate_score_job_id": _persisted_job_id(
+            candidate_score_result, candidate_score_job_id
+        ),
         "route_proposal_sha256": route_proposal_sha256,
         "provider_calls": meter.calls,
         "provider_tokens": meter.tokens,
@@ -4891,6 +4985,8 @@ def _run_once_locked(
         "watermark": watermark_status,
         "pending_source": pending_status,
     }
+    report["artifact_refs"] = _artifact_refs(config, report)
+    return report
 
 
 def main(argv=None):

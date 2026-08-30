@@ -65,6 +65,7 @@
     },
     "held_out_cases": 8,
     "timeout_seconds": 30,
+    "minimum_request_interval_ms": 4100,
     "max_calls_per_run": 16,
     "max_input_tokens_per_call": 4096,
     "max_output_tokens_per_call": 1024,
