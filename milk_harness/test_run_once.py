@@ -113,6 +113,25 @@ class PayloadTeacher(FakeTeacher):
         return super().complete(**kwargs)
 
 
+class TailSupplementTeacher(PayloadTeacher):
+    def complete(self, **kwargs):
+        if kwargs["task"] != "classify":
+            return super().complete(**kwargs)
+        self.payloads["classify"] = kwargs["payload"]
+        self.calls.append(("classify", kwargs["job_id"]))
+        rare_codes = iter((1, 2, 4, 5))
+        labels = []
+        for row in kwargs["payload"]["rows"]:
+            operation = next(rare_codes) if row[1].startswith("rare operation") else 0
+            labels.append([operation, 0, 0b000101, 3, "en", False])
+        return TeacherResponse(
+            {"labels": labels},
+            "tail-supplement-classifier",
+            1000,
+            100,
+        )
+
+
 class VagueEvalTeacher(FakeTeacher):
     def complete(self, **kwargs):
         response = super().complete(**kwargs)
@@ -1997,6 +2016,93 @@ class RunOnceTests(unittest.TestCase):
                 [item["selection_reason"] for item in tail],
                 ["long_context"] * 4 + ["rare"] * 4,
             )
+
+    def test_classifier_supplements_missing_tail_rows_without_biasing_summary(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = seed(root, count=36)
+            value = _config_dict(root)
+            value["source"]["classifier_sample_sessions"] = 32
+            value["eval"]["representative_cases"] = 24
+            value["eval"]["tail_cases"] = 8
+            value["eval"]["max_source_traces"] = 32
+            bounded = RunConfig.parse(value)
+            keys = store.list(bounded.prefix + "/traffic")
+            ranked = sorted(
+                keys,
+                key=lambda key: hashlib.sha256(
+                    (
+                        "milk.semantic-sample.v1\0"
+                        + json.loads(store.get(key))["catalog"][
+                            "sampling_unit_hmac_sha256"
+                        ]
+                    ).encode()
+                ).hexdigest(),
+            )
+            semantic_keys = ranked[:32]
+            tool_keys = semantic_keys[:2] + ranked[32:34]
+            rare_keys = semantic_keys[2:6]
+
+            for index, key in enumerate(tool_keys + rare_keys):
+                raw, etag = store.get_versioned(key)
+                retained = json.loads(raw)
+                request_value = {
+                    "model": "baseline-model",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                f"rare operation {index}"
+                                if key in rare_keys
+                                else f"tool operation {index}"
+                            ),
+                        }
+                    ],
+                    "stream": False,
+                }
+                if key in tool_keys:
+                    request_value["tools"] = [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ]
+                request_raw, request = body(request_value)
+                retained["request"] = request
+                retained["catalog"]["request_bytes"] = len(request_raw)
+                self.assertTrue(
+                    store.replace(key, canonical_json(retained), etag)
+                )
+
+            teacher = TailSupplementTeacher()
+            report = run_once(
+                bounded,
+                store=store,
+                teacher=teacher,
+                now=NOW,
+            )
+            summary_pointer = json.loads(
+                store.get(bounded.prefix + "/summaries/current.json")
+            )
+            summary = json.loads(store.get(summary_pointer["version_key"]))
+            plan = teacher.payloads["generate_eval"]["case_plan"]
+
+            self.assertTrue(report["ready"])
+            self.assertEqual(
+                teacher.payloads["classify"]["semantic_row_count"], 32
+            )
+            self.assertEqual(len(teacher.payloads["classify"]["rows"]), 34)
+            self.assertEqual(summary["semantic"]["classified"], 32)
+            self.assertEqual(summary["semantic"]["operation"]["answer"], 28)
+            self.assertEqual([row[0] for row in plan].count("representative"), 24)
+            self.assertEqual([row[0] for row in plan].count("tail"), 8)
+            self.assertEqual(
+                sorted(row[4] for row in plan if row[0] == "tail"),
+                ["rare"] * 4 + ["tool_use"] * 4,
+            )
+            self.assertEqual(len({row[1] for row in plan}), 32)
 
     def test_production_eval_filter_reports_unsupported_categories(self):
         with tempfile.TemporaryDirectory() as root:
