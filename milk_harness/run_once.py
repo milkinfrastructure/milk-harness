@@ -86,6 +86,13 @@ ORACLE_VALUES = (
     "human",
 )
 ORACLES = frozenset(ORACLE_VALUES)
+TAIL_REASON_VALUES = (
+    "error",
+    "tool_use",
+    "multimodal",
+    "rare",
+    "long_context",
+)
 
 
 def _object(value, name, *, required, optional=()):
@@ -688,72 +695,30 @@ def _teacher_response_format(task, payload):
     elif task == "generate_eval":
         if not isinstance(payload, dict):
             raise ValueError("eval generation input must be an object")
-        representative = _integer(
-            payload.get("representative_cases"),
-            "eval generation representative case count",
-            1,
-            100,
+        plan = payload.get("case_plan")
+        if not isinstance(plan, list):
+            raise ValueError("eval generation case plan must be an array")
+        expected = _integer(
+            len(plan), "eval generation case plan count", 2, 200
         )
-        tail = _integer(
-            payload.get("tail_cases"),
-            "eval generation tail case count",
-            1,
-            100,
-        )
-        expected = representative + tail
         name = "milk_eval_generation_output"
-        property_name = "cases"
+        property_name = "pairs"
         item_schema = {
-            "type": "object",
-            "properties": {
-                "suite": {
-                    "type": "string",
-                    "enum": ["representative", "tail"],
-                },
-                "source_trace_sha256": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{64}$",
-                },
-                "input": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "prefixItems": [
+                {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 32_768,
                 },
-                "expected": {
+                {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 32_768,
                 },
-                "oracle": {
-                    "type": "string",
-                    "enum": list(ORACLE_VALUES),
-                },
-                "operation": {
-                    "type": "string",
-                    "enum": list(OPERATION_VALUES),
-                },
-                "selection_reason": {
-                    "type": "string",
-                    "enum": [
-                        "representative_mix",
-                        "rare",
-                        "long_context",
-                        "error",
-                        "multimodal",
-                        "tool_use",
-                    ],
-                },
-            },
-            "required": [
-                "suite",
-                "source_trace_sha256",
-                "input",
-                "expected",
-                "oracle",
-                "operation",
-                "selection_reason",
             ],
-            "additionalProperties": False,
         }
     else:
         raise ValueError("teacher task is invalid")
@@ -2102,7 +2067,7 @@ def _existing_report(store, config, meter):
         "route_proposal_sha256": proposal_sha256,
         "provider_calls": 0,
         "provider_tokens": 0,
-        "accounted_incremental_spend_microusd": meter.accounted_spend,
+        "accounted_incremental_spend_microusd": meter.incremental_spend,
         "route_activation_attempted": False,
         "watermark": "existing",
     }
@@ -2346,6 +2311,7 @@ class _RunMeter:
         self.config = config
         self.calls = 0
         self.tokens = 0
+        self.incremental_spend = 0
         self.accounted_spend = config.budget.starting_spend_microusd
         keys = []
         for job_type in ("classify", "generate-eval"):
@@ -2404,6 +2370,7 @@ class _RunMeter:
     def record(self, input_tokens, output_tokens, accounted_cost):
         self.calls += 1
         self.tokens += input_tokens + output_tokens
+        self.incremental_spend += accounted_cost
         self.accounted_spend += accounted_cost
 
     def observe_unresolved_claim(self, root, reserved):
@@ -2603,22 +2570,6 @@ def _provider_job(
             payload=input_value,
             job_id=job_id,
         )
-        checked = validate(response.value)
-        calculated = _token_cost(response.input_tokens, config.teacher.input_rate_microusd_per_million) + _token_cost(
-            response.output_tokens, config.teacher.output_rate_microusd_per_million
-        )
-        result = {
-            "schema_version": "milk.teacher-job-result.v1",
-            "job_id": job_id,
-            "outcome": "succeeded",
-            "provider_request_id": response.provider_request_id,
-            "input_tokens": response.input_tokens,
-            "output_tokens": response.output_tokens,
-            "calculated_cost_microusd": calculated,
-            "accounted_cost_microusd": calculated,
-            "output": checked,
-        }
-        meter.record(response.input_tokens, response.output_tokens, calculated)
     except urllib.error.HTTPError as error:
         reserved = config.teacher.reserved_cost()
         result = {
@@ -2654,6 +2605,10 @@ def _provider_job(
             "job_id": job_id,
             "outcome": "invalid_provider_response",
             "error_class": type(error).__name__,
+            "failure_stage": "provider_contract",
+            "failure_message_sha256": hashlib.sha256(
+                str(error).encode()
+            ).hexdigest(),
             "provider_request_id": None,
             "input_tokens": config.teacher.max_input_tokens_per_call,
             "output_tokens": config.teacher.max_output_tokens_per_call,
@@ -2661,6 +2616,45 @@ def _provider_job(
             "accounted_cost_microusd": reserved,
         }
         meter.record(config.teacher.max_input_tokens_per_call, config.teacher.max_output_tokens_per_call, reserved)
+    else:
+        calculated = _token_cost(
+            response.input_tokens,
+            config.teacher.input_rate_microusd_per_million,
+        ) + _token_cost(
+            response.output_tokens,
+            config.teacher.output_rate_microusd_per_million,
+        )
+        try:
+            checked = validate(response.value)
+        except ValueError as error:
+            result = {
+                "schema_version": "milk.teacher-job-result.v1",
+                "job_id": job_id,
+                "outcome": "invalid_provider_response",
+                "error_class": type(error).__name__,
+                "failure_stage": "validation",
+                "failure_message_sha256": hashlib.sha256(
+                    str(error).encode()
+                ).hexdigest(),
+                "provider_request_id": response.provider_request_id,
+                "input_tokens": response.input_tokens,
+                "output_tokens": response.output_tokens,
+                "calculated_cost_microusd": calculated,
+                "accounted_cost_microusd": calculated,
+            }
+        else:
+            result = {
+                "schema_version": "milk.teacher-job-result.v1",
+                "job_id": job_id,
+                "outcome": "succeeded",
+                "provider_request_id": response.provider_request_id,
+                "input_tokens": response.input_tokens,
+                "output_tokens": response.output_tokens,
+                "calculated_cost_microusd": calculated,
+                "accounted_cost_microusd": calculated,
+                "output": checked,
+            }
+        meter.record(response.input_tokens, response.output_tokens, calculated)
     _job_write(store, config.prefix, job_type, job_id, "result", result, compressed=True)
     return result, job_id, True
 
@@ -2831,7 +2825,164 @@ def _readiness(config, summary, labels, traces, meter, eval_result_exists):
     }
 
 
-EVAL_INSTRUCTIONS = """Return only JSON with a cases array. Input label rows are [trace_sha256,operation,domain,capability_bits,oracle,language], where capability bits are knowledge=1,reasoning=2,instruction_following=4,structured_output=8,tool_use=16,multimodal=32. Input trace rows are [trace_sha256,endpoint,request_text_prefix,response_text_prefix,flags,modality_bits,request_bytes], where endpoint is c or r, flags bits are request_truncated=1,response_truncated=2,error=4,tool_use=8, and modality bits are audio=1,file=2,image=4,text=8,unknown=16. Each case must contain exactly suite, source_trace_sha256, input, expected, oracle, operation, and selection_reason. operation must equal the supplied source label. Representative cases use selection_reason representative_mix. Tail cases use rare, long_context, error, multimodal, or tool_use. Use only supplied trace_sha256 values. Produce exactly the requested representative and tail counts. Never put expected text in input. Do not include reasoning, configuration, routes, budgets, or prose."""
+EVAL_INSTRUCTIONS = """Return only JSON as {"pairs":[[input,expected],...]}. Input case_plan rows are [suite,source_trace_sha256,oracle,operation,selection_reason]. Input trace rows are [trace_sha256,endpoint,request_text_prefix,response_text_prefix,flags,modality_bits,request_bytes], where endpoint is c or r, flags bits are request_truncated=1,response_truncated=2,error=4,tool_use=8, and modality bits are audio=1,file=2,image=4,text=8,unknown=16. Return exactly one pair for every case_plan row in the same order. The case plan is authoritative and contains all representative rows first (24 in the deployed configuration), then all tail rows (8 in the deployed configuration); do not return or alter its metadata. Each input must be a newly generated task grounded in its source trace, not a copy of the source request or response. Formally, casefold(expected) must not be a substring of casefold(input). Make every [input,expected] pair distinct. Do not include trace IDs, reasoning, configuration, routes, budgets, or prose."""
+
+
+def _eval_operation_quotas(labels, representative_count):
+    labels = [label for label in labels if not label["abstain"]]
+    if not labels:
+        raise ValueError("eval generation requires non-abstained labels")
+    label_counts = Counter(label["operation"] for label in labels)
+    required_operations = {
+        operation
+        for operation, count in label_counts.items()
+        if _rate_basis_points(count, len(labels)) >= 500
+    }
+    if len(required_operations) > representative_count:
+        raise ValueError(
+            "representative eval capacity is smaller than measured operation slices"
+        )
+    remaining = representative_count - len(required_operations)
+    required_total = sum(label_counts[operation] for operation in required_operations)
+    quotas = {
+        operation: 1 + remaining * label_counts[operation] // required_total
+        for operation in required_operations
+    }
+    deficit = representative_count - sum(quotas.values())
+    by_remainder = sorted(
+        required_operations,
+        key=lambda operation: (
+            -(remaining * label_counts[operation] % required_total),
+            operation,
+        ),
+    )
+    for operation in by_remainder[:deficit]:
+        quotas[operation] += 1
+    return label_counts, required_operations, quotas
+
+
+def _tail_reason_supported(
+    reason,
+    trace,
+    operation_count,
+    label_count,
+    long_context_threshold,
+):
+    analytics = _trace_analytics(trace)
+    if reason == "error":
+        return trace.catalog.get("error_class") is not None or (
+            isinstance(trace.catalog.get("provider_status"), int)
+            and trace.catalog["provider_status"] >= 400
+        )
+    if reason == "tool_use":
+        return analytics["has_tools"] or analytics["has_tool_calls"]
+    if reason == "multimodal":
+        return analytics["modality"] not in {"text", "unknown"}
+    if reason == "rare":
+        return _rate_basis_points(operation_count, label_count) < 500
+    if reason == "long_context":
+        return len(trace.request_raw) >= long_context_threshold
+    raise ValueError("tail eval selection reason is invalid")
+
+
+def _eval_case_plan(traces, labels, representative_count, tail_count):
+    labels = [label for label in labels if not label["abstain"]]
+    labels_by_sha = {label["trace_sha256"]: label for label in labels}
+    eligible_traces = [
+        trace for trace in traces if trace.object_sha256 in labels_by_sha
+    ]
+    if not eligible_traces:
+        raise ValueError("eval generation requires labeled source traces")
+    label_counts, unused_required, quotas = _eval_operation_quotas(
+        labels, representative_count
+    )
+    del unused_required
+    traces_by_operation = {
+        operation: [
+            trace
+            for trace in eligible_traces
+            if labels_by_sha[trace.object_sha256]["operation"] == operation
+        ]
+        for operation in quotas
+    }
+    plan = []
+    used_sources = set()
+    for operation in sorted(quotas):
+        candidates = traces_by_operation[operation]
+        if not candidates:
+            raise ValueError("eval source selection omitted a required operation")
+        for index in range(quotas[operation]):
+            trace = candidates[index % len(candidates)]
+            label = labels_by_sha[trace.object_sha256]
+            used_sources.add(trace.object_sha256)
+            plan.append(
+                {
+                    "suite": "representative",
+                    "source_trace_sha256": trace.object_sha256,
+                    "oracle": label["expected_oracle"],
+                    "operation": operation,
+                    "selection_reason": "representative_mix",
+                }
+            )
+    request_lengths = sorted(len(trace.request_raw) for trace in eligible_traces)
+    long_context_threshold = request_lengths[
+        ((len(request_lengths) - 1) * 9 + 9) // 10
+    ]
+    tail_candidates = []
+    for trace in eligible_traces:
+        label = labels_by_sha[trace.object_sha256]
+        reason = next(
+            (
+                reason
+                for reason in TAIL_REASON_VALUES
+                if _tail_reason_supported(
+                    reason,
+                    trace,
+                    label_counts[label["operation"]],
+                    len(labels),
+                    long_context_threshold,
+                )
+            ),
+            None,
+        )
+        if reason is not None:
+            tail_candidates.append((trace, label, reason))
+    if not tail_candidates:
+        raise ValueError("eval source selection found no evidence-backed tail")
+    tail_candidates = [
+        candidate
+        for candidate in tail_candidates
+        if candidate[0].object_sha256 not in used_sources
+    ] + [
+        candidate
+        for candidate in tail_candidates
+        if candidate[0].object_sha256 in used_sources
+    ]
+    for index in range(tail_count):
+        trace, label, reason = tail_candidates[index % len(tail_candidates)]
+        plan.append(
+            {
+                "suite": "tail",
+                "source_trace_sha256": trace.object_sha256,
+                "oracle": label["expected_oracle"],
+                "operation": label["operation"],
+                "selection_reason": reason,
+            }
+        )
+    return plan
+
+
+def _eval_cases_from_pairs(value, plan):
+    value = _object(value, "eval output", required={"pairs"})
+    pairs = value["pairs"]
+    if not isinstance(pairs, list) or len(pairs) != len(plan):
+        raise ValueError("eval output pair count is invalid")
+    cases = []
+    for metadata, pair in zip(plan, pairs):
+        if not isinstance(pair, list) or len(pair) != 2:
+            raise ValueError("eval output pair must contain input and expected")
+        cases.append({**metadata, "input": pair[0], "expected": pair[1]})
+    return {"cases": cases}
 
 
 def _validate_eval_output(
@@ -2853,24 +3004,9 @@ def _validate_eval_output(
     source_operations = {
         label["trace_sha256"]: label["operation"] for label in labels
     }
-    label_counts = Counter(label["operation"] for label in labels)
-    required_operations = {
-        operation
-        for operation, count in label_counts.items()
-        if _rate_basis_points(count, len(labels)) >= 500
-    }
-    if len(required_operations) > representative_count:
-        raise ValueError(
-            "representative eval capacity is smaller than measured operation slices"
-        )
-    remaining_representative = representative_count - len(required_operations)
-    required_total = sum(label_counts[value] for value in required_operations)
-    representative_quotas = {
-        operation: 1
-        + remaining_representative * count // max(1, required_total)
-        for operation, count in label_counts.items()
-        if operation in required_operations
-    }
+    label_counts, required_operations, representative_quotas = (
+        _eval_operation_quotas(labels, representative_count)
+    )
     request_lengths = sorted(len(trace.request_raw) for trace in traces)
     long_context_threshold = request_lengths[
         ((len(request_lengths) - 1) * 9 + 9) // 10
@@ -2907,32 +3043,18 @@ def _validate_eval_output(
         if case["suite"] == "representative":
             if case["selection_reason"] != "representative_mix":
                 raise ValueError("representative eval selection reason is invalid")
-        elif case["selection_reason"] not in {
-            "rare",
-            "long_context",
-            "error",
-            "multimodal",
-            "tool_use",
-        }:
+        elif case["selection_reason"] not in TAIL_REASON_VALUES:
             raise ValueError("tail eval selection reason is invalid")
         if case["suite"] == "tail":
             trace = traces_by_sha[case["source_trace_sha256"]]
-            analytics = _trace_analytics(trace)
             operation_count = label_counts[case["operation"]]
-            reason_supported = {
-                "rare": _rate_basis_points(operation_count, len(labels)) < 500,
-                "long_context": len(trace.request_raw) >= long_context_threshold,
-                "error": trace.catalog.get("error_class") is not None
-                or (
-                    isinstance(trace.catalog.get("provider_status"), int)
-                    and trace.catalog["provider_status"] >= 400
-                ),
-                "multimodal": analytics["modality"]
-                not in {"text", "unknown"},
-                "tool_use": analytics["has_tools"]
-                or analytics["has_tool_calls"],
-            }[case["selection_reason"]]
-            if not reason_supported:
+            if not _tail_reason_supported(
+                case["selection_reason"],
+                trace,
+                operation_count,
+                len(labels),
+                long_context_threshold,
+            ):
                 raise ValueError("tail eval selection reason lacks source evidence")
         identity = _digest(
             {
@@ -3024,10 +3146,7 @@ def _select_eval_sources(traces, labels, limit):
     selected_traces = [
         trace for trace in ranked_traces if trace.object_sha256 in selected
     ]
-    selected_labels = [
-        labels_by_sha[trace.object_sha256] for trace in selected_traces
-    ]
-    return selected_traces, selected_labels
+    return selected_traces
 
 
 def _eval_generation(
@@ -3045,37 +3164,33 @@ def _eval_generation(
     labels = [label for label in labels if not label["abstain"]]
     if not labels:
         raise ValueError("eval generation requires non-abstained labels")
-    selected, selected_labels = _select_eval_sources(
-        traces, labels, config.eval.max_source_traces
+    selected = _select_eval_sources(traces, labels, config.eval.max_source_traces)
+    plan = _eval_case_plan(
+        selected,
+        labels,
+        config.eval.representative_cases,
+        config.eval.tail_cases,
     )
-    compact_labels = [
-        [
-            label["trace_sha256"],
-            label["operation"],
-            label["domain"],
-            sum(
-                1 << CAPABILITY_VALUES.index(capability)
-                for capability in label["capabilities"]
-            ),
-            label["expected_oracle"],
-            label["language"],
-        ]
-        for label in selected_labels
-    ]
+    planned_sources = {item["source_trace_sha256"] for item in plan}
     payload = {
-        "schema_version": "milk.eval-generation-input.v1",
+        "schema_version": "milk.eval-generation-input.v2",
         "summary_sha256": summary_sha256,
         "readiness_sha256": readiness_sha256,
         "series_id": config.eval.series_id,
-        "representative_cases": config.eval.representative_cases,
-        "tail_cases": config.eval.tail_cases,
-        "operation_counts": dict(
-            sorted(Counter(label["operation"] for label in labels).items())
-        ),
-        "labels": compact_labels,
+        "case_plan": [
+            [
+                item["suite"],
+                item["source_trace_sha256"],
+                item["oracle"],
+                item["operation"],
+                item["selection_reason"],
+            ]
+            for item in plan
+        ],
         "traces": [
             _teacher_trace(trace, config.source.teacher_trace_bytes)
             for trace in selected
+            if trace.object_sha256 in planned_sources
         ],
     }
     result, job_id, called = _provider_job(
@@ -3089,7 +3204,7 @@ def _eval_generation(
         task="generate_eval",
         input_value=payload,
         validate=lambda value: _validate_eval_output(
-            value,
+            _eval_cases_from_pairs(value, plan),
             selected,
             labels,
             config.eval.representative_cases,
@@ -3526,7 +3641,7 @@ def _run_once_locked(config, store, teacher, now, lease):
         "route_proposal_sha256": route_proposal_sha256,
         "provider_calls": meter.calls,
         "provider_tokens": meter.tokens,
-        "accounted_incremental_spend_microusd": meter.accounted_spend,
+        "accounted_incremental_spend_microusd": meter.incremental_spend,
         "route_activation_attempted": False,
         "watermark": watermark_status,
         "pending_source": pending_status,
