@@ -28,6 +28,7 @@ from milk_harness.evidence import LocalEvidenceStore, R2EvidenceStore, canonical
 CONFIG_SCHEMA = "milk.harness-run-config.v1"
 REPORT_SCHEMA = "milk.run-once-report.v2"
 CODE_VERSION = "milk.harness-run-once.v2"
+TEACHER_RESPONSE_CONTENT_CONTRACT = "milk.teacher-json-string-or-object.v1"
 TAXONOMY_VERSION = "milk.semantic-taxonomy.v1"
 MAX_INCREMENTAL_SPEND_MICROUSD = 25_000_000
 MAX_STOP_NEW_SPEND_MICROUSD = 20_000_000
@@ -804,9 +805,12 @@ class DirectTeacher:
             output_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
         except (KeyError, IndexError, TypeError) as error:
             raise ValueError("teacher response does not match the OpenAI-compatible contract") from error
-        if not isinstance(content, str):
-            raise ValueError("teacher response content must be a JSON string")
-        value = _json(content.encode(), "teacher response content")
+        if isinstance(content, str):
+            value = _json(content.encode(), "teacher response content")
+        elif isinstance(content, dict):
+            value = content
+        else:
+            raise ValueError("teacher response content must be a JSON string or object")
         input_tokens = _integer(input_tokens, "teacher input_tokens", 0, self.config.max_input_tokens_per_call)
         output_tokens = _integer(output_tokens, "teacher output_tokens", 0, self.config.max_output_tokens_per_call)
         return TeacherResponse(value, _string(provider_request_id, "provider request ID", maximum=512), input_tokens, output_tokens)
@@ -3052,13 +3056,14 @@ def _provider_job(
     prompt_sha256 = hashlib.sha256(instructions.encode()).hexdigest()
     response_format = _teacher_response_format(task, input_value)
     identity = {
-        "schema_version": "milk.teacher-job-identity.v2",
+        "schema_version": "milk.teacher-job-identity.v3",
         "scope_id": config.scope_id,
         "profile": config.profile,
         "job_type": job_type,
         "teacher": config.teacher.public_binding(),
         "prompt_sha256": prompt_sha256,
         "response_format_sha256": _digest(response_format),
+        "response_content_contract": TEACHER_RESPONSE_CONTENT_CONTRACT,
         "input_sha256": _digest(input_value),
         "code_version": CODE_VERSION,
     }

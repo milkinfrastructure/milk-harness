@@ -20,6 +20,7 @@ from milk_harness.evidence import LocalEvidenceStore, canonical_json
 from milk_harness.run_once import (
     CAPABILITY_VALUES,
     CLASSIFIER_INSTRUCTIONS,
+    DirectTeacher,
     DirectScoreClient,
     DOMAIN_VALUES,
     EVAL_INSTRUCTIONS,
@@ -699,6 +700,43 @@ def add_responses_zstd_trace(root):
 
 
 class RunOnceTests(unittest.TestCase):
+    def test_direct_teacher_json_content_contract(self):
+        bounded = config("/tmp")
+        expected = {"labels": [[0, 0, 1, 0, "en", False]]}
+
+        def complete(content):
+            response = FakeHttpResponse(
+                {
+                    "choices": [{"message": {"content": content}}],
+                    "usage": {"prompt_tokens": 7, "completion_tokens": 3},
+                }
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"MILK_TEST_TEACHER_API_KEY": "secret-test-key"},
+                clear=False,
+            ):
+                return DirectTeacher(
+                    bounded.teacher, opener=RecordingOpener(response)
+                ).complete(
+                    task="classify",
+                    instructions=CLASSIFIER_INSTRUCTIONS,
+                    payload={"rows": [["c", "request", 0, 8]]},
+                    job_id="a" * 64,
+                )
+
+        for content in (json.dumps(expected), expected):
+            with self.subTest(content_type=type(content).__name__):
+                self.assertEqual(complete(content).value, expected)
+
+        for content in ([], 1, True, None):
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "teacher response content must be a JSON string or object",
+                ):
+                    complete(content)
+
     def test_harness_revision_is_exact_and_fail_closed(self):
         with mock.patch.dict(
             os.environ, {"MILK_HARNESS_REVISION": "a" * 40}, clear=False
@@ -1020,9 +1058,13 @@ class RunOnceTests(unittest.TestCase):
             )
             identity = json.loads(store.get(claim_key))["identity"]
             self.assertEqual(
-                identity["schema_version"], "milk.teacher-job-identity.v2"
+                identity["schema_version"], "milk.teacher-job-identity.v3"
             )
             self.assertEqual(len(identity["response_format_sha256"]), 64)
+            self.assertEqual(
+                identity["response_content_contract"],
+                "milk.teacher-json-string-or-object.v1",
+            )
             eval_claim_key = next(
                 key
                 for key in store.list(config(root).prefix + "/jobs/generate-eval")
@@ -1030,19 +1072,19 @@ class RunOnceTests(unittest.TestCase):
             )
             eval_identity = json.loads(store.get(eval_claim_key))["identity"]
             self.assertEqual(
-                eval_identity["schema_version"], "milk.teacher-job-identity.v2"
+                eval_identity["schema_version"], "milk.teacher-job-identity.v3"
             )
             self.assertNotEqual(
                 identity["response_format_sha256"],
                 eval_identity["response_format_sha256"],
             )
-            legacy_identity = dict(identity)
-            legacy_identity["schema_version"] = "milk.teacher-job-identity.v1"
-            del legacy_identity["response_format_sha256"]
-            legacy_job_id = hashlib.sha256(
-                canonical_json(legacy_identity)
+            prior_identity = dict(identity)
+            prior_identity["schema_version"] = "milk.teacher-job-identity.v2"
+            del prior_identity["response_content_contract"]
+            prior_job_id = hashlib.sha256(
+                canonical_json(prior_identity)
             ).hexdigest()
-            self.assertNotEqual(first["classifier_job_id"], legacy_job_id)
+            self.assertNotEqual(first["classifier_job_id"], prior_job_id)
 
             second = run_once(config(root), store=store, teacher=teacher, now=NOW + dt.timedelta(days=1))
 
