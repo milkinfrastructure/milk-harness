@@ -1147,7 +1147,12 @@ class RunOnceTests(unittest.TestCase):
                 request = _teacher_request_body(
                     bounded.teacher, CLASSIFIER_INSTRUCTIONS, payload, "classify"
                 )
-                response_format = json.loads(request)["response_format"]
+                request_value = json.loads(request)
+                self.assertIn(
+                    "including trivial or synthetic requests",
+                    request_value["messages"][0]["content"],
+                )
+                response_format = request_value["response_format"]
                 self.assertEqual(response_format["type"], "json_schema")
                 self.assertTrue(response_format["json_schema"]["strict"])
                 schema = response_format["json_schema"]["schema"]
