@@ -3943,7 +3943,7 @@ def _eval_generation(
     if len(selected) > config.eval.max_source_traces:
         raise ValueError("eval plan exceeds eval.max_source_traces")
     payload = {
-        "schema_version": "milk.eval-generation-input.v5",
+        "schema_version": "milk.eval-generation-input.v6",
         "answer_leak_repair": EVAL_ANSWER_LEAK_REPAIR,
         "eval_oracle_policy": "generated-reference-from-text-source-v1",
         "summary_sha256": summary_sha256,
