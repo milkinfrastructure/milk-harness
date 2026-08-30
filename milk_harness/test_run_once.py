@@ -232,6 +232,7 @@ def config(root, profile="mechanics"):
                 },
                 "held_out_cases": 3,
                 "timeout_seconds": 30,
+                "minimum_request_interval_ms": 0,
                 "max_calls_per_run": 6,
                 "max_input_tokens_per_call": 128,
                 "max_output_tokens_per_call": 16,
@@ -945,7 +946,9 @@ class RunOnceTests(unittest.TestCase):
             teacher = FakeTeacher()
             first = run_once(config(root), store=store, teacher=teacher, now=NOW)
 
+            prefix = config(root).prefix
             self.assertTrue(first["ready"])
+            self.assertEqual(first["schema_version"], "milk.run-once-report.v2")
             self.assertFalse(first["statistically_qualified"])
             self.assertEqual(first["trace_count"], 100)
             self.assertEqual(first["provider_calls"], 2)
@@ -955,6 +958,40 @@ class RunOnceTests(unittest.TestCase):
             self.assertIsNone(first["candidate_score_sha256"])
             self.assertIsNone(first["route_proposal_sha256"])
             self.assertFalse(first["route_activation_attempted"])
+            refs = first["artifact_refs"]
+            self.assertEqual(
+                set(refs),
+                {"scope_prefix", "source_manifest_key", "nodes", "provider_jobs"},
+            )
+            self.assertEqual(refs["scope_prefix"], prefix)
+            self.assertEqual(
+                refs["source_manifest_key"],
+                f"{prefix}/pending-source/versions/"
+                f"{first['source_manifest_sha256']}.json",
+            )
+            for name, root_name, digest_name in (
+                ("summary", "summaries", "summary_sha256"),
+                ("readiness", "readiness", "readiness_sha256"),
+                ("eval", "evals/mechanics-v1", "eval_sha256"),
+            ):
+                self.assertEqual(
+                    refs["nodes"][name],
+                    {
+                        "pointer_key": f"{prefix}/{root_name}/current.json",
+                        "version_key": (
+                            f"{prefix}/{root_name}/versions/{first[digest_name]}.json"
+                        ),
+                    },
+                )
+            self.assertEqual(
+                refs["provider_jobs"],
+                {
+                    "classifier": f"{prefix}/jobs/classify/{first['classifier_job_id']}",
+                    "eval_generation": f"{prefix}/jobs/generate-eval/{first['eval_job_id']}",
+                    "eval_validation": None,
+                    "candidate_score": None,
+                },
+            )
             self.assertEqual([call[0] for call in teacher.calls], ["classify", "generate_eval"])
             claim_key = next(
                 key
@@ -1021,6 +1058,25 @@ class RunOnceTests(unittest.TestCase):
                 third["route_proposal_sha256"],
                 second["route_proposal_sha256"],
             )
+            self.assertEqual(third["artifact_refs"], second["artifact_refs"])
+            for name, sha256 in (
+                ("validation", second["eval_validation_sha256"]),
+                ("score", second["candidate_score_sha256"]),
+                ("proposal", second["route_proposal_sha256"]),
+            ):
+                self.assertTrue(
+                    second["artifact_refs"]["nodes"][name]["version_key"].endswith(
+                        f"/versions/{sha256}.json"
+                    )
+                )
+            for name, job_type in (
+                ("eval_validation", "validate-eval"),
+                ("candidate_score", "score-candidate"),
+            ):
+                self.assertRegex(
+                    second["artifact_refs"]["provider_jobs"][name],
+                    rf"^{prefix}/jobs/{job_type}/[0-9a-f]{{64}}$",
+                )
 
             route_pointer = json.loads(
                 store.get(f"{config(root).prefix}/route-proposals/current.json")
@@ -1209,6 +1265,56 @@ class RunOnceTests(unittest.TestCase):
         headers = dict(opener.request.header_items())
         self.assertEqual(headers["Authorization"], "Bearer secret-test-key")
         self.assertIn("candidate", headers["Idempotency-key"])
+
+    def test_direct_score_client_paces_request_starts_from_config(self):
+        bounded = config("/tmp")
+        score_config = replace(
+            bounded.candidate_score,
+            minimum_request_interval_ms=4100,
+        )
+        response = FakeHttpResponse(
+            {
+                "choices": [{"message": {"content": "expected result"}}],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 3},
+            }
+        )
+        sleeps = []
+        clock = iter((1.0, 1.01, 1.5, 5.2, 5.21))
+        client = DirectScoreClient(
+            score_config,
+            opener=RecordingOpener(response),
+            monotonic=lambda: next(clock),
+            sleeper=sleeps.append,
+        )
+        case = {
+            "case_id": "a" * 64,
+            "input": "answer this bounded request",
+            "expected": "expected result",
+        }
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "MILK_TEST_INCUMBENT_API_KEY": "secret-test-key",
+                "MILK_TEST_CANDIDATE_API_KEY": "secret-test-key",
+            },
+            clear=False,
+        ):
+            client.invoke(
+                target_name="incumbent",
+                target=score_config.incumbent,
+                case=case,
+                job_id="b" * 64,
+            )
+            client.invoke(
+                target_name="candidate",
+                target=score_config.candidate,
+                case=case,
+                job_id="b" * 64,
+            )
+
+        self.assertEqual(len(sleeps), 1)
+        self.assertAlmostEqual(sleeps[0], 3.6)
 
     def test_invalid_provider_output_is_terminal_and_never_retried(self):
         with tempfile.TemporaryDirectory() as root:
@@ -2291,6 +2397,7 @@ def _config_dict(root):
             },
             "held_out_cases": 3,
             "timeout_seconds": 30,
+            "minimum_request_interval_ms": 0,
             "max_calls_per_run": 6,
             "max_input_tokens_per_call": 128,
             "max_output_tokens_per_call": 16,
