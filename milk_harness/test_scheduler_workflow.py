@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import unittest
@@ -46,6 +47,7 @@ class ProductionWorkflowTest(unittest.TestCase):
             set(re.findall(r"secrets\.([A-Z0-9_]+)", text)),
             {
                 "BASETEN_API_KEY",
+                "MILK_GATEWAY_API_KEY",
                 "MILK_CONTROL_R2_ACCOUNT_ID",
                 "MILK_CONTROL_R2_ACCESS_KEY_ID",
                 "MILK_CONTROL_R2_BUCKET",
@@ -63,11 +65,12 @@ class ProductionWorkflowTest(unittest.TestCase):
             "MILK_CONTROL_R2_BUCKET: ${{ secrets.MILK_CONTROL_R2_BUCKET }}",
             text,
         )
+        self.assertIn("MILK_HARNESS_REVISION: ${{ github.sha }}", text)
 
     def test_example_is_the_exact_public_run_config(self):
         raw = CONFIG.read_bytes()
         value = json.loads(raw)
-        config = RunConfig.parse(value)
+        config = RunConfig.load(CONFIG)
         self.assertEqual(config.profile, "production")
         self.assertEqual(config.scope_id, "ae052f80-006d-4fcd-94af-1bbbdf6dc4ca")
         self.assertEqual(config.store.kind, "r2")
@@ -83,14 +86,16 @@ class ProductionWorkflowTest(unittest.TestCase):
         self.assertEqual(config.budget.absolute_spend_microusd, 25_000_000)
         self.assertTrue(config.route_proposal.enabled)
         self.assertEqual(config.route_proposal.candidate_basis_points, 0)
+        self.assertEqual(config.config_sha256, hashlib.sha256(raw).hexdigest())
         self.assertNotIn(b"secret_access_key", raw.lower())
 
     def test_mechanics_config_is_isolated_and_bounded(self):
         raw = MECHANICS_CONFIG.read_bytes()
-        config = RunConfig.parse(json.loads(raw))
-        production = RunConfig.parse(json.loads(CONFIG.read_bytes()))
+        config = RunConfig.load(MECHANICS_CONFIG)
+        production = RunConfig.load(CONFIG)
         self.assertEqual(config.profile, "mechanics")
-        self.assertEqual(config.scope_id, "f7f88ff0-5947-440c-a661-e4e35f1d04e0")
+        self.assertEqual(config.scope_id, "7c92a409-2c10-49ce-b739-aff506f75dfa")
+        self.assertEqual(config.eval.series_id, "production-path-mechanics-v1")
         self.assertNotEqual(config.scope_id, production.scope_id)
         self.assertEqual(config.source.classifier_sample_sessions, 100)
         self.assertEqual(config.teacher.reasoning_effort, "low")

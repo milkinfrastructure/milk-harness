@@ -32,7 +32,9 @@ jobs:
 
       - name: Reconcile one closed-window pass
         env:
+          MILK_HARNESS_REVISION: ${{ github.sha }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          MILK_GATEWAY_API_KEY: ${{ secrets.MILK_GATEWAY_API_KEY }}
           MILK_CONTROL_R2_ACCOUNT_ID: ${{ secrets.MILK_CONTROL_R2_ACCOUNT_ID }}
           MILK_CONTROL_R2_BUCKET: ${{ secrets.MILK_CONTROL_R2_BUCKET }}
           MILK_CONTROL_R2_ACCESS_KEY_ID: ${{ secrets.MILK_CONTROL_R2_ACCESS_KEY_ID }}

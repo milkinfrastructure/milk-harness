@@ -1,6 +1,6 @@
 {
   "schema_version": "milk.harness-run-config.v1",
-  "scope_id": "f7f88ff0-5947-440c-a661-e4e35f1d04e0",
+  "scope_id": "7c92a409-2c10-49ce-b739-aff506f75dfa",
   "profile": "mechanics",
   "store": {
     "kind": "r2",
@@ -14,6 +14,7 @@
     "max_trace_object_bytes": 16777216,
     "max_total_trace_bytes": 67108864,
     "teacher_trace_bytes": 64,
+    "eval_trace_bytes": 1024,
     "classifier_sample_sessions": 100
   },
   "teacher": {
@@ -35,7 +36,7 @@
     "absolute_spend_microusd": 25000000
   },
   "eval": {
-    "series_id": "gateway-mechanics-v1",
+    "series_id": "production-path-mechanics-v1",
     "representative_cases": 24,
     "tail_cases": 8,
     "max_source_traces": 128
@@ -46,5 +47,32 @@
     "api_base_url": "https://inference.baseten.co/v1/",
     "model": "zai-org/GLM-5.3-Flash",
     "candidate_basis_points": 500
+  },
+  "candidate_score": {
+    "incumbent": {
+      "api_url": "https://carton.milkinfrastructure.com/v1/chat/completions",
+      "model": "zai-org/GLM-5.3-Flash",
+      "api_key_env": "MILK_GATEWAY_API_KEY",
+      "input_rate_microusd_per_million": 150000,
+      "output_rate_microusd_per_million": 500000
+    },
+    "candidate": {
+      "api_url": "https://inference.baseten.co/v1/chat/completions",
+      "model": "zai-org/GLM-5.3-Flash",
+      "api_key_env": "BASETEN_API_KEY",
+      "input_rate_microusd_per_million": 150000,
+      "output_rate_microusd_per_million": 500000
+    },
+    "held_out_cases": 8,
+    "timeout_seconds": 30,
+    "max_calls_per_run": 16,
+    "max_input_tokens_per_call": 4096,
+    "max_output_tokens_per_call": 1024,
+    "max_total_tokens_per_run": 81920,
+    "case_reference_similarity_basis_points": 9500,
+    "minimum_candidate_reference_pass_basis_points": 9000,
+    "minimum_reference_pass_delta_basis_points": 0,
+    "maximum_candidate_error_basis_points": 0,
+    "maximum_candidate_p95_latency_ms": 10000
   }
 }
