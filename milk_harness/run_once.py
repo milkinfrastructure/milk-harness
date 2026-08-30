@@ -2412,7 +2412,7 @@ class _RunMeter:
             self.accounted_spend += reserved
 
 
-CLASSIFIER_INSTRUCTIONS = """Return only JSON as {"labels":[row,...]} with one label per input row in exact order. Input taxonomy arrays are operations, domains, capability bits, then oracles. Each input row is [endpoint,request_text_prefix,flags,modality_bits], where endpoint is c or r, flags bits are request_truncated=1,error=2,tool_use=4, and modality bits are audio=1,file=2,image=4,text=8,unknown=16. Each output row is [operation_code,domain_code,capability_bitmask,oracle_code,language,abstain]. Do not return trace IDs, reasoning, or prose."""
+CLASSIFIER_INSTRUCTIONS = """Return only JSON as {"labels":[row,...]} with one label per input row in exact order. Input taxonomy arrays are operations, domains, capability bits, then oracles. Each input row is [endpoint,request_text_prefix,flags,modality_bits], where endpoint is c or r, flags bits are request_truncated=1,error=2,tool_use=4, and modality bits are audio=1,file=2,image=4,text=8,unknown=16. Each output row is [operation_code,domain_code,capability_bitmask,oracle_code,language,abstain]. Set abstain false whenever the request reveals a primary operation, including trivial or synthetic requests; use other or abstain only when no listed operation fits. Do not return trace IDs, reasoning, or prose."""
 
 
 def _unresolved_claim(job_id, reserved):
