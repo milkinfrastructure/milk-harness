@@ -461,7 +461,18 @@ class LeakingEvalTeacher(FakeTeacher):
     def complete(self, **kwargs):
         response = super().complete(**kwargs)
         if kwargs["task"] == "generate_eval":
-            response.value["pairs"][0] = ["same", "same"]
+            response.value["pairs"][0] = [
+                "Compute two plus two without copying four.",
+                "four",
+            ]
+        return response
+
+
+class DuplicateEvalTeacher(FakeTeacher):
+    def complete(self, **kwargs):
+        response = super().complete(**kwargs)
+        if kwargs["task"] == "generate_eval":
+            response.value["pairs"][0] = list(response.value["pairs"][1])
         return response
 
 
@@ -1450,39 +1461,35 @@ class RunOnceTests(unittest.TestCase):
             )
             self.assertNotIn("output", result)
 
-    def test_eval_local_validation_failure_records_actual_usage(self):
+    def test_eval_answer_leak_is_repaired_before_strict_validation(self):
         with tempfile.TemporaryDirectory() as root:
             store = seed(root)
             teacher = LeakingEvalTeacher()
             first = run_once(config(root), store=store, teacher=teacher, now=NOW)
-            second = run_once(config(root), store=store, teacher=teacher, now=NOW)
 
             self.assertTrue(first["ready"])
-            self.assertIsNone(first["eval_sha256"])
+            self.assertIsNotNone(first["eval_sha256"])
             self.assertEqual(
                 [call[0] for call in teacher.calls], ["classify", "generate_eval"]
             )
-            self.assertFalse(second["eval_provider_called"])
             result_key = next(
                 key
                 for key in store.list(config(root).prefix + "/jobs/generate-eval")
                 if key.endswith("/result.json.zst")
             )
             result = _load_optional_json(store, result_key, compressed=True)
-            self.assertEqual(result["failure_stage"], "validation")
-            self.assertTrue(result["provider_request_id"].startswith("fake-"))
-            self.assertEqual(result["calculated_cost_microusd"], result["accounted_cost_microusd"])
-            self.assertEqual(
-                result["failure_message_sha256"],
-                hashlib.sha256(b"eval input leaks its expected answer").hexdigest(),
+            self.assertEqual(result["outcome"], "succeeded")
+            self.assertEqual(len(result["output"]), 5)
+            repaired = next(
+                case for case in result["output"] if case["expected"] == "four"
             )
-            self.assertNotIn("output", result)
+            self.assertNotIn("four", repaired["input"].casefold())
 
     def test_failed_teacher_source_retries_after_teacher_change(self):
         failures = (
             (HttpErrorTeacher, ["classify"]),
             (InvalidTeacher, ["classify"]),
-            (LeakingEvalTeacher, ["classify", "generate_eval"]),
+            (DuplicateEvalTeacher, ["classify", "generate_eval"]),
         )
         for teacher_type, failed_tasks in failures:
             with self.subTest(
@@ -2497,6 +2504,38 @@ class RunOnceTests(unittest.TestCase):
         self.assertEqual(len(cases["cases"]), 32)
         self.assertEqual(cases["cases"][0]["source_trace_sha256"], "0" * 64)
 
+    def test_eval_pair_leak_repair_preserves_count_and_plan_bindings(self):
+        plan = [
+            {
+                "suite": "representative",
+                "source_trace_sha256": f"{index:064x}",
+                "oracle": "reference",
+                "operation": "answer",
+                "selection_reason": "representative_mix",
+            }
+            for index in range(32)
+        ]
+        pairs = [[f"task {index}", f"result {index}"] for index in range(32)]
+        pairs[0] = ["same", "same"]
+        pairs[1] = ["aabb", "ab"]
+        pairs[2] = ["straße", "SS"]
+
+        cases = _eval_cases_from_pairs({"pairs": pairs}, plan)["cases"]
+
+        self.assertEqual(len(cases), 32)
+        self.assertEqual(
+            [case["source_trace_sha256"] for case in cases],
+            [item["source_trace_sha256"] for item in plan],
+        )
+        self.assertEqual(
+            [case["expected"] for case in cases], [pair[1] for pair in pairs]
+        )
+        for case in cases[:3]:
+            self.assertNotIn(
+                case["expected"].casefold(), case["input"].casefold()
+            )
+        self.assertEqual(cases[3]["input"], pairs[3][0])
+
     def test_sampling_skips_unparseable_sessions_before_applying_its_cap(self):
         with tempfile.TemporaryDirectory() as root:
             store = seed(root, count=201)
@@ -2714,7 +2753,11 @@ class RunOnceTests(unittest.TestCase):
             self.assertIsNotNone(report["eval_sha256"])
             self.assertEqual(
                 teacher.eval_payload["schema_version"],
-                "milk.eval-generation-input.v3",
+                "milk.eval-generation-input.v4",
+            )
+            self.assertEqual(
+                teacher.eval_payload["answer_leak_repair"],
+                "milk.eval-answer-leak-repair.v1",
             )
             self.assertTrue(
                 all(item[3] == "answer" for item in teacher.eval_payload["case_plan"])
