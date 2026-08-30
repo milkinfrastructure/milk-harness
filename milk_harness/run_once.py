@@ -3410,6 +3410,8 @@ def _block_current_route_proposal(
 
 
 def _eligible_eval_inputs(config, traces, labels):
+    # Classification describes observed traffic; generated evals are currently
+    # restricted to text-only, tool-free cases that have a canonical answer.
     traces_by_sha = {trace.object_sha256: trace for trace in traces}
     eligible_labels = []
     unsupported = Counter()
@@ -3421,9 +3423,7 @@ def _eligible_eval_inputs(config, traces, labels):
             unsupported["missing_source"] += 1
         elif not _analysis_eligible(trace):
             unsupported["failed_request"] += 1
-        elif config.profile != "production":
-            eligible_labels.append(label)
-        elif label["expected_oracle"] != "reference":
+        elif config.profile == "production" and label["expected_oracle"] != "reference":
             unsupported["non_reference_oracle"] += 1
         else:
             analytics = _trace_analytics(trace)
@@ -3691,7 +3691,7 @@ def _eval_case_plan(
                 {
                     "suite": "representative",
                     "source_trace_sha256": trace.object_sha256,
-                    "oracle": label["expected_oracle"],
+                    "oracle": "reference",
                     "operation": operation,
                     "selection_reason": "representative_mix",
                 }
@@ -3708,7 +3708,7 @@ def _eval_case_plan(
             {
                 "suite": "tail",
                 "source_trace_sha256": trace.object_sha256,
-                "oracle": label["expected_oracle"],
+                "oracle": "reference",
                 "operation": label["operation"],
                 "selection_reason": reason,
             }
@@ -3930,8 +3930,9 @@ def _eval_generation(
     if len(selected) > config.eval.max_source_traces:
         raise ValueError("eval plan exceeds eval.max_source_traces")
     payload = {
-        "schema_version": "milk.eval-generation-input.v4",
+        "schema_version": "milk.eval-generation-input.v5",
         "answer_leak_repair": EVAL_ANSWER_LEAK_REPAIR,
+        "eval_oracle_policy": "generated-reference-from-text-source-v1",
         "summary_sha256": summary_sha256,
         "readiness_sha256": readiness_sha256,
         "series_id": config.eval.series_id,
