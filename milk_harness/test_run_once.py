@@ -2073,7 +2073,7 @@ class RunOnceTests(unittest.TestCase):
 
     def test_classifier_supplements_missing_tail_rows_without_biasing_summary(self):
         with tempfile.TemporaryDirectory() as root:
-            store = seed(root, count=36)
+            store = seed(root, count=40)
             value = _config_dict(root)
             value["source"]["classifier_sample_sessions"] = 32
             value["eval"]["representative_cases"] = 24
@@ -2093,11 +2093,10 @@ class RunOnceTests(unittest.TestCase):
                 ).hexdigest(),
             )
             semantic_keys = ranked[:32]
-            tool_keys = ranked[32:34]
-            rare_keys = semantic_keys[2:6]
-            long_keys = semantic_keys[6:10]
+            tool_keys = semantic_keys[:2]
+            long_keys = ranked[32:40]
 
-            for index, key in enumerate(tool_keys + rare_keys + long_keys):
+            for index, key in enumerate(tool_keys + long_keys):
                 raw, etag = store.get_versioned(key)
                 retained = json.loads(raw)
                 request_value = {
@@ -2106,13 +2105,9 @@ class RunOnceTests(unittest.TestCase):
                         {
                             "role": "user",
                             "content": (
-                                f"rare operation {index}"
-                                if key in rare_keys
-                                else (
-                                    f"long operation {index} " + "x" * 1000
-                                    if key in long_keys
-                                    else f"tool operation {index}"
-                                )
+                                f"long operation {index} " + "x" * 1000
+                                if key in long_keys
+                                else f"tool operation {index}"
                             ),
                         }
                     ],
@@ -2145,28 +2140,61 @@ class RunOnceTests(unittest.TestCase):
                 teacher=teacher,
                 now=NOW,
             )
+            validated_report = run_once(
+                bounded,
+                store=store,
+                teacher=teacher,
+                now=NOW,
+            )
             summary_pointer = json.loads(
                 store.get(bounded.prefix + "/summaries/current.json")
             )
             summary = json.loads(store.get(summary_pointer["version_key"]))
+            readiness_pointer = json.loads(
+                store.get(bounded.prefix + "/readiness/current.json")
+            )
+            readiness = json.loads(
+                store.get(readiness_pointer["version_key"])
+            )
+            validation_pointer = json.loads(
+                store.get(
+                    bounded.prefix
+                    + "/eval-validations/mechanics-v1/current.json"
+                )
+            )
+            validation = json.loads(
+                store.get(validation_pointer["version_key"])
+            )
             plan = teacher.payloads["generate_eval"]["case_plan"]
 
             self.assertTrue(report["ready"])
+            self.assertIsNotNone(validated_report["eval_validation_sha256"])
             self.assertEqual(
                 teacher.payloads["classify"]["semantic_row_count"], 32
             )
-            self.assertEqual(len(teacher.payloads["classify"]["rows"]), 34)
+            self.assertEqual(len(teacher.payloads["classify"]["rows"]), 40)
             self.assertEqual(
                 sum(bool(row[2] & 4) for row in teacher.payloads["classify"]["rows"]),
                 2,
             )
             self.assertEqual(summary["semantic"]["classified"], 32)
-            self.assertEqual(summary["semantic"]["operation"]["answer"], 28)
+            self.assertEqual(summary["semantic"]["operation"]["answer"], 32)
+            self.assertEqual(
+                readiness["represented_classes"],
+                [{"operation": "answer", "sessions": 32}],
+            )
+            self.assertEqual(readiness["eval_eligible_cases"], 38)
+            self.assertEqual(
+                readiness["unsupported_eval_categories"],
+                {"tool_use": 2},
+            )
+            self.assertTrue(validation["accepted"])
+            self.assertEqual(validation["output"]["accepted_cases"], 32)
             self.assertEqual([row[0] for row in plan].count("representative"), 24)
             self.assertEqual([row[0] for row in plan].count("tail"), 8)
             self.assertEqual(
                 sorted(row[4] for row in plan if row[0] == "tail"),
-                ["long_context"] * 4 + ["rare"] * 4,
+                ["long_context"] * 8,
             )
             self.assertEqual(len({row[1] for row in plan}), 32)
             self.assertTrue(tool_sha256s.isdisjoint(row[1] for row in plan))
