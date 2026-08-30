@@ -40,7 +40,8 @@ MAX_ACCOUNTING_JOB_OBJECTS = 100_000
 S3_LIST_PAGE_SIZE = 1_000
 MAX_EVAL_TEXT_BYTES = 512 * 1024
 MAX_SCORE_CALLS = 64
-MAX_CLASSIFIER_ROWS = 750
+MAX_SEMANTIC_ROWS = 750
+MAX_CLASSIFIER_ROWS = 850
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 SAFE_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
@@ -302,7 +303,7 @@ class SourceConfig:
                 value["classifier_sample_sessions"],
                 "source.classifier_sample_sessions",
                 1,
-                MAX_CLASSIFIER_ROWS,
+                MAX_SEMANTIC_ROWS,
             ),
         )
 
@@ -690,9 +691,9 @@ class RunConfig:
                 raise ValueError(
                     f"production source.max_traces must be {PRODUCTION_SOURCE_TRACES}"
                 )
-            if config.source.classifier_sample_sessions != 750:
+            if config.source.classifier_sample_sessions != MAX_SEMANTIC_ROWS:
                 raise ValueError(
-                    "production classifier sample must be 750"
+                    f"production classifier sample must be {MAX_SEMANTIC_ROWS}"
                 )
         candidate = config.candidate_score.candidate
         expected_candidate_url = config.route_proposal.api_base_url + "chat/completions"
@@ -705,6 +706,12 @@ class RunConfig:
             config.eval.representative_cases + config.eval.tail_cases
         ):
             raise ValueError("candidate_score held_out_cases exceeds eval cases")
+        if config.eval.max_source_traces < (
+            config.eval.representative_cases + config.eval.tail_cases
+        ):
+            raise ValueError(
+                "eval.max_source_traces cannot cover representative and tail cases"
+            )
         return config
 
     @classmethod
@@ -2591,14 +2598,35 @@ def _classification_sources(traces, config):
     semantic = _sample_traces(traces, config)
     eligible = [trace for trace in traces if _analysis_eligible(trace)]
     if not eligible:
-        return semantic, semantic, set()
-    request_lengths = sorted(len(trace.request_raw) for trace in eligible)
+        return semantic, semantic, None
+    tail_population = eligible
+    if config.profile == "production":
+        tail_population = [
+            trace
+            for trace in eligible
+            if (
+                (analytics := _trace_analytics(trace))["modality"] == "text"
+                and not analytics["has_tools"]
+                and not analytics["has_tool_calls"]
+            )
+        ]
+    if not tail_population:
+        return semantic, semantic, None
+    request_lengths = sorted(len(trace.request_raw) for trace in tail_population)
     long_context_threshold = request_lengths[
         ((len(request_lengths) - 1) * 9 + 9) // 10
     ]
 
     def reason_rank(trace):
         analytics = _trace_analytics(trace)
+        if config.profile == "production":
+            if (
+                analytics["has_tools"]
+                or analytics["has_tool_calls"]
+                or analytics["modality"] != "text"
+            ):
+                return None
+            return 0 if len(trace.request_raw) >= long_context_threshold else None
         if analytics["has_tools"] or analytics["has_tool_calls"]:
             return 0
         if analytics["modality"] not in {"text", "unknown"}:
@@ -2623,7 +2651,7 @@ def _classification_sources(traces, config):
             trace.object_sha256,
         ),
     )[: min(config.eval.tail_cases, MAX_CLASSIFIER_ROWS - len(semantic))]
-    return semantic, semantic + supplements
+    return semantic, semantic + supplements, long_context_threshold
 
 
 def _safe_text_prefix(value, limit):
@@ -3222,9 +3250,18 @@ def _provider_job(
 def _classification(
     store, config, meter, teacher, lease, now, traces, source_sha256
 ):
-    semantic_sample, classifier_sample = _classification_sources(traces, config)
+    semantic_sample, classifier_sample, long_context_threshold = (
+        _classification_sources(traces, config)
+    )
     if not semantic_sample:
-        return None, None, False, semantic_sample, classifier_sample
+        return (
+            None,
+            None,
+            False,
+            semantic_sample,
+            classifier_sample,
+            long_context_threshold,
+        )
     payload = {
         "schema_version": "milk.classification-input.v2",
         "taxonomy_version": TAXONOMY_VERSION,
@@ -3259,6 +3296,7 @@ def _classification(
         called,
         semantic_sample,
         classifier_sample,
+        long_context_threshold,
     )
 
 
@@ -3564,6 +3602,7 @@ def _eval_case_plan(
     representative_count,
     tail_count,
     semantic_labels=None,
+    long_context_threshold=None,
 ):
     labels = [label for label in labels if not label["abstain"]]
     semantic_labels = [
@@ -3590,10 +3629,11 @@ def _eval_case_plan(
         semantic_labels, representative_count
     )
     del unused_required
-    request_lengths = sorted(len(trace.request_raw) for trace in eligible_traces)
-    long_context_threshold = request_lengths[
-        ((len(request_lengths) - 1) * 9 + 9) // 10
-    ]
+    if long_context_threshold is None:
+        request_lengths = sorted(len(trace.request_raw) for trace in eligible_traces)
+        long_context_threshold = request_lengths[
+            ((len(request_lengths) - 1) * 9 + 9) // 10
+        ]
     tail_candidates = []
     for trace in eligible_traces:
         label = labels_by_sha[trace.object_sha256]
@@ -3691,6 +3731,7 @@ def _validate_eval_output(
     tail_count,
     teacher_trace_bytes,
     semantic_labels=None,
+    long_context_threshold=None,
 ):
     value = _object(value, "eval output", required={"cases"})
     cases = value["cases"]
@@ -3712,10 +3753,11 @@ def _validate_eval_output(
     label_counts, required_operations, representative_quotas = (
         _eval_operation_quotas(semantic_labels, representative_count)
     )
-    request_lengths = sorted(len(trace.request_raw) for trace in traces)
-    long_context_threshold = request_lengths[
-        ((len(request_lengths) - 1) * 9 + 9) // 10
-    ]
+    if long_context_threshold is None:
+        request_lengths = sorted(len(trace.request_raw) for trace in traces)
+        long_context_threshold = request_lengths[
+            ((len(request_lengths) - 1) * 9 + 9) // 10
+        ]
     source_text_prefixes = {
         trace.object_sha256: {
             _request_text_prefix(
@@ -3811,125 +3853,6 @@ def _validate_eval_output(
     return sorted(checked, key=lambda case: (case["suite"], case["case_id"]))
 
 
-def _eval_tail_sources(traces, labels, semantic_labels, limit):
-    labels_by_sha = {
-        label["trace_sha256"]: label for label in labels if not label["abstain"]
-    }
-    semantic_labels = [label for label in semantic_labels if not label["abstain"]]
-    label_counts = Counter(label["operation"] for label in semantic_labels)
-    eligible = [trace for trace in traces if trace.object_sha256 in labels_by_sha]
-    if not eligible:
-        return set()
-    request_lengths = sorted(len(trace.request_raw) for trace in eligible)
-    long_context_threshold = request_lengths[
-        ((len(request_lengths) - 1) * 9 + 9) // 10
-    ]
-    candidates = []
-    for trace in eligible:
-        operation = labels_by_sha[trace.object_sha256]["operation"]
-        reason = next(
-            (
-                value
-                for value in TAIL_REASON_VALUES
-                if _tail_reason_supported(
-                    value,
-                    trace,
-                    label_counts.get(operation, 0),
-                    len(semantic_labels),
-                    long_context_threshold,
-                )
-            ),
-            None,
-        )
-        if reason is not None:
-            candidates.append((TAIL_REASON_VALUES.index(reason), trace))
-    candidates.sort(
-        key=lambda item: (
-            item[0],
-            hashlib.sha256(
-                ("milk.eval-tail-source.v1\0" + item[1].object_sha256).encode()
-            ).hexdigest(),
-            item[1].object_sha256,
-        )
-    )
-    return {trace.object_sha256 for unused_rank, trace in candidates[:limit]}
-
-
-def _select_eval_sources(
-    traces,
-    labels,
-    limit,
-    tail_sources=(),
-    representative_labels=None,
-):
-    traces_by_sha = {trace.object_sha256: trace for trace in traces}
-    labels_by_sha = {
-        label["trace_sha256"]: label
-        for label in labels
-        if not label["abstain"] and label["trace_sha256"] in traces_by_sha
-    }
-    selected = set(tail_sources) & labels_by_sha.keys()
-    representative_labels = (
-        labels if representative_labels is None else representative_labels
-    )
-    representative_labels = [
-        label
-        for label in representative_labels
-        if not label["abstain"] and label["trace_sha256"] in labels_by_sha
-    ]
-    for operation in sorted({label["operation"] for label in representative_labels}):
-        selected.add(
-            min(
-                label["trace_sha256"]
-                for label in representative_labels
-                if label["operation"] == operation
-            )
-        )
-    ranked_traces = sorted(
-        (
-            trace
-            for sha256, trace in traces_by_sha.items()
-            if sha256 in labels_by_sha
-        ),
-        key=lambda trace: hashlib.sha256(
-            ("milk.eval-source.v1\0" + trace.object_sha256).encode()
-        ).hexdigest(),
-    )
-    if ranked_traces:
-        selected.add(max(ranked_traces, key=lambda trace: len(trace.request_raw)).object_sha256)
-    for predicate in (
-        lambda trace, analytics: trace.catalog.get("error_class") is not None
-        or (
-            isinstance(trace.catalog.get("provider_status"), int)
-            and trace.catalog["provider_status"] >= 400
-        ),
-        lambda unused_trace, analytics: analytics["modality"]
-        not in {"text", "unknown"},
-        lambda unused_trace, analytics: analytics["has_tools"]
-        or analytics["has_tool_calls"],
-    ):
-        match = next(
-            (
-                trace
-                for trace in ranked_traces
-                if predicate(trace, _trace_analytics(trace))
-            ),
-            None,
-        )
-        if match is not None:
-            selected.add(match.object_sha256)
-    for trace in ranked_traces:
-        if len(selected) >= limit:
-            break
-        selected.add(trace.object_sha256)
-    if len(selected) > limit:
-        raise ValueError("eval.max_source_traces cannot cover required source slices")
-    selected_traces = [
-        trace for trace in ranked_traces if trace.object_sha256 in selected
-    ]
-    return selected_traces
-
-
 def _eval_generation(
     store,
     config,
@@ -3940,6 +3863,7 @@ def _eval_generation(
     traces,
     labels,
     semantic_labels,
+    long_context_threshold,
     summary_sha256,
     readiness_sha256,
 ):
@@ -3955,26 +3879,22 @@ def _eval_generation(
     ]
     if not labels:
         raise ValueError("eval generation requires non-abstained labels")
-    tail_sources = _eval_tail_sources(
-        traces, labels, semantic_labels, config.eval.tail_cases
-    )
-    selected = _select_eval_sources(
-        traces,
-        labels,
-        config.eval.max_source_traces,
-        tail_sources,
-        semantic_labels,
-    )
     plan = _eval_case_plan(
-        selected,
+        traces,
         labels,
         config.eval.representative_cases,
         config.eval.tail_cases,
         semantic_labels,
+        long_context_threshold,
     )
     planned_sources = {item["source_trace_sha256"] for item in plan}
+    selected = [
+        trace for trace in traces if trace.object_sha256 in planned_sources
+    ]
+    if len(selected) > config.eval.max_source_traces:
+        raise ValueError("eval plan exceeds eval.max_source_traces")
     payload = {
-        "schema_version": "milk.eval-generation-input.v2",
+        "schema_version": "milk.eval-generation-input.v3",
         "summary_sha256": summary_sha256,
         "readiness_sha256": readiness_sha256,
         "series_id": config.eval.series_id,
@@ -4012,6 +3932,7 @@ def _eval_generation(
             config.eval.tail_cases,
             config.source.eval_trace_bytes,
             semantic_labels,
+            long_context_threshold,
         ),
     )
     return result, job_id, called
@@ -4716,16 +4637,25 @@ def _run_once_locked(
             classifier_called,
             sample,
             eval_sample,
+            long_context_threshold,
         ) = _classification(
             store, config, meter, teacher, lease, now, traces, source_sha256
         )
     else:
-        classification, classifier_job_id, classifier_called, sample, eval_sample = (
+        (
+            classification,
+            classifier_job_id,
+            classifier_called,
+            sample,
+            eval_sample,
+            long_context_threshold,
+        ) = (
             None,
             None,
             False,
             [],
             [],
+            None,
         )
     classified_labels = (
         classification.get("output", [])
@@ -4816,6 +4746,7 @@ def _run_once_locked(
             eval_sample,
             classified_labels,
             labels,
+            long_context_threshold,
             summary_sha256,
             readiness_sha256,
         )

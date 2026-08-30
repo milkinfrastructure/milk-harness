@@ -31,6 +31,7 @@ from milk_harness.run_once import (
     TeacherResponse,
     _RunMeter,
     _advance_pointer,
+    _classification_sources,
     _conservative_token_bound,
     _decompress_trace,
     _eligible_eval_inputs,
@@ -2103,6 +2104,235 @@ class RunOnceTests(unittest.TestCase):
                 ["rare"] * 4 + ["tool_use"] * 4,
             )
             self.assertEqual(len({row[1] for row in plan}), 32)
+            self.assertEqual(
+                len(teacher.payloads["generate_eval"]["traces"]), 32
+            )
+
+    def test_production_classifier_allows_eight_tail_supplements(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = seed(root, count=1)
+            base_config = config(root)
+            base = _parse_trace(
+                store,
+                base_config,
+                store.list(base_config.prefix + "/traffic")[0],
+            )
+            traces = []
+            for index in range(758):
+                traces.append(
+                    replace(
+                        base,
+                        object_sha256=hashlib.sha256(
+                            f"production-trace-{index}".encode()
+                        ).hexdigest(),
+                        session_hmac=hashlib.sha256(
+                            f"production-session-{index}".encode()
+                        ).hexdigest(),
+                        request_raw=b"x",
+                    )
+                )
+            value = _config_dict(root)
+            value["profile"] = "production"
+            value["source"]["max_traces"] = 3000
+            value["source"]["classifier_sample_sessions"] = 750
+            value["eval"]["representative_cases"] = 24
+            value["eval"]["tail_cases"] = 8
+            value["eval"]["max_source_traces"] = 32
+            bounded = RunConfig.parse(value)
+
+            semantic, classifier, long_context_threshold = (
+                _classification_sources(traces, bounded)
+            )
+
+            self.assertEqual(len(semantic), 750)
+            self.assertEqual(len(classifier), 758)
+            self.assertEqual(long_context_threshold, 1)
+
+    def test_full_source_long_context_evidence_survives_bounded_plan(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = seed(root, count=1)
+            base_config = config(root)
+            base = _parse_trace(
+                store,
+                base_config,
+                store.list(base_config.prefix + "/traffic")[0],
+            )
+            traces = [
+                replace(
+                    base,
+                    object_sha256=hashlib.sha256(
+                        f"long-context-trace-{index}".encode()
+                    ).hexdigest(),
+                    session_hmac=hashlib.sha256(
+                        f"long-context-session-{index}".encode()
+                    ).hexdigest(),
+                    request_raw=b"x" * 10,
+                )
+                for index in range(100)
+            ]
+            ranked = sorted(
+                traces,
+                key=lambda trace: hashlib.sha256(
+                    ("milk.semantic-sample.v1\0" + trace.session_hmac).encode()
+                ).hexdigest(),
+            )
+            long_sha256s = {
+                trace.object_sha256 for trace in ranked[:2] + ranked[32:40]
+            }
+            traces = [
+                replace(trace, request_raw=b"x" * 1000)
+                if trace.object_sha256 in long_sha256s
+                else trace
+                for trace in traces
+            ]
+            value = _config_dict(root)
+            value["source"]["classifier_sample_sessions"] = 32
+            value["eval"]["representative_cases"] = 24
+            value["eval"]["tail_cases"] = 8
+            value["eval"]["max_source_traces"] = 32
+            bounded = RunConfig.parse(value)
+            semantic, classifier, long_context_threshold = (
+                _classification_sources(traces, bounded)
+            )
+            labels = [
+                {
+                    "trace_sha256": trace.object_sha256,
+                    "operation": "answer",
+                    "domain": "general",
+                    "capabilities": ["knowledge"],
+                    "expected_oracle": "reference",
+                    "language": "en",
+                    "abstain": False,
+                }
+                for trace in classifier
+            ]
+            semantic_sha256s = {trace.object_sha256 for trace in semantic}
+            semantic_labels = [
+                label
+                for label in labels
+                if label["trace_sha256"] in semantic_sha256s
+            ]
+
+            plan = _eval_case_plan(
+                classifier,
+                labels,
+                24,
+                8,
+                semantic_labels,
+                long_context_threshold,
+            )
+            planned_sha256s = {
+                item["source_trace_sha256"] for item in plan
+            }
+            planned = [
+                trace
+                for trace in classifier
+                if trace.object_sha256 in planned_sha256s
+            ]
+            checked = _validate_eval_output(
+                _eval_cases_from_pairs(
+                    {
+                        "pairs": [
+                            [f"new long task {index}", f"long result {index}"]
+                            for index in range(32)
+                        ]
+                    },
+                    plan,
+                ),
+                planned,
+                labels,
+                24,
+                8,
+                bounded.source.eval_trace_bytes,
+                semantic_labels,
+                long_context_threshold,
+            )
+
+            self.assertEqual(len(semantic), 32)
+            self.assertEqual(len(classifier), 40)
+            self.assertEqual(long_context_threshold, 1000)
+            self.assertEqual(len(planned), 32)
+            self.assertEqual(len(checked), 32)
+            self.assertTrue(
+                all(
+                    item["selection_reason"] == "long_context"
+                    for item in plan[24:]
+                )
+            )
+
+    def test_full_pool_plan_preserves_semantic_operation_quotas(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = seed(root, count=1)
+            bounded = config(root)
+            base = _parse_trace(
+                store,
+                bounded,
+                store.list(bounded.prefix + "/traffic")[0],
+            )
+            traces = []
+            labels = []
+            semantic_labels = []
+            for group, count, operation, tool_use in (
+                ("answer", 24, "answer", True),
+                ("classify", 8, "classify", False),
+                ("supplement", 8, "classify", True),
+            ):
+                for index in range(count):
+                    sha256 = hashlib.sha256(
+                        f"quota-{group}-{index}".encode()
+                    ).hexdigest()
+                    request = {
+                        "model": "baseline-model",
+                        "messages": [{"role": "user", "content": "question"}],
+                        "stream": False,
+                    }
+                    if tool_use:
+                        request["tools"] = [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup",
+                                    "parameters": {"type": "object"},
+                                },
+                            }
+                        ]
+                    traces.append(
+                        replace(
+                            base,
+                            object_sha256=sha256,
+                            session_hmac=sha256,
+                            request=request,
+                            request_raw=canonical_json(request),
+                        )
+                    )
+                    label = {
+                        "trace_sha256": sha256,
+                        "operation": operation,
+                        "expected_oracle": "reference",
+                        "abstain": False,
+                    }
+                    labels.append(label)
+                    if group != "supplement":
+                        semantic_labels.append(label)
+
+            plan = _eval_case_plan(
+                traces,
+                labels,
+                24,
+                8,
+                semantic_labels,
+                10**9,
+            )
+            representative_operations = [
+                item["operation"] for item in plan[:24]
+            ]
+
+            self.assertEqual(representative_operations.count("answer"), 18)
+            self.assertEqual(representative_operations.count("classify"), 6)
+            self.assertEqual(len(plan), 32)
+            self.assertEqual(
+                len({item["source_trace_sha256"] for item in plan}), 32
+            )
 
     def test_production_eval_filter_reports_unsupported_categories(self):
         with tempfile.TemporaryDirectory() as root:
@@ -2438,7 +2668,7 @@ class RunOnceTests(unittest.TestCase):
             self.assertIsNotNone(report["eval_sha256"])
             self.assertEqual(
                 teacher.eval_payload["schema_version"],
-                "milk.eval-generation-input.v2",
+                "milk.eval-generation-input.v3",
             )
             self.assertTrue(
                 all(item[3] == "answer" for item in teacher.eval_payload["case_plan"])
@@ -2502,6 +2732,13 @@ class RunOnceTests(unittest.TestCase):
             value = _config_dict(root)
             value["route_proposal"]["api_base_url"] = "https://candidate.example.test/"
             with self.assertRaisesRegex(ValueError, "/v1/"):
+                RunConfig.parse(value)
+
+            value = _config_dict(root)
+            value["eval"]["max_source_traces"] = 4
+            with self.assertRaisesRegex(
+                ValueError, "cannot cover representative and tail cases"
+            ):
                 RunConfig.parse(value)
 
             value = _config_dict(root)
