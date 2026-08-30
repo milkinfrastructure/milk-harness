@@ -15,7 +15,7 @@
     "max_total_trace_bytes": 67108864,
     "teacher_trace_bytes": 64,
     "eval_trace_bytes": 1024,
-    "classifier_sample_sessions": 100
+    "classifier_sample_sessions": 32
   },
   "teacher": {
     "api_url": "https://inference.baseten.co/v1/chat/completions",
@@ -39,7 +39,7 @@
     "series_id": "production-path-mechanics-v1",
     "representative_cases": 24,
     "tail_cases": 8,
-    "max_source_traces": 128
+    "max_source_traces": 32
   },
   "route_proposal": {
     "enabled": true,

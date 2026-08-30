@@ -97,7 +97,15 @@ class ProductionWorkflowTest(unittest.TestCase):
         self.assertEqual(config.scope_id, "7c92a409-2c10-49ce-b739-aff506f75dfa")
         self.assertEqual(config.eval.series_id, "production-path-mechanics-v1")
         self.assertNotEqual(config.scope_id, production.scope_id)
-        self.assertEqual(config.source.classifier_sample_sessions, 100)
+        self.assertEqual(config.source.classifier_sample_sessions, 32)
+        self.assertEqual(
+            config.source.classifier_sample_sessions,
+            config.eval.representative_cases + config.eval.tail_cases,
+        )
+        self.assertEqual(
+            config.eval.max_source_traces,
+            config.source.classifier_sample_sessions,
+        )
         self.assertEqual(config.teacher.reasoning_effort, "low")
         self.assertEqual(config.teacher.max_output_tokens_per_call, 16_384)
         self.assertEqual(config.teacher.max_total_tokens_per_run, 232_768)
