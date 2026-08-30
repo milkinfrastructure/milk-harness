@@ -37,9 +37,11 @@ from milk_harness.run_once import (
     _load_optional_json,
     _parse_trace,
     _request_text_prefix,
+    _response_text_prefix,
     _stream_response,
     _teacher_request_body,
     _utc,
+    _validate_eval_output,
     run_once,
 )
 
@@ -1283,6 +1285,8 @@ class RunOnceTests(unittest.TestCase):
         self.assertIn("same order", EVAL_INSTRUCTIONS)
         self.assertIn("casefold(expected)", EVAL_INSTRUCTIONS)
         self.assertIn("not a copy of the source request or response", EVAL_INSTRUCTIONS)
+        self.assertNotIn("24 in the deployed configuration", EVAL_INSTRUCTIONS)
+        self.assertNotIn("8 in the deployed configuration", EVAL_INSTRUCTIONS)
 
     def test_all_answer_plain_text_eval_plan_is_deterministic(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1309,7 +1313,7 @@ class RunOnceTests(unittest.TestCase):
             ]
 
             first = _eval_case_plan(traces, labels, 24, 8)
-            second = _eval_case_plan(traces, labels, 24, 8)
+            second = _eval_case_plan(list(reversed(traces)), labels, 24, 8)
 
             self.assertEqual(first, second)
             self.assertEqual(len(first), 32)
@@ -1329,6 +1333,62 @@ class RunOnceTests(unittest.TestCase):
                 len({item["source_trace_sha256"] for item in first[24:]}),
                 8,
             )
+
+            pairs = [
+                [f"new task {index}", f"expected result {index}"]
+                for index in range(32)
+            ]
+            checked = _validate_eval_output(
+                _eval_cases_from_pairs({"pairs": pairs}, first),
+                traces,
+                labels,
+                24,
+                8,
+                bounded.source.teacher_trace_bytes,
+            )
+            self.assertEqual(len(checked), 32)
+
+            duplicate_pairs = [list(pair) for pair in pairs]
+            duplicate_pairs[1] = list(duplicate_pairs[0])
+            self.assertNotEqual(
+                first[0]["source_trace_sha256"],
+                first[1]["source_trace_sha256"],
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate content pair"):
+                _validate_eval_output(
+                    _eval_cases_from_pairs({"pairs": duplicate_pairs}, first),
+                    traces,
+                    labels,
+                    24,
+                    8,
+                    bounded.source.teacher_trace_bytes,
+                )
+
+            traces_by_sha = {item.object_sha256: item for item in traces}
+            source = traces_by_sha[first[0]["source_trace_sha256"]]
+            for copied_input in (
+                _request_text_prefix(
+                    source.request,
+                    source.endpoint,
+                    bounded.source.teacher_trace_bytes,
+                ),
+                _response_text_prefix(
+                    source.response,
+                    source.endpoint,
+                    bounded.source.teacher_trace_bytes,
+                ),
+            ):
+                copied_pairs = [list(pair) for pair in pairs]
+                copied_pairs[0][0] = copied_input.swapcase()
+                with self.assertRaisesRegex(ValueError, "copies its source trace"):
+                    _validate_eval_output(
+                        _eval_cases_from_pairs({"pairs": copied_pairs}, first),
+                        traces,
+                        labels,
+                        24,
+                        8,
+                        bounded.source.teacher_trace_bytes,
+                    )
 
     def test_representative_quotas_use_deterministic_largest_remainders(self):
         labels = [

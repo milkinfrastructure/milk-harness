@@ -2825,7 +2825,7 @@ def _readiness(config, summary, labels, traces, meter, eval_result_exists):
     }
 
 
-EVAL_INSTRUCTIONS = """Return only JSON as {"pairs":[[input,expected],...]}. Input case_plan rows are [suite,source_trace_sha256,oracle,operation,selection_reason]. Input trace rows are [trace_sha256,endpoint,request_text_prefix,response_text_prefix,flags,modality_bits,request_bytes], where endpoint is c or r, flags bits are request_truncated=1,response_truncated=2,error=4,tool_use=8, and modality bits are audio=1,file=2,image=4,text=8,unknown=16. Return exactly one pair for every case_plan row in the same order. The case plan is authoritative and contains all representative rows first (24 in the deployed configuration), then all tail rows (8 in the deployed configuration); do not return or alter its metadata. Each input must be a newly generated task grounded in its source trace, not a copy of the source request or response. Formally, casefold(expected) must not be a substring of casefold(input). Make every [input,expected] pair distinct. Do not include trace IDs, reasoning, configuration, routes, budgets, or prose."""
+EVAL_INSTRUCTIONS = """Return only JSON as {"pairs":[[input,expected],...]}. Input case_plan rows are [suite,source_trace_sha256,oracle,operation,selection_reason]. Input trace rows are [trace_sha256,endpoint,request_text_prefix,response_text_prefix,flags,modality_bits,request_bytes], where endpoint is c or r, flags bits are request_truncated=1,response_truncated=2,error=4,tool_use=8, and modality bits are audio=1,file=2,image=4,text=8,unknown=16. Return exactly one pair for every case_plan row in the same order. The case plan is authoritative and contains all representative rows first, then all tail rows; do not return or alter its metadata. Each input must be a newly generated task grounded in its source trace, not a copy of the source request or response. Formally, casefold(expected) must not be a substring of casefold(input). Make every [input,expected] pair distinct. Do not include trace IDs, reasoning, configuration, routes, budgets, or prose."""
 
 
 def _eval_operation_quotas(labels, representative_count):
@@ -2888,9 +2888,15 @@ def _tail_reason_supported(
 def _eval_case_plan(traces, labels, representative_count, tail_count):
     labels = [label for label in labels if not label["abstain"]]
     labels_by_sha = {label["trace_sha256"]: label for label in labels}
-    eligible_traces = [
-        trace for trace in traces if trace.object_sha256 in labels_by_sha
-    ]
+    eligible_traces = sorted(
+        (trace for trace in traces if trace.object_sha256 in labels_by_sha),
+        key=lambda trace: (
+            hashlib.sha256(
+                ("milk.eval-source.v1\0" + trace.object_sha256).encode()
+            ).hexdigest(),
+            trace.object_sha256,
+        ),
+    )
     if not eligible_traces:
         raise ValueError("eval generation requires labeled source traces")
     label_counts, unused_required, quotas = _eval_operation_quotas(
@@ -2991,6 +2997,7 @@ def _validate_eval_output(
     labels,
     representative_count,
     tail_count,
+    teacher_trace_bytes,
 ):
     value = _object(value, "eval output", required={"cases"})
     cases = value["cases"]
@@ -3011,8 +3018,20 @@ def _validate_eval_output(
     long_context_threshold = request_lengths[
         ((len(request_lengths) - 1) * 9 + 9) // 10
     ]
+    source_text_prefixes = {
+        trace.object_sha256: {
+            _request_text_prefix(
+                trace.request, trace.endpoint, teacher_trace_bytes
+            ).casefold(),
+            _response_text_prefix(
+                trace.response, trace.endpoint, teacher_trace_bytes
+            ).casefold(),
+        }
+        for trace in traces
+    }
     counts = Counter()
     seen = set()
+    seen_pairs = set()
     checked = []
     total_text_bytes = 0
     for case in cases:
@@ -3038,6 +3057,8 @@ def _validate_eval_output(
             raise ValueError("eval output text exceeds the aggregate byte cap")
         if expected.casefold() in input_text.casefold():
             raise ValueError("eval input leaks its expected answer")
+        if input_text.casefold() in source_text_prefixes[case["source_trace_sha256"]]:
+            raise ValueError("eval input copies its source trace")
         if case["operation"] != source_operations.get(case["source_trace_sha256"]):
             raise ValueError("eval case operation differs from its source label")
         if case["suite"] == "representative":
@@ -3056,6 +3077,10 @@ def _validate_eval_output(
                 long_context_threshold,
             ):
                 raise ValueError("tail eval selection reason lacks source evidence")
+        pair = (input_text, expected)
+        if pair in seen_pairs:
+            raise ValueError("eval output contains a duplicate content pair")
+        seen_pairs.add(pair)
         identity = _digest(
             {
                 "source": case["source_trace_sha256"],
@@ -3209,6 +3234,7 @@ def _eval_generation(
             labels,
             config.eval.representative_cases,
             config.eval.tail_cases,
+            config.source.teacher_trace_bytes,
         ),
     )
     return result, job_id, called
