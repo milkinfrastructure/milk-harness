@@ -41,6 +41,10 @@ MAX_EVAL_TEXT_BYTES = 512 * 1024
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 SAFE_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
 WINDOW_KEY = re.compile(r"(?:traffic|stats)/(\d{4}/\d{2}/\d{2}/\d{2})/")
+UTC_RFC3339 = re.compile(
+    r"(?P<seconds>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})"
+    r"(?:\.(?P<fraction>[0-9]{1,9}))?Z\Z"
+)
 
 OPERATION_VALUES = (
     "answer",
@@ -131,10 +135,15 @@ def _environment_name(value, name):
 
 
 def _utc(value, name):
-    if not isinstance(value, str) or not value.endswith("Z"):
+    match = UTC_RFC3339.fullmatch(value) if isinstance(value, str) else None
+    if match is None:
         raise ValueError(f"{name} must be a UTC timestamp")
+    normalized = match.group("seconds")
+    fraction = match.group("fraction")
+    if fraction is not None:
+        normalized += "." + fraction[:6].ljust(6, "0")
     try:
-        parsed = dt.datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = dt.datetime.fromisoformat(normalized + "+00:00")
     except ValueError as error:
         raise ValueError(f"{name} must be a UTC timestamp") from error
     if parsed.utcoffset() != dt.timedelta(0):
