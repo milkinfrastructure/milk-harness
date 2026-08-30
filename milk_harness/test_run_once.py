@@ -1852,6 +1852,10 @@ class RunOnceTests(unittest.TestCase):
         self.assertFalse(schema["additionalProperties"])
         self.assertIn("same order", EVAL_INSTRUCTIONS)
         self.assertIn("casefold(expected)", EVAL_INSTRUCTIONS)
+        self.assertIn(
+            "Before returning, self-check every pair; while casefold(expected) is a substring of casefold(input), rewrite input to remove the expected answer without changing the task.",
+            EVAL_INSTRUCTIONS,
+        )
         self.assertIn("not a copy of the source request or response", EVAL_INSTRUCTIONS)
         self.assertNotIn("24 in the deployed configuration", EVAL_INSTRUCTIONS)
         self.assertNotIn("8 in the deployed configuration", EVAL_INSTRUCTIONS)
